@@ -75,7 +75,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
 
 ## Follow-ups decided by H (2026-10-29)
 
-- [ ] **M1-8 — Auto-detect text encoding.** Opening a non-UTF-8 file (e.g. Latin-1 /
+- [x] **M1-8 — Auto-detect text encoding.** Opening a non-UTF-8 file (e.g. Latin-1 /
   Windows-1252 `.txt`, UTF-16 with BOM) detects the encoding instead of refusing.
   Save writes back in the same encoding, so the file is never silently re-encoded.
   Detection lives in `MarkdownCore` (pure, tested); `MarkdownDocument` uses it.
