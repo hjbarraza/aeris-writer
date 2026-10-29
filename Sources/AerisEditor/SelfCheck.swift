@@ -46,6 +46,7 @@ enum SelfCheck {
         externalChangeChecks()
         linkChecks()
         rowChecks()
+        lineEndingChecks()
         try? FileManager.default.removeItem(at: scratch)
         if failed { print("selfcheck FAILED"); exit(1) }
         print("selfcheck passed")
@@ -625,6 +626,70 @@ enum SelfCheck {
                 typealias ShouldClose = @convention(c) (NSObject, Selector, NSDocument, Bool, UnsafeMutableRawPointer?) -> Void
                 unsafeBitCast(target.method(for: selector), to: ShouldClose.self)(target, selector, self, ok, contextInfo)
             }
+        }
+    }
+
+    /// M1-12: in a CRLF document, Return, list continuation and a paste of LF text all
+    /// insert CRLF; an LF document stays LF. Existing endings are never converted.
+    @MainActor static func lineEndingChecks() {
+        let dir = scratch.appending(path: "LineEndings")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let board = NSPasteboard(name: NSPasteboard.Name("aeris-selfcheck-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        for (name, eol) in [("crlf.md", "\r\n"), ("lf.md", "\n")] {
+            let url = dir.appending(path: name)
+            try? Data("# Title\(eol)\(eol)- a".utf8).write(to: url)
+            let dc = NSDocumentController.shared
+            guard let doc = try? dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                    as? MarkdownDocument else { check(false, "line endings: \(name) opens"); continue }
+            dc.addDocument(doc); doc.makeWindowControllers()
+            let wc = doc.windowControllers[0] as! EditorWindowController
+            let tv = editorTextView(wc)
+            tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // list continuation: "- "
+            tv.insertText("b", replacementRange: tv.selectedRange())
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // continuation again
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // empty item: clears the line
+            tv.insertText("plain", replacementRange: tv.selectedRange())
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // plain Return
+            board.clearContents()
+            board.setString(eol == "\n" ? "p1\r\np2\rp3\n" : "p1\np2\rp3\n", forType: .string)
+            tv.readSelection(from: board, type: .string)                  // paste of foreign endings
+            var saved = false
+            doc.save(to: url, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+            _ = wait(timeout: 3) { saved }
+            let bytes = [UInt8]((try? Data(contentsOf: url)) ?? Data())
+            let text = String(decoding: bytes, as: UTF8.self)
+            let breaks = text.utf16.filter { $0 == 0x0A }.count
+            let crs = bytes.filter { $0 == 0x0D }.count
+            let consistent = eol == "\r\n"
+                ? crs == breaks && !text.replacingOccurrences(of: "\r\n", with: "").contains(where: { $0 == "\r" || $0 == "\n" })
+                : crs == 0
+            let expected = ["# Title", "", "- a", "- b", "plain", "p1", "p2", "p3", ""].joined(separator: eol)
+            check(saved && consistent && text == expected,
+                  "line endings: \(name) stays \(eol == "\n" ? "LF" : "CRLF") after Return, list continuation and paste"
+                  + (consistent && text == expected ? "" : " (got \(text.debugDescription))"))
+            doc.close()
+        }
+
+        // A mixed file keeps its existing endings; new lines follow its first one.
+        let mixed = dir.appending(path: "mixed.md")
+        try? Data("a\r\nb\nc".utf8).write(to: mixed)
+        if let doc = try? NSDocumentController.shared.makeDocument(withContentsOf: mixed, ofType: "net.daringfireball.markdown")
+            as? MarkdownDocument {
+            NSDocumentController.shared.addDocument(doc); doc.makeWindowControllers()
+            let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+            tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+            tv.insertText("d", replacementRange: tv.selectedRange())
+            var saved = false
+            doc.save(to: mixed, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+            _ = wait(timeout: 3) { saved }
+            check(saved && (try? Data(contentsOf: mixed)) == Data("a\r\nb\nc\r\nd".utf8),
+                  "line endings: a mixed file keeps its endings; Return inserts its first (CRLF)")
+            doc.close()
+        } else {
+            check(false, "line endings: mixed.md opens")
         }
     }
 

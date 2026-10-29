@@ -61,15 +61,6 @@ enum BlockLines {
         lines.first { !$0.terminator.isEmpty }?.terminator ?? "\n"
     }
 
-    /// The text's line ending (first one found), default LF, without splitting it.
-    static func eol(_ text: String) -> String {
-        let ns = text as NSString
-        let r = ns.rangeOfCharacter(from: CharacterSet(charactersIn: "\r\n"))
-        guard r.location != NSNotFound else { return "\n" }
-        if ns.character(at: r.location) == 0x0A { return "\n" }
-        return r.location + 1 < ns.length && ns.character(at: r.location + 1) == 0x0A ? "\r\n" : "\r"
-    }
-
     static func isBlank(_ s: String) -> Bool {
         s.allSatisfy { $0 == " " || $0 == "\t" }
     }
@@ -298,7 +289,8 @@ public enum BlockEdit {
     // MARK: Table of contents
 
     /// Nested `- [Heading](#slug)` list from every heading (ATX and setext).
-    /// GitHub-style slugs; duplicates get `-1`, `-2`. No trailing newline.
+    /// GitHub-style slugs; duplicates get `-1`, `-2`. Rows joined by the text's line
+    /// ending; no trailing newline.
     public static func tableOfContents(text: String) -> String {
         var headings: [(level: Int, title: String)] = []
         func walk(_ m: Markup) {
@@ -325,7 +317,7 @@ public enum BlockEdit {
             let title = h.title.replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
             out.append(String(repeating: "  ", count: depth) + "- [\(title)](#\(s))")
         }
-        return out.joined(separator: "\n")
+        return out.joined(separator: LineEnding.of(text))
     }
 
     /// Heading text without markup delimiters (code spans give their contents).

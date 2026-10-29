@@ -126,6 +126,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
             textView.breakUndoCoalescing()
             undo?.beginUndoGrouping()
             registerSelection(undo, set: textView.selectedRange(), inverse: nil)
+            applyingEdit = true
+            defer { applyingEdit = false }
             if textView.shouldChangeText(in: edit.range, replacementString: edit.replacement) {
                 storage.beginEditing()
                 storage.replaceCharacters(in: edit.range, with: edit.replacement)
@@ -169,6 +171,23 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
                 editor.registerSelection(undo, set: inverse, inverse: set)
             }
         }
+    }
+
+    // MARK: Line endings
+
+    /// True while `apply` runs its edit: commands build their own line endings, and a
+    /// reload's text is the file's, so neither is converted.
+    private var applyingEdit = false
+
+    /// Typed, pasted and dropped text takes the document's line ending (its first one;
+    /// LF if none), so a CRLF file never gains a lone LF. Existing text is never touched.
+    func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString text: String?) -> Bool {
+        guard !applyingEdit, !textView.hasMarkedText(), let text,
+              text.utf16.contains(where: { $0 == 0x0A || $0 == 0x0D }) else { return true }
+        let converted = LineEnding.convert(text, to: LineEnding.of(textView.string))
+        guard converted != text else { return true }
+        textView.insertText(converted, replacementRange: range)
+        return false
     }
 
     // MARK: Return / Tab / ⇧Tab in lists and tables
