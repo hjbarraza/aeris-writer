@@ -39,6 +39,7 @@ enum SelfCheck {
         folderDropChecks()
         persistenceChecks()
         openChecks()
+        caretAtEndChecks()
         sidebarChecks()
         organizerChecks()
         columnChecks()
@@ -1074,6 +1075,43 @@ enum SelfCheck {
             else { return false }
             return attempter.attemptRecovery(fromError: error, optionIndex: option)
         }
+    }
+
+    /// M1-14: no stored caret opens at the end; a caret stored at the end follows the file's growth.
+    @MainActor static func caretAtEndChecks() {
+        let fm = FileManager.default, dc = NSDocumentController.shared
+        let dir = scratch.appending(path: "CaretEnd")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "n.md")
+        try? "one\ntwo\n".write(to: url, atomically: true, encoding: .utf8)
+        let before = try? Data(contentsOf: url)
+        func open() -> (MarkdownDocument, NSTextView, EditorWindowController) {
+            let d = try! dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+            dc.addDocument(d); d.makeWindowControllers()
+            let wc = d.windowControllers[0] as! EditorWindowController
+            wc.editorForTesting.viewDidAppear()
+            return (d, editorTextView(wc), wc)
+        }
+        func append(_ text: String) {
+            let fh = try! FileHandle(forWritingTo: url)
+            try! fh.seekToEnd(); try! fh.write(contentsOf: Data(text.utf8)); try! fh.close()
+        }
+        var (d, tv, wc) = open()
+        check(tv.selectedRange() == NSRange(location: 8, length: 0), "caret-end: a never-opened file opens with the caret at the end")
+        check((try? Data(contentsOf: url)) == before, "caret-end: opening leaves the file bytes unchanged")
+        // Store the state as closing does, with the caret at the end.
+        try? ExtendedAttributes.set(try! JSONEncoder().encode(wc.editorForTesting.state), named: EditorState.attributeName, at: url)
+        d.close()
+        append("more\n")
+        (d, tv, wc) = open()
+        check(tv.selectedRange() == NSRange(location: 13, length: 0), "caret-end: a caret stored at the end follows the file's growth")
+        tv.setSelectedRange(NSRange(location: 2, length: 0))
+        try? ExtendedAttributes.set(try! JSONEncoder().encode(wc.editorForTesting.state), named: EditorState.attributeName, at: url)
+        d.close()
+        append("x\n")
+        (d, tv, wc) = open()
+        check(tv.selectedRange() == NSRange(location: 2, length: 0), "caret-end: a caret stored mid-text stays where it was")
+        d.close()
     }
 
     static func editorState(at url: URL) -> EditorState? {

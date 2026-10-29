@@ -31,5 +31,7 @@ struct EditorState: Codable, Equatable {
 
     var sel: [Int]
     var scroll: Int
+    /// Set when the caret was at the very end of the text: it then stays at the end of a file that grew since.
+    var end: Bool?
     var v = 1
 }
