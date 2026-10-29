@@ -2153,6 +2153,24 @@ enum SelfCheck {
         check(titlesC == ["Open", "Open in New Tab", "Open in New Window", "Reveal in Finder", "Copy Link", "Copy", "LookUp"],
               "linkmenu: willOpenMenu menu is exactly our items plus allow-listed WebKit items \(titlesC)")
 
+        // A link with no selection: WebKit's menu is link items only, all dropped. Never empty on the way.
+        let mD = NSMenu()
+        for n in ["OpenLink", "OpenLinkInNewWindow", "DownloadLinkedFile", "CopyLink"] {
+            let i = NSMenuItem(title: n, action: nil, keyEquivalent: ""); i.identifier = NSUserInterfaceItemIdentifier("WKMenuItemIdentifier" + n)
+            mD.addItem(i)
+        }
+        web.willOpenMenu(mD, with: event(at: linkPoint))
+        var everEmpty = mD.items.isEmpty
+        let placeholderFirst = mD.items.map(\.title) == ["Link"] && mD.items[0].isEnabled == false
+        _ = wait(timeout: 3) { everEmpty = everEmpty || mD.items.isEmpty; return mD.items.contains { $0.title == "Open in New Tab" } }
+        check(placeholderFirst && !everEmpty, "linkmenu: a link-only menu holds a disabled placeholder, never empty, while the hit test runs")
+        check(mD.items.map(\.title) == ["Open", "Open in New Tab", "Open in New Window", "Reveal in Finder", "Copy Link"],
+              "linkmenu: the answer replaces the placeholder with our items \(mD.items.map(\.title))")
+        let mE = NSMenu()
+        web.willOpenMenu(mE, with: event(at: blank))
+        _ = wait(timeout: 0.5) { false }
+        check(mE.items.map(\.title) == ["Link"] && !mE.items[0].isEnabled, "linkmenu: no link and nothing to keep leaves a disabled placeholder, not an empty menu")
+
         // What WebKit really builds: log its identifiers; nothing outside the allow-list may survive.
         let realEvent = event(at: linkPoint)
         let real = web.menu(for: realEvent)

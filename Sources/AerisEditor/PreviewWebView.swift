@@ -36,18 +36,29 @@ final class PreviewWebView: WKWebView {
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
         reshape(menu, link: nil)
+        // An empty menu may not show at all: hold the place until the hit test answers.
+        if menu.items.isEmpty {
+            let placeholder = NSMenuItem(title: "Link", action: nil, keyEquivalent: "")
+            placeholder.identifier = Self.placeholderID
+            placeholder.isEnabled = false
+            menu.addItem(placeholder)
+        }
         menuGeneration += 1
         let generation = menuGeneration
         link(at: convert(event.locationInWindow, from: nil)) { [weak self, weak menu] url in
-            guard let self, let menu, let url, generation == menuGeneration else { return }
-            addLinkItems(url, to: menu)
+            guard let self, let menu, generation == menuGeneration else { return }
+            if let url { addLinkItems(url, to: menu) }
         }
     }
 
-    /// Puts our items for `link` at the top of a menu already filtered by `reshape`.
+    static let placeholderID = NSUserInterfaceItemIdentifier("aeris.menu.placeholder")
+
+    /// Puts our items for `link` at the top of a menu already filtered by `reshape`, in place of
+    /// the placeholder if there is one.
     func addLinkItems(_ link: URL, to menu: NSMenu) {
         let items = linkMenuItems(link)
         guard !items.isEmpty else { return }
+        for item in menu.items where item.identifier == Self.placeholderID { menu.removeItem(item) }
         for (i, item) in items.enumerated() { menu.insertItem(item, at: i) }
         if menu.items.count > items.count { menu.insertItem(.separator(), at: items.count) }
     }
