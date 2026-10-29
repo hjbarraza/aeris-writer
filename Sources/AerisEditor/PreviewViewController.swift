@@ -76,7 +76,9 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
     /// if anything changed meanwhile.
     var isActive = true {
         didSet {
-            if isActive, !oldValue, stale { stale = false; render() }
+            guard isActive, !oldValue else { return }
+            if stale { stale = false; render() }
+            applySync()   // the editor may have scrolled while the preview was hidden
         }
     }
     private var stale = false
