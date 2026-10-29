@@ -19,7 +19,7 @@ public final class LocationStore {
     private let fileURL: URL
     public private(set) var locations: [Location] = []
     /// Set when the file exists but could not be read; the list is then empty and the file's
-    /// bytes are copied to `<file>.backup` before the first save replaces them.
+    /// bytes are copied to `<file>.backup-<timestamp>` before the first save replaces them.
     public private(set) var loadFailed = false
 
     public init(fileURL: URL) {
@@ -120,10 +120,16 @@ public final class LocationStore {
 
     private func save() throws {
         if loadFailed {
-            // Keep the unreadable file's bytes; never silently replace them with a shorter list.
-            let backup = fileURL.appendingPathExtension("backup")
-            try? FileManager.default.removeItem(at: backup)
-            try FileManager.default.copyItem(at: fileURL, to: backup)
+            // Keep the unreadable file's bytes under a new timestamped name (an older backup is never
+            // touched); never silently replace them with a shorter list. A file the user already
+            // removed needs no backup.
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.dateFormat = "yyyyMMdd-HHmmss"
+                let backup = fileURL.appendingPathExtension("backup-" + formatter.string(from: Date()))
+                try FileManager.default.copyItem(at: fileURL, to: backup)
+            }
             loadFailed = false
         }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)

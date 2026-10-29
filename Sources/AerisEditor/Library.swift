@@ -31,7 +31,7 @@ final class Library {
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     self?.reportError("The list of library locations could not be read.",
-                                      "The file was left as it is and copied to a .backup file next to it before any change replaces it.")
+                                      "The file was left as it is and copied to a .backup-<time> file next to it before any change replaces it.")
                 }
             }
         }
@@ -55,10 +55,27 @@ final class Library {
             guard try store.add(url) else { return }
         } catch {
             NSLog("Aeris: could not save location %@: %@", url.path, "\(error)")
-            reportError("The location could not be added.", "Saving the list of locations failed: \(error.localizedDescription) The list is unchanged.")
+            failedAdds.append((url.lastPathComponent, error.localizedDescription))
+            if failedAdds.count == 1 {
+                // One alert per user action (a drop of several folders), shown after the caller returns.
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated { self?.reportFailedAdds() }
+                }
+            }
             return
         }
         reload()
+    }
+
+    private var failedAdds: [(name: String, reason: String)] = []
+
+    private func reportFailedAdds() {
+        let failed = failedAdds
+        failedAdds = []
+        guard let first = failed.first else { return }
+        let names = failed.map(\.name).joined(separator: ", ")
+        reportError(failed.count == 1 ? "The location could not be added." : "The locations could not be added.",
+                    "Saving the list of locations failed for \(names): \(first.reason) The list is unchanged.")
     }
 
     /// Removes the location at `index` (a root row) from the library; the folder on disk is untouched.
