@@ -52,10 +52,35 @@ enum SelfCheck {
         rowChecks()
         restorationChecks()
         lineEndingChecks()
+        hashtagMenuChecks()
         try? FileManager.default.removeItem(at: scratch)
         if failed { print("selfcheck FAILED"); exit(1) }
         print("selfcheck passed")
         exit(0)
+    }
+
+    /// Format > Add Hashtag mid-word: ` #` goes in at the caret and the tag list opens.
+    @MainActor static func hashtagMenuChecks() {
+        let dir = scratch.appending(path: "hashtag")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "Tags.md")
+        try? "#alpha #beta\n\nabcd\n".write(to: url, atomically: true, encoding: .utf8)
+        let dc = NSDocumentController.shared
+        let doc = try! dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        wc.window?.orderFront(nil)
+        let tv = editorTextView(wc)
+        tv.setSelectedRange(NSRange(location: 16, length: 0))  // ab|cd
+        let item = NSMenuItem(title: "Add Hashtag", action: nil, keyEquivalent: "")
+        item.representedObject = MarkdownElement.addHashtag
+        wc.editorForTesting.toggleBlock(item)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        check(tv.string == "#alpha #beta\n\nab #cd\n" && tv.selectedRange() == NSRange(location: 18, length: 0),
+              "add hashtag mid-word: ' #' at the caret (got \(tv.string.debugDescription))")
+        check(wc.editorForTesting.completion.isVisible, "add hashtag: the tag list opens")
+        wc.editorForTesting.completion.hide()
+        doc.close()
     }
 
     static func check(_ ok: Bool, _ label: String) {
