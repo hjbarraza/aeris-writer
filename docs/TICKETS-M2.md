@@ -108,7 +108,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   deleted folder falls back to the root. On screen: open a subfolder, expand two
   folders in the organizer, quit, relaunch → same view.
 
-- [ ] **M2-6b — Every panel opens and closes smoothly.** Showing or hiding the organizer,
+- [x] **M2-6b — Every panel opens and closes smoothly.** Showing or hiding the organizer,
   the file list and the preview animates the same way the sidebar toggle does, with no
   jump or flash, and the other columns keep their widths.
   *Verify:* self-check: each toggle ends at the expected widths and restores them when
@@ -169,7 +169,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
 
 ## File operations
 
-- [ ] **M2-10 — File operations.** Context menu on file-list rows and File menu: New
+- [x] **M2-10 — File operations.** Context menu on file-list rows and File menu: New
   File and New Folder (in the right-clicked folder, or the shown folder; the new row
   enters rename mode), New Folder with Selection (several rows selected), Duplicate
   ("Name copy", then "Name copy 2"), Rename (inline; name selected without extension;
@@ -224,7 +224,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   relaunch, clearing restores the folder name; Delete on a location → removed, folder
   untouched.
 
-- [ ] **M2-14 — Library errors are visible.** If saving the library's location list fails,
+- [x] **M2-14 — Library errors are visible.** If saving the library's location list fails,
   show an alert (not only a log line), and keep the in-memory list intact.
   *Verify:* make the library file's folder read-only, add a location → alert shown; list unchanged.
 
