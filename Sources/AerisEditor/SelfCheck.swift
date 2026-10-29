@@ -46,6 +46,7 @@ enum SelfCheck {
         externalChangeChecks()
         linkChecks()
         rowChecks()
+        restorationChecks()
         try? FileManager.default.removeItem(at: scratch)
         if failed { print("selfcheck FAILED"); exit(1) }
         print("selfcheck passed")
@@ -1597,6 +1598,60 @@ enum SelfCheck {
         check(marked("old.md") && !marked("sub") && (wc.document as? NSDocument)?.fileURL?.lastPathComponent == "old.md",
               "rows: selecting another row leaves the marker on the open file")
         wc.close()
+    }
+
+    /// Relaunch returns to where you were: the window encodes its folder, selection and organizer
+    /// expansion as paths, and a fresh window controller restores them.
+    @MainActor static func restorationChecks() {
+        guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else { return }
+        let fm = FileManager.default
+        let dc = NSDocumentController.shared
+        let loc = scratch.appending(path: "RestoreLib")
+        try? fm.createDirectory(at: loc.appending(path: "sub"), withIntermediateDirectories: true)
+        let urlA = loc.appending(path: "A.md"), urlC = loc.appending(path: "sub/C.md")
+        for (url, text) in [(urlA, "alpha"), (urlC, "gamma")] { try? text.write(to: url, atomically: true, encoding: .utf8) }
+        func canonical(_ url: URL) -> String { LibraryListing.canonicalPath(url) }
+        func node(_ url: URL) -> LibraryNode { Library.shared.tree.node(atPath: canonical(url))! }
+        Library.shared.addLocation(loc)
+        let rootsBefore = Library.shared.tree.roots.map(\.path)
+        func window() -> (EditorWindowController, MarkdownDocument) {
+            let d = try! dc.makeDocument(withContentsOf: urlA, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+            dc.addDocument(d); d.makeWindowControllers()
+            return (d.windowControllers[0] as! EditorWindowController, d)
+        }
+        func roundTrip(_ from: EditorWindowController, into to: EditorWindowController) {
+            let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+            from.encodeRestorableState(with: archiver)
+            archiver.finishEncoding()
+            let unarchiver = try! NSKeyedUnarchiver(forReadingFrom: archiver.encodedData)
+            unarchiver.requiresSecureCoding = true
+            to.restoreState(with: unarchiver)
+        }
+        func close(_ wc: EditorWindowController, _ d: MarkdownDocument) { wc.close(); d.close() }
+
+        let (wc1, d1) = window()
+        wc1.fileList.showFolder(node(loc.appending(path: "sub")))
+        wc1.fileList.restoreSelection(path: canonical(urlC))
+        let (wc2, d2) = window()
+        check(wc2.fileList.folder === node(loc), "restore: a fresh window starts at the open document's folder")
+        roundTrip(wc1, into: wc2)
+        check(wc2.fileList.folder === node(loc.appending(path: "sub")), "restore: the same folder is shown")
+        check(wc2.fileList.selectedPath == canonical(urlC), "restore: the same file is selected")
+        check(wc2.sidebar.expandedFolderPaths == wc1.sidebar.expandedFolderPaths && wc2.sidebar.selectedURL.map(canonical) == canonical(loc),
+              "restore: the organizer keeps its expansion and selects the folder's location (no expandable folders yet)")
+        check((wc2.document as? NSDocument)?.fileURL.map(canonical) == canonical(urlA) && !d2.isDocumentEdited,
+              "restore: the open document is unchanged and not edited")
+
+        // Fallbacks never fail: a missing folder shows its location's root; a missing location, the first.
+        wc2.restoreLibraryView(folderPath: canonical(loc) + "/gone/deeper", selectedPath: canonical(urlC), expandedPaths: [])
+        check(wc2.fileList.folder === node(loc) && wc2.fileList.selectedPath == nil,
+              "restore: a deleted folder falls back to its location's root, and a missing file is not selected")
+        wc2.restoreLibraryView(folderPath: canonical(loc.appending(path: "sub")), selectedPath: nil, expandedPaths: [])
+        wc2.restoreLibraryView(folderPath: "/no/such/location/folder", selectedPath: nil, expandedPaths: [])
+        check(wc2.fileList.folder === Library.shared.tree.roots.first, "restore: an unresolved location falls back to the first location")
+        check(Library.shared.tree.roots.map(\.path) == rootsBefore, "restore: locations were not reordered")
+        close(wc1, d1); close(wc2, d2)
+        Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
 
     /// Preview links act like links in a document: scroll, open in Aeris, or hand web/mail to

@@ -87,6 +87,8 @@ final class EditorWindowController: NSWindowController {
             fileList.showFolder(folder)
             fileList.reveal((document as? NSDocument)?.fileURL)
         }
+        fileList.onStateChange = { [weak self] in self?.window?.invalidateRestorableState() }
+        sidebar.onStateChange = { [weak self] in self?.window?.invalidateRestorableState() }
         fileList.onNavigate = { [weak self] in self?.fileList.reveal((self?.document as? NSDocument)?.fileURL) }
         presentLinkError = { [weak self] error in
             guard let window = self?.window else { return }
@@ -94,6 +96,47 @@ final class EditorWindowController: NSWindowController {
         }
         NotificationCenter.default.addObserver(self, selector: #selector(windowDidBecomeKey(_:)),
                                                name: NSWindow.didBecomeKeyNotification, object: window)
+    }
+
+    // MARK: Window restoration
+
+    private enum StateKey {
+        static let folder = "Aeris.list.folder", selection = "Aeris.list.selection", expanded = "Aeris.organizer.expanded"
+    }
+
+    /// The folder in the file list, its selected row and the expanded organizer folders, as paths.
+    override func encodeRestorableState(with coder: NSCoder) {
+        super.encodeRestorableState(with: coder)
+        if let path = fileList.folder?.path { coder.encode(path as NSString, forKey: StateKey.folder) }
+        if let path = fileList.selectedPath { coder.encode(path as NSString, forKey: StateKey.selection) }
+        coder.encode(sidebar.expandedFolderPaths as NSArray, forKey: StateKey.expanded)
+    }
+
+    override func restoreState(with coder: NSCoder) {
+        super.restoreState(with: coder)
+        restoreLibraryView(
+            folderPath: coder.decodeObject(of: NSString.self, forKey: StateKey.folder) as String?,
+            selectedPath: coder.decodeObject(of: NSString.self, forKey: StateKey.selection) as String?,
+            expandedPaths: coder.decodeObject(of: [NSArray.self, NSString.self], forKey: StateKey.expanded) as? [String] ?? [])
+    }
+
+    /// Puts the library columns back: a folder that no longer exists falls back to its location's
+    /// root, a location that no longer resolves to the first location; a missing selection is none.
+    func restoreLibraryView(folderPath: String?, selectedPath: String?, expandedPaths: [String]) {
+        guard let folderPath else { return }
+        let tree = Library.shared.tree
+        let target: LibraryNode?
+        if let node = tree.node(atPath: folderPath), node.isDirectory {
+            target = node
+        } else {
+            let roots = tree.roots.filter { folderPath == $0.path || folderPath.hasPrefix($0.path + "/") }
+            target = roots.max(by: { $0.path.count < $1.path.count }) ?? tree.roots.first
+        }
+        guard let target else { return }
+        sidebar.expandFolders(atPaths: expandedPaths)
+        fileList.showFolder(target)
+        sidebar.reveal(target.url)
+        fileList.restoreSelection(path: selectedPath)
     }
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
@@ -141,6 +184,7 @@ final class EditorWindowController: NSWindowController {
             }
         }
         fileList.reveal(url)
+        window?.invalidateRestorableState()  // programmatic selection changes count too (M2-6a)
     }
 
     /// The latest request that arrived while a switch was pending; it opens once that switch

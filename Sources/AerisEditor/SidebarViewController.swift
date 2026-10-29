@@ -62,6 +62,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     private let emptyLabel = NSTextField(wrappingLabelWithString: "Add a folder to see its Markdown files here.")
     /// Set by the window controller: the user selected a location, whose folder the list should show.
     var onFolderSelected: (@MainActor (LibraryNode?) -> Void)?
+    /// Set by the window controller: a folder was expanded or collapsed (window state to save).
+    var onStateChange: (@MainActor () -> Void)?
     /// A programmatic reveal is selecting a row; that selection never fills the list.
     private var revealing = false
     /// The saved expansion is being applied; those expansions are not saved again.
@@ -161,12 +163,35 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
+    /// Paths of the folders expanded in the organizer (the rows below a location). Locations hold
+    /// no expandable rows yet, so this is empty until the organizer shows folders.
+    var expandedFolderPaths: [String] {
+        (0..<outlineView.numberOfRows).compactMap { row in
+            guard let node = outlineView.item(atRow: row) as? LibraryNode, outlineView.isItemExpanded(node) else { return nil }
+            return node.path
+        }
+    }
+
+    /// Expands the folders at `paths` that still exist and can be expanded; the rest are skipped.
+    func expandFolders(atPaths paths: [String]) {
+        loadViewIfNeeded()
+        restoring = true
+        defer { restoring = false }
+        for path in paths {
+            if let node = Library.shared.tree.node(atPath: path), outlineView.row(forItem: node) >= 0 {
+                outlineView.expandItem(node)
+            }
+        }
+    }
+
     func outlineViewItemDidExpand(_ notification: Notification) {
+        if !restoring, notification.userInfo?["NSObject"] is LibraryNode { onStateChange?() }
         guard !restoring, let section = notification.userInfo?["NSObject"] as? OrganizerSection else { return }
         collapsedSections.removeAll { $0 == section.kind.rawValue }
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
+        if !restoring, notification.userInfo?["NSObject"] is LibraryNode { onStateChange?() }
         guard !restoring, let section = notification.userInfo?["NSObject"] as? OrganizerSection,
               !collapsedSections.contains(section.kind.rawValue) else { return }
         collapsedSections.append(section.kind.rawValue)
