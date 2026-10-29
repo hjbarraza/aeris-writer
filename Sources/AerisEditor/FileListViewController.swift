@@ -12,7 +12,7 @@ final class FileListTableView: NSTableView {
     var menuProvider: (@MainActor (_ row: Int) -> [NSMenuItem])?
 
     override func mouseDown(with event: NSEvent) {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let flags = event.modifierFlags.intersection([.command, .option, .shift, .control])   // Caps Lock and Fn don't count
         let row = row(at: convert(event.locationInWindow, from: nil))
         if flags.contains(.command), row >= 0, onModifiedClick?(row, flags) == true { return }
         super.mouseDown(with: event)
