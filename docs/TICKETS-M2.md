@@ -49,7 +49,7 @@ Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` gre
   Editor sheet (SwiftUI leaf). Results are a virtual folder in the sidebar. Persisted.
   *Verify:* create "tag = draft AND modified < 7 days" → correct files; edit → updates.
 
-- [ ] **M2-9 — Quick search (⌘K).** Panel with fuzzy filename match + content search
+- [ ] **M2-9 — Quick search (⇧⌘O; ⌘K is already Format ▸ Link).** Panel with fuzzy filename match + content search
   across all locations; arrow keys + Return to open. Index from M2-7 reused.
   *Verify:* ⌘K, type part of a name → file ranked first → Return opens it.
 
@@ -73,3 +73,10 @@ Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` gre
 
 Exit criteria for M2: add a folder, browse/create/rename/trash from the sidebar, see
 `#tag` in Tags, a smart folder filters, ⌘K jumps to a file, a Finder change shows live.
+
+
+## Fixes found in review (2026-10-29)
+
+- [ ] **M2-14 — Library errors are visible.** If saving the library's location list fails,
+  show an alert (not only a log line), and keep the in-memory list intact.
+  *Verify:* make the library file's folder read-only, add a location → alert shown; list unchanged.

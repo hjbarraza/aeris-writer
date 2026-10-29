@@ -102,7 +102,10 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
     without NSDocument's "changed by another application" error, because the user
     already chose.
   When the document has unsaved edits, the sheet says so, and Reload warns those edits
-  will be lost. Several changes while the sheet is up collapse into one prompt. A move
+  will be lost.
+  Note: the system may reload an unedited document silently by default; that path must
+  also ask, and our current reload clears undo history, so Reload must be built so ⌘Z works.
+  Autosave must never re-create a file that was deleted on disk without the user choosing Keep. Several changes while the sheet is up collapse into one prompt. A move
   or rename follows the file silently (title updates). A deletion asks
   Keep (re-save on next save) / Close. Never auto-reload without asking, and never
   lose the user's text without an explicit Reload.
@@ -111,3 +114,17 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   text. Ignore → disk unchanged until save, then save writes ours with no error sheet.
   Two quick external writes → one prompt. On screen: edit the file in another editor
   while it is open in Aeris.
+
+## Fixes found in review (2026-10-29)
+
+- [ ] **M1-11 — Preview links behave like a document, not a browser.** `#heading` links
+  scroll the preview to that heading (headings get stable ids); links to other `.md` files
+  open them in Aeris; only http(s)/mailto go to the system. Editor: ⌘-click on a link opens
+  it the same way.
+  *Verify:* a document with a table of contents → click an entry → preview scrolls there, no
+  Finder window opens; a link to `other.md` opens it in Aeris.
+
+- [ ] **M1-12 — Line endings stay consistent.** In a CRLF document, Return and every edit
+  command insert CRLF, so a file never ends up with mixed endings.
+  *Verify:* open a CRLF file, add lines with Return and list continuation, save → every line
+  ends in CRLF (`od -c`).

@@ -76,3 +76,10 @@ Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` gre
 Exit criteria for M1.5: write a doc using only menu/shortcut commands — headings,
 lists, a task list, a table, link, image, footnote — stats popover shows correct
 counts, typewriter and focus toggle on/off. Then start M2.
+
+
+## Fixes found in review (2026-10-29)
+
+- [ ] **M1.5-11 — Completion list follows the editor.** The completion popup closes when the
+  editor scrolls, loses focus, or the window changes; it never floats at a stale position.
+  *Verify:* type `#ta`, scroll the editor → popup closes; click into the preview → popup closes.
