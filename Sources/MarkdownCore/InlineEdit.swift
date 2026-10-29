@@ -142,14 +142,40 @@ public enum InlineEdit {
         }
         walk(MarkdownCore.parse(text))
         if m == .highlight {
-            let re = try! NSRegularExpression(pattern: #"==(?=\S)[^\n=]*?(?<=\S)=="#)
+            let re = try! NSRegularExpression(pattern: #"==(?=\S)[^\n]*?(?<=\S)=="#)
             for x in re.matches(in: text, range: NSRange(location: 0, length: s.length))
             where !opaque.contains(where: { NSIntersectionRange($0, x.range).length > 0 }) {
                 out.append(MarkSpan(full: x.range, open: NSRange(location: x.range.location, length: 2),
                                     close: NSRange(location: NSMaxRange(x.range) - 2, length: 2)))
             }
         }
+        // The parser's columns are wrong on indented and lazy continuation lines: trust a
+        // span only when its two runs really are this marker's characters.
+        let allowed: [String] = m == .strong ? ["**", "__"] : m == .emphasis ? ["*", "_"] : m == .strikethrough ? ["~~", "~"] : ["=="]
+        out = out.filter { sp in
+            [sp.open, sp.close].allSatisfy { $0.location >= 0 && NSMaxRange($0) <= s.length }
+                && allowed.contains(s.substring(with: sp.open)) && s.substring(with: sp.open) == s.substring(with: sp.close)
+        }
         return out.filter { NSIntersectionRange($0.full, r).length > 0 }.sorted { $0.full.location < $1.full.location }
+    }
+
+    /// `rg` cut per line, each piece without its list, quote or heading marker and
+    /// without surrounding whitespace, so markers never cross a line or a block marker.
+    private static func linePieces(_ s: NSString, _ rg: NSRange) -> [NSRange] {
+        let prefix = try! NSRegularExpression(pattern: #"^[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|\d{1,9}[.)]|#{1,6})[ \t]+)?"#)
+        var out: [NSRange] = [], loc = rg.location
+        while loc < NSMaxRange(rg) {
+            let line = s.lineRange(for: NSRange(location: loc, length: 0))
+            var piece = NSIntersectionRange(line, rg)
+            if piece.location == line.location {
+                let skip = prefix.firstMatch(in: s as String, range: piece)?.range.length ?? 0
+                piece = NSRange(location: piece.location + skip, length: piece.length - skip)
+            }
+            let t = trimmed(s, piece)
+            if t.length > 0, !s.substring(with: t).allSatisfy(\.isWhitespace) { out.append(t) }
+            loc = max(NSMaxRange(line), loc + 1)
+        }
+        return out
     }
 
     /// Off / on / mixed for a selection that touches existing spans of `m`. All of it
@@ -157,16 +183,17 @@ public enum InlineEdit {
     /// each trimmed of whitespace, in the first span's marker style. Nil: no span here.
     private static func toggleSpans(_ m: InlineMarker, _ s: NSString, _ r: NSRange) -> TextEdit? {
         let found = spans(m, s, r)
-        guard let style = found.first else { return nil }
+        let multiline = s.rangeOfCharacter(from: .newlines, range: r).location != NSNotFound
+        guard !found.isEmpty || multiline else { return nil }
+        let (o, c) = found.first.map { (s.substring(with: $0.open), s.substring(with: $0.close)) } ?? pairs(m)[0]
         var gaps: [NSRange] = []
         var cursor = r.location
         for sp in found {
-            if sp.full.location > cursor { gaps.append(trimmed(s, NSRange(location: cursor, length: sp.full.location - cursor))) }
+            if sp.full.location > cursor { gaps += linePieces(s, NSRange(location: cursor, length: sp.full.location - cursor)) }
             cursor = max(cursor, NSMaxRange(sp.full))
         }
-        if cursor < NSMaxRange(r) { gaps.append(trimmed(s, NSRange(location: cursor, length: NSMaxRange(r) - cursor))) }
+        if cursor < NSMaxRange(r) { gaps += linePieces(s, NSRange(location: cursor, length: NSMaxRange(r) - cursor)) }
         gaps = gaps.filter { !s.substring(with: $0).allSatisfy(\.isWhitespace) }
-        let o = s.substring(with: style.open), c = s.substring(with: style.close)
         var ops: [(NSRange, String)] = gaps.isEmpty
             ? found.flatMap { [($0.open, ""), ($0.close, "")] }
             : gaps.flatMap { g -> [(NSRange, String)] in
@@ -176,6 +203,10 @@ public enum InlineEdit {
                         right.map { ($0.open, "") } ?? (NSRange(location: NSMaxRange(g), length: 0), c)]
             }
         ops.sort { $0.0.location < $1.0.location }
+        // Overlapping spans (parser quirks) could cut the same text twice: keep the first.
+        var end = 0
+        ops = ops.filter { defer { end = max(end, NSMaxRange($0.0)) }; return $0.0.location >= end }
+        guard !ops.isEmpty else { return nil }
         let lo = ops.first!.0.location, hi = NSMaxRange(ops.last!.0)
         var text = "", p = lo
         for (rg, rep) in ops {

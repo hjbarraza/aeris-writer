@@ -58,6 +58,15 @@ struct InlineEditTests {
             (.strikethrough, "~~a~~ «b ~~c~~»", "~~a~~ ~~«b~~ ~~c~~»"),
             (.highlight, "==a== «b ==c==»", "==a== ==«b== ==c==»"),
             (.highlight, "«a ==b== c»", "==«a== ==b== ==c»=="),
+            (.strong, "line one\n  **«bold»** more", "line one\n  «bold» more"),
+            (.strong, "a\r\n  **«bold»** more", "a\r\n  «bold» more"),
+            (.strong, "> a\n**«bold»** more", "> a\n«bold» more"),
+            (.strong, "- a\nb **«bold»** more", "- a\nb «bold» more"),
+            (.strong, "«a\n- **x**\n- y»", "**«a**\n- **x**\n- **y»**"),
+            (.strong, "«a\n\nb»", "**«a**\n\n**b»**"),
+            (.strong, "«> a\n> b»", "«> **a**\n> **b»**"),
+            (.highlight, "x «==a=b==» y", "x «a=b» y"),
+            (.highlight, "x ==«a=b»== y", "x «a=b» y"),
             (.strong, "👋 «héllo»", "👋 **«héllo»**"),
             (.strong, "👋 hé|llo 👋", "👋 **hé|llo** 👋"),
             (.highlight, "é **«👋»** é", "é **==«👋»==** é"),
@@ -140,5 +149,36 @@ struct InlineEditTests {
         let e = InlineEdit.toggle(.strong, in: "ab", selection: NSRange(location: 5, length: 3))
         #expect(NSMaxRange(e.range) <= 2)
         #expect(e.applied(to: "ab") == "**ab**")
+    }
+
+    /// Toggling any inline marker, twice, on random marker-heavy text never removes or
+    /// adds a character that is not a marker character.
+    @Test func inlineToggleFuzz() {
+        var seed: UInt64 = 42
+        func rnd(_ n: Int) -> Int { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Int((seed >> 33) % UInt64(n)) }
+        let atoms = ["a", "b", "é", "👋", " ", " ", "  ", "\n", "\r\n", "\n\n", "*", "**", "_", "__", "~~", "==", "> ", "- ", "1. ", "# ", "`", "[", "]"]
+        let kinds: [InlineMarker] = [.strong, .emphasis, .strikethrough, .highlight]
+        func plain(_ t: String) -> String { t.filter { !"*_~=".contains($0) } }
+        var bad = 0
+        for _ in 0..<2500 {
+            var text = ""
+            for _ in 0..<(3 + rnd(14)) { text += atoms[rnd(atoms.count)] }
+            let ns = text as NSString
+            var cuts = [0]
+            while cuts.last! < ns.length { cuts.append(NSMaxRange(ns.rangeOfComposedCharacterSequence(at: cuts.last!))) }
+            let a = rnd(cuts.count), b = rnd(cuts.count)
+            var sel = NSRange(location: cuts[min(a, b)], length: cuts[max(a, b)] - cuts[min(a, b)])
+            let m = kinds[rnd(kinds.count)]
+            var cur = text
+            for _ in 0..<2 {
+                let e = InlineEdit.toggle(m, in: cur, selection: sel)
+                cur = e.applied(to: cur)
+                sel = e.selection
+                if plain(cur) != plain(text) || NSMaxRange(sel) > (cur as NSString).length {
+                    bad += 1; print("     fuzz \(m) \(text.debugDescription) -> \(cur.debugDescription)"); break
+                }
+            }
+        }
+        #expect(bad == 0, "toggling twice changed non-marker characters in \(bad) inputs")
     }
 }
