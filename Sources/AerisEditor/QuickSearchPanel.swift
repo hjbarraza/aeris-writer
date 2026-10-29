@@ -22,25 +22,38 @@ final class QuickSearchController: NSObject, NSSearchFieldDelegate, NSTableViewD
 
     private var candidates: [QuickSearch.Candidate] = []
     private var generation = 0
-    private var enumeration: Task<Void, Never>?
+    private var enumeration: QuickSearch.CancelFlag?
     private var ranking: Task<Void, Never>?
     private weak var parent: NSWindow?
-    private weak var previousResponder: NSResponder?
+    private var closeObserver: NSObjectProtocol?
     private var openFile: ((URL) -> Void)?
+    private var focusEditor: (() -> Void)?
+    /// The query `results` were ranked for; a result list for any other text is never applied or opened.
+    private var resultsQuery = ""
+    /// Return was pressed before the ranking for the current text landed; it opens when it does.
+    private var openWhenRanked = false
+    /// Self-check hook: a delay before ranking a given query, to make rankings land out of order.
+    var rankDelayForTesting: ((String) -> TimeInterval)?
+
+    private static let enumerationQueue = DispatchQueue(label: "aeris.quicksearch.enumerate", qos: .userInitiated)
 
     var isShown: Bool { panel != nil }
     var query: String { field.stringValue }
 
     // MARK: Showing and closing
 
-    /// Opens the panel over `window` and starts listing the library. `open` receives the chosen file.
-    func show(over window: NSWindow, open: @escaping (URL) -> Void) {
+    /// Opens the panel over `window` and starts listing the library. `open` receives the chosen file;
+    /// `focusEditor` gives the keyboard back to the editor. A window that is not on screen shows nothing.
+    func show(over window: NSWindow, focusEditor: @escaping () -> Void, open: @escaping (URL) -> Void) {
+        guard window.isVisible else { return }
         if isShown { close(restoreFocus: false) }
         parent = window
-        previousResponder = window.firstResponder
+        self.focusEditor = focusEditor
         openFile = open
         candidates = []
         results = []
+        resultsQuery = ""
+        openWhenRanked = false
         generation += 1
         let panel = self.window ?? QuickSearchPanel(controller: self)
         if self.window == nil { build(in: panel); self.window = panel }
@@ -48,32 +61,40 @@ final class QuickSearchController: NSObject, NSSearchFieldDelegate, NSTableViewD
         field.stringValue = ""
         table.reloadData()
         layoutPanel()
-        if window.isVisible {
-            window.addChildWindow(panel, ordered: .above)
-            panel.makeKeyAndOrderFront(nil)
-            panel.makeFirstResponder(field)
+        window.addChildWindow(panel, ordered: .above)
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(field)
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.close(restoreFocus: false) }
         }
         startEnumeration(roots: Library.shared.tree.roots.map(\.url))
     }
 
-    /// Closes the panel. Esc and a chosen result put the keyboard back where it was.
+    /// Closes the panel. Esc and a chosen result put the keyboard in the editor.
     func close(restoreFocus: Bool = true) {
         guard let panel else { return }
         generation += 1
         enumeration?.cancel(); ranking?.cancel()
+        openWhenRanked = false
         onScreen = false
+        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+        closeObserver = nil
         parent?.removeChildWindow(panel)
         panel.orderOut(nil)
         if restoreFocus, let parent {
             parent.makeKeyAndOrderFront(nil)
-            parent.makeFirstResponder(previousResponder ?? parent)
+            focusEditor?()
         }
     }
 
+    /// Lists the library on a dedicated serial queue (not the cooperative pool), checking for
+    /// cancellation between folders.
     private func startEnumeration(roots: [URL]) {
-        let gen = generation
-        enumeration = Task.detached(priority: .userInitiated) { [weak self] in
-            QuickSearch.enumerate(roots: roots, isCancelled: { Task.isCancelled }) { batch in
+        let gen = generation, flag = QuickSearch.CancelFlag()
+        enumeration = flag
+        Self.enumerationQueue.async { [weak self] in
+            QuickSearch.enumerate(roots: roots, isCancelled: { flag.isCancelled }) { batch in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated { self?.add(batch, generation: gen) }
                 }
@@ -100,28 +121,51 @@ final class QuickSearchController: NSObject, NSSearchFieldDelegate, NSTableViewD
     private func rerank() {
         ranking?.cancel()
         let query = field.stringValue, snapshot = candidates, gen = generation
+        let delay = rankDelayForTesting?(query) ?? 0
         let showExtension = AppDefaults.store.bool(forKey: FileListViewController.showExtensionsKey)
         ranking = Task.detached(priority: .userInitiated) { [weak self] in
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
             let ranked = QuickSearch.rank(query: query, candidates: snapshot, showExtension: showExtension)
-            if Task.isCancelled { return }
+            if Task.isCancelled { return }  // superseded by a newer ranking of the same text
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self?.apply(ranked, generation: gen) }
+                MainActor.assumeIsolated { self?.apply(ranked, query: query, generation: gen) }
             }
         }
     }
 
-    private func apply(_ ranked: [QuickSearch.Result], generation gen: Int) {
-        guard gen == generation, isShown else { return }
+    /// Takes a ranking only if it is for the text in the field now (rankings can land out of order).
+    /// The highlighted file stays highlighted while more of the library arrives; a new query starts at the top.
+    private func apply(_ ranked: [QuickSearch.Result], query: String, generation gen: Int) {
+        guard gen == generation, isShown, query == field.stringValue else { return }
+        let keep = query == resultsQuery && table.selectedRow >= 0 && table.selectedRow < results.count
+            ? results[table.selectedRow].candidate.path : nil
         results = ranked
+        resultsQuery = query
         table.reloadData()
-        if !ranked.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        if !ranked.isEmpty {
+            let row = keep.flatMap { path in ranked.firstIndex { $0.candidate.path == path } } ?? 0
+            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            table.scrollRowToVisible(row)
+        }
         layoutPanel()
+        if openWhenRanked { openWhenRanked = false; openSelected() }
     }
 
     // MARK: Choosing
 
-    /// Opens the selected result (the first if none is selected) and closes the panel.
+    /// Opens the selected result (the first if none is selected) and closes the panel. Results ranked
+    /// for older text are never opened: if the ranking for the current text is still running, this
+    /// waits for it (for at most a second).
     func openSelected() {
+        guard resultsQuery == field.stringValue else {
+            guard !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+            openWhenRanked = true
+            let gen = generation
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                MainActor.assumeIsolated { if self?.generation == gen { self?.openWhenRanked = false } }
+            }
+            return
+        }
         guard !results.isEmpty else { return }
         let row = table.selectedRow >= 0 ? table.selectedRow : 0
         let url = URL(fileURLWithPath: results[row].candidate.path)
@@ -301,6 +345,7 @@ extension EditorWindowController {
     /// keyboard in the editor.
     @objc func showQuickSearch(_ sender: Any?) {
         guard let window else { return }
-        QuickSearchController.shared.show(over: window) { [weak self] url in self?.fileList.onOpen?(url, true) }
+        QuickSearchController.shared.show(over: window, focusEditor: { [weak self] in self?.focusEditor() },
+                                          open: { [weak self] url in self?.fileList.onOpen?(url, true) })
     }
 }

@@ -282,6 +282,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   *Verify:* ⇧⌘O opens the panel, ⌘K still inserts a link; type part of a filename → that
   file first → Return opens it; Esc → focus back in the editor.
   *Ranking:* fuzzy on name and path, best match first, and drop the weakest tail of results instead of listing everything.
+  *Deferred:* the toolbar button, until the app has a toolbar.
 
 - [ ] **M2-23 — Quick search: inside files.** Results gain two groups. **This file**:
   matches in the open document with a snippet, "N more", and a Find and Replace action

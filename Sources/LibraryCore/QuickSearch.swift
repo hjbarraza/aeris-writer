@@ -31,6 +31,15 @@ public enum QuickSearch {
         public let score: Int
     }
 
+    /// A flag one thread sets and another reads, to stop a walk.
+    public final class CancelFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var flag = false
+        public init() {}
+        public func cancel() { lock.withLock { flag = true } }
+        public var isCancelled: Bool { lock.withLock { flag } }
+    }
+
     static func fold(_ c: Character) -> Character {
         let s = String(c).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
         return s.first ?? c

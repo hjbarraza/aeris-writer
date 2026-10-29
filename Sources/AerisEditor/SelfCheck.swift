@@ -171,7 +171,37 @@ enum SelfCheck {
         check(!qs.isShown && wait(timeout: 5) { (wc.document as? NSDocument)?.fileURL?.lastPathComponent == "Project plan.md" },
               "quick search: Return opens the file in this window")
         check(wait(timeout: 5) { wc.window?.firstResponder === editorTextView(wc) }, "quick search: the editor has the keyboard after opening")
+
+        // A slow ranking for older text lands after a newer one: it is dropped, and Return opens the
+        // file ranked for what the field shows (Alpha), not for "pl" or the earlier "pro".
+        wc.showQuickSearch(nil)
+        qs.setQuery("pro")
+        check(wait(timeout: 5) { qs.results.first?.candidate.fileName == "Project plan.md" }, "quick search: library listed for the stale-result check")
+        qs.rankDelayForTesting = { $0 == "pl" ? 0.5 : 0 }
+        qs.setQuery("pl")
+        qs.setQuery("alph")
+        qs.openSelected()
+        check(wait(timeout: 5) { (wc.document as? NSDocument)?.fileURL?.lastPathComponent == "Alpha.md" },
+              "quick search: Return right after typing opens the result for the current text, not an older ranking")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+        check(!qs.isShown && qs.results.first?.candidate.fileName != "Plan B.md", "quick search: the late ranking for older text is dropped")
+        qs.rankDelayForTesting = nil
+
+        // Esc returns the keyboard to the editor even when the sidebar had it.
+        wc.window?.makeFirstResponder(wc.fileList.tableView)
+        wc.showQuickSearch(nil)
+        qs.panel?.cancelOperation(nil)
+        check(wait(timeout: 5) { wc.window?.firstResponder === editorTextView(wc) }, "quick search: Esc focuses the editor, not what had the keyboard")
+
+        // A window that is not on screen shows nothing; a window that closes takes the panel with it.
+        wc.window?.orderOut(nil)
+        wc.showQuickSearch(nil)
+        check(!qs.isShown, "quick search: a hidden window shows no panel")
+        wc.window?.orderFront(nil)
+        wc.showQuickSearch(nil)
+        check(qs.isShown, "quick search: opens again over a visible window")
         wc.close()
+        check(!qs.isShown, "quick search: closing the window closes the panel")
         if let opened = wc.document as? NSDocument { opened.close() }
         Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
