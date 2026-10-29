@@ -180,7 +180,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   *Verify:* drag a file onto a subfolder → moved; Option-drag → copied; drag a file
   from the Desktop onto the list → copied in, original stays.
 
-- [ ] **M2-13a — Add locations by dragging folders or with Open.** Folders dragged from
+- [x] **M2-13a — Add locations by dragging folders or with Open.** Folders dragged from
   Finder onto the organizer are added as locations (the Locations section highlights);
   files are refused; a folder already present → nothing. The new location becomes the
   selected row and its contents show. File ▸ Open… accepts folders and adds them as
