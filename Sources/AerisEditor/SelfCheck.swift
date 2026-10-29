@@ -1640,6 +1640,8 @@ enum SelfCheck {
 
             <form id="f" action="\(remote)" method="post"><input name="a"></form>
 
+            <form id="g" action="#x" method="post"><input name="b"></form>
+
             # Marker
 
             \(filler)
@@ -1668,6 +1670,8 @@ enum SelfCheck {
         // script navigations, which need no click.
         _ = wait(timeout: 1.5) { false }
         _ = eval("document.getElementById('f').submit()")
+        _ = wait(timeout: 1) { false }
+        _ = eval("document.getElementById('g').submit()")
         _ = wait(timeout: 1) { false }
         _ = eval("location.href = '\(remote)'")
         _ = wait(timeout: 1) { false }

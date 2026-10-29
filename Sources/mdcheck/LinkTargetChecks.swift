@@ -52,6 +52,10 @@ func runLinkTargetChecks() {
     check(nav("https://example.com", main: false) == .cancel && nav("file:///tmp/x.html", main: false) == .cancel, "nav: remote or file subframes are cancelled")
     check(nav("about:blank", main: false) == .allow && nav("about:srcdoc", main: false) == .allow, "nav: blank subframes are allowed")
     check(nav("https://example.com", kind: .linkActivated) == .link(.system(URL(string: "https://example.com")!)), "nav: link clicks keep the link rules")
+    check(nav(page.absoluteString + "#x", kind: .formSubmitted) == .cancel && nav("about:blank#x", main: false, kind: .formSubmitted) == .cancel,
+          "nav: a form posting to #anchor is cancelled")
+    check(nav("https://example.com", own: true) == .cancel && nav("file:///etc/passwd", own: true) == .cancel && nav("about:blank", own: true) == .allow,
+          "nav: a lingering own-load credit admits no other URL")
     check(nav("about:blank#x", page: URL(string: "about:blank")) == .allow, "nav: #anchor in an unsaved document's page")
 
     let src = "é see [the **note**](Other.md \"t\") and `x`"

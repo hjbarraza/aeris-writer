@@ -60,6 +60,8 @@ struct LinkTargetTests {
         #expect(nav("https://example.com", main: false) == .cancel && nav("file:///tmp/x.html", main: false) == .cancel)
         #expect(nav("about:blank", main: false) == .allow && nav("about:srcdoc", main: false) == .allow)
         #expect(nav("https://example.com", kind: .linkActivated) == .link(.system(URL(string: "https://example.com")!)))
+        #expect(nav(page.absoluteString + "#x", kind: .formSubmitted) == .cancel && nav("about:blank#x", main: false, kind: .formSubmitted) == .cancel)
+        #expect(nav("https://example.com", own: true) == .cancel && nav("file:///etc/passwd", own: true) == .cancel && nav("about:blank", own: true) == .allow)
         #expect(nav("about:blank#x", page: URL(string: "about:blank")) == .allow)
     }
 

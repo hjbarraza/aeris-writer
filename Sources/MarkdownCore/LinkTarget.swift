@@ -101,15 +101,31 @@ public enum NavigationPolicy: Equatable, Sendable {
         if kind == .linkActivated {
             return .link(LinkAction.decide(url, documentURL: documentURL))
         }
+        // A form submission is a real navigation, even to `#x`.
+        if kind == .formSubmitted { return .cancel }
         if !isMainFrame {
             return url.scheme?.lowercased() == "about" && ["blank", "srcdoc"].contains(url.path.lowercased()) ? .allow : .cancel
         }
-        if isOwnLoad { return .allow }
+        if isOwnLoad {
+            // A lingering credit must not admit any other URL.
+            return url.absoluteString == "about:blank" || samePage(url, pageURL) ? .allow : .cancel
+        }
         if isFragmentOnlyMove(url, pageURL: pageURL) { return .allow }
         return .cancel
     }
 
     /// True when `url` is the page itself plus a fragment.
+    /// Same URL ignoring any fragment; file URLs compare after resolving symlinks (/var vs /private/var).
+    private static func samePage(_ url: URL, _ pageURL: URL?) -> Bool {
+        guard let pageURL else { return false }
+        func key(_ u: URL) -> String {
+            let base = String(u.absoluteString.prefix { $0 != "#" })
+            guard u.isFileURL, let b = URL(string: base) else { return base }
+            return b.resolvingSymlinksInPath().path
+        }
+        return key(url) == key(pageURL)
+    }
+
     private static func isFragmentOnlyMove(_ url: URL, pageURL: URL?) -> Bool {
         guard let pageURL, url.absoluteString.contains("#") else { return false }
         return url.absoluteString.prefix { $0 != "#" } == pageURL.absoluteString.prefix { $0 != "#" }
