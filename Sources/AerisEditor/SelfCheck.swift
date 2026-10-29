@@ -95,6 +95,7 @@ enum SelfCheck {
         treeClickChecks()
         lineEndingChecks()
         pasteAsMarkdownChecks()
+        copyMatrixChecks()
         anyTextFileChecks()
         hashtagMenuChecks()
         quickSearchChecks()
@@ -1011,6 +1012,53 @@ enum SelfCheck {
                       "any text: stray.bin with the same bytes is refused (got “\(message)”)")
             }
         }
+    }
+
+    /// M3-4: the Copy matrix puts one format (plus plain text) on a private pasteboard, for the
+    /// selection or, with nothing selected, the whole document; the document is never changed.
+    @MainActor static func copyMatrixChecks() {
+        let dir = scratch.appending(path: "CopyMatrix")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "c.md")
+        let original = "# Title\n\nSome **bold** and [a link](http://x.example).\n\n- one\n- two\n"
+        try? Data(original.utf8).write(to: url)
+        let dc = NSDocumentController.shared
+        guard let doc = try? dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                as? MarkdownDocument else { check(false, "copy matrix: opens"); return }
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        let editor = wc.editorForTesting, tv = editorTextView(wc)
+        let board = NSPasteboard(name: NSPasteboard.Name("aeris-selfcheck-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        func types() -> Set<NSPasteboard.PasteboardType> { Set(board.types ?? []) }
+        func string() -> String { board.string(forType: .string) ?? "" }
+
+        tv.setSelectedRange(NSRange(location: 0, length: 0))
+        check(editor.copy(as: .markdown, to: board) && string() == original && types() == [.string],
+              "copy matrix: Markdown with no selection is the whole source, only plain text")
+        check(editor.copy(as: .html, to: board) && string().contains("<h1") && string().contains("<strong>bold</strong>")
+              && types() == [.html, .string], "copy matrix: HTML is markup, as HTML and plain text only")
+        check(editor.copy(as: .plainText, to: board)
+              && string() == "Title\n\nSome bold and a link.\n\n• one\n• two" && types() == [.string],
+              "copy matrix: Plain Text has no Markdown left (got \(string().debugDescription))")
+        check(editor.copy(as: .richText, to: board) && types() == [.rtf, .string],
+              "copy matrix: Rich Text is RTF and plain text only")
+        let rich = board.data(forType: .rtf).flatMap { NSAttributedString(rtf: $0, documentAttributes: nil) }
+        var bold = false
+        rich?.enumerateAttribute(.font, in: NSRange(location: 0, length: rich?.length ?? 0)) { value, _, _ in
+            if let f = value as? NSFont, f.fontDescriptor.symbolicTraits.contains(.bold) { bold = true }
+        }
+        check(bold && rich?.string.contains("Title") == true && rich?.string.contains("**") == false,
+              "copy matrix: Rich Text carries bold formatting, not asterisks")
+
+        let sel = (original as NSString).range(of: "**bold**")
+        tv.setSelectedRange(sel)
+        check(editor.copy(as: .markdown, to: board) && string() == "**bold**", "copy matrix: Markdown copies the selection")
+        check(editor.copy(as: .plainText, to: board) && string() == "bold", "copy matrix: Plain Text copies the selection")
+        check(editor.copy(as: .html, to: board) && string() == "<p><strong>bold</strong></p>\n"
+              || string() == "<p><strong>bold</strong></p>", "copy matrix: HTML of the selection (got \(string().debugDescription))")
+        check(tv.string == original && doc.textStorage.string == original, "copy matrix: the document is unchanged")
+        doc.close()
     }
 
     /// M1.5-25: Paste as Markdown converts the pasteboard's rich text (a private pasteboard here,

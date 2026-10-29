@@ -155,8 +155,51 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
         return html.flatMap { RichTextMarkdown.convert(html: $0, emphasisCounts: emphasisCounts) }
     }
 
+    // MARK: Copy matrix (M3-4)
+
+    enum CopyFormat { case markdown, html, richText, plainText }
+
+    @objc func copyAsMarkdown(_ sender: Any?) { copy(as: .markdown, to: .general) }
+    @objc func copyAsHTML(_ sender: Any?) { copy(as: .html, to: .general) }
+    @objc func copyAsRichText(_ sender: Any?) { copy(as: .richText, to: .general) }
+    @objc func copyAsPlainText(_ sender: Any?) { copy(as: .plainText, to: .general) }
+
+    /// The selection's Markdown, or the whole document when nothing is selected.
+    func copySource() -> String {
+        let text = textView.string as NSString, range = textView.selectedRange()
+        return range.length > 0 && NSMaxRange(range) <= text.length ? text.substring(with: range) : text as String
+    }
+
+    /// Puts the selection (or the whole document) on `board` in one format: only that type,
+    /// plus plain text. Never touches the document.
+    @discardableResult
+    func copy(as format: CopyFormat, to board: NSPasteboard) -> Bool {
+        let source = copySource()
+        board.clearContents()
+        switch format {
+        case .markdown:
+            return board.setString(source, forType: .string)
+        case .plainText:
+            return board.setString(PlainText.make(source), forType: .string)
+        case .html:
+            let html = MarkdownCore.html(source)
+            return board.setData(Data(html.utf8), forType: .html) && board.setString(html, forType: .string)
+        case .richText:
+            let page = "<html><head><meta charset=\"utf-8\"><style>body { font-family: -apple-system, Helvetica; font-size: 13px; }"
+                + " code, pre { font-family: Menlo; }</style></head><body>\(MarkdownCore.html(source))</body></html>"
+            guard let attributed = NSAttributedString(html: Data(page.utf8), options: [
+                    .documentType: NSAttributedString.DocumentType.html,
+                    .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil),
+                  let rtf = attributed.rtf(from: NSRange(location: 0, length: attributed.length), documentAttributes: [:])
+            else { return false }
+            return board.setData(rtf, forType: .rtf) && board.setString(attributed.string, forType: .string)
+        }
+    }
+
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        case #selector(copyAsMarkdown(_:)), #selector(copyAsHTML(_:)), #selector(copyAsRichText(_:)),
+             #selector(copyAsPlainText(_:)): return textView.string.contains { !$0.isWhitespace }
         case #selector(toggleTypewriterMode(_:)): item.state = typewriter ? .on : .off; return true
         case #selector(toggleFocusMode(_:)): item.state = focus ? .on : .off; return true
         case #selector(setFocusScope(_:)): item.state = item.tag == focusScope.rawValue ? .on : .off; return true
@@ -787,4 +830,20 @@ final class EditorTextView: NSTextView {
     }
     /// Paste as the stock text view does, without offering the pasteboard to `richPaste` again.
     func pasteWithoutRichText(_ sender: Any?) { super.paste(sender) }
+
+    /// The context menu gains the Copy as items, after Copy.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let menu = super.menu(for: event) else { return nil }
+        let at = (menu.items.firstIndex { $0.action == #selector(NSText.copy(_:)) } ?? menu.items.count - 1) + 1
+        let entries: [(String, Selector)] = [
+            ("Copy as Markdown", #selector(EditorViewController.copyAsMarkdown(_:))),
+            ("Copy as HTML", #selector(EditorViewController.copyAsHTML(_:))),
+            ("Copy as Rich Text", #selector(EditorViewController.copyAsRichText(_:))),
+            ("Copy as Plain Text", #selector(EditorViewController.copyAsPlainText(_:))),
+        ]
+        for (i, entry) in entries.enumerated() where !menu.items.contains(where: { $0.action == entry.1 }) {
+            menu.insertItem(NSMenuItem(title: entry.0, action: entry.1, keyEquivalent: ""), at: min(at + i, menu.items.count))
+        }
+        return menu
+    }
 }
