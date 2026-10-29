@@ -9,6 +9,7 @@ struct InlineEditTests {
         let pairs: [(InlineMarker, String, String)] = [
             (.strong, "**", "**"), (.emphasis, "_", "_"), (.code, "`", "`"), (.strikethrough, "~~", "~~"),
             (.highlight, "==", "=="), (.wikilink, "[[", "]]"), (.comment, "<!-- ", " -->"),
+            (.math, "$", "$"),
         ]
         var cases: [(InlineMarker, String, String)] = []
         for (m, o, c) in pairs {
@@ -108,6 +109,16 @@ struct InlineEditTests {
         for (input, expected) in clearCases() {
             let (text, sel) = unmark(input)
             #expect(mark(text, InlineEdit.clearStyles(in: text, selection: sel)) == expected, Comment(rawValue: input))
+        }
+    }
+
+    @Test func insertDateAndHashtag() {
+        let day = Date(timeIntervalSince1970: 1_793_275_200)  // 2026-10-29 12:00 UTC
+        let d = InlineEdit.insertDate(day, in: "a b c", selection: NSRange(location: 2, length: 1), timeZone: TimeZone(identifier: "UTC")!)
+        #expect(d.applied(to: "a b c") == "a 2026-10-29 c")
+        for (input, expected) in [("ab|cd", "ab #|cd"), ("ab |cd", "ab #|cd"), ("|", "#|"), ("«ab»", "#|")] {
+            let (text, sel) = unmark(input)
+            #expect(mark(text, InlineEdit.addHashtag(in: text, selection: sel)) == expected, Comment(rawValue: input))
         }
     }
 

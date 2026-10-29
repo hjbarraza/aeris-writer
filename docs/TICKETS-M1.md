@@ -38,7 +38,7 @@ Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` gre
   *Verify:* reopen a file — caret and scroll are where you left them; the `.md` bytes
   are unchanged (diff shows no added front-matter). *(built 2026-10-29, verified headlessly; awaiting UI check.)*
 
-- [ ] **M1-5 — Full HTML rendering in `MarkdownCore`.** Extend the AST→HTML walker to
+- [x] **M1-5 — Full HTML rendering in `MarkdownCore`.** Extend the AST→HTML walker to
   cover the rest of CommonMark + GFM we need: code blocks, block quotes, links, images,
   tables, task lists, thematic breaks. Add XCTest cases per node type.
   *Verify:* `swift run mdcheck` (extend it) + `swift test` on Xcode/CI all green. *(mdcheck green 2026-10-28; XCTest pending CI, INF-2.)*
@@ -160,7 +160,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   and makes no network request. `file://host/x.md` → ignored. Unsaved doc, ⌘-click
   `other.md#x` → nothing happens.
 
-- [ ] **M1-16 — The self-check never touches the user's app state.** `--selfcheck` runs
+- [x] **M1-16 — The self-check never touches the user's app state.** `--selfcheck` runs
   against its own preferences domain and its own window state, so running it (by hand or by
   any agent) never changes the user's column widths, collapsed sections, last folder or
   open documents. It also never hangs: each check that waits has a timeout and reports

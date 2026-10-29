@@ -56,11 +56,11 @@ final class StatsModel: ObservableObject {
 
     @Published private(set) var stats: TextStats?
     @Published var selected: StatKind {
-        didSet { UserDefaults.standard.set(selected.rawValue, forKey: Self.defaultsKey) }
+        didSet { AppDefaults.store.set(selected.rawValue, forKey: Self.defaultsKey) }
     }
 
     init() {
-        selected = UserDefaults.standard.string(forKey: Self.defaultsKey).flatMap(StatKind.init) ?? .words
+        selected = AppDefaults.store.string(forKey: Self.defaultsKey).flatMap(StatKind.init) ?? .words
     }
 
     func update(_ new: TextStats) { stats = new }

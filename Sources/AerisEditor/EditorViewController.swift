@@ -33,7 +33,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
                 hideCompletion()
                 textView.scroll(.zero)
                 textReloaded()
-                if let state = document?.savedState { restore(state) }
+                restoreOrPlaceAtEnd(document?.savedState)
             }
         }
     }
@@ -409,17 +409,30 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
         restoredState = true
         NotificationCenter.default.addObserver(self, selector: #selector(windowDidEndLiveResize(_:)),
                                                name: NSWindow.didEndLiveResizeNotification, object: view.window)
-        if let state = document?.savedState { restore(state) }
+        restoreOrPlaceAtEnd(document?.savedState)
     }
 
     var state: EditorState {
         let sel = textView.selectedRange()
-        return EditorState(sel: [sel.location, sel.length], scroll: topCharacterIndex())
+        let atEnd = sel.length == 0 && sel.location == (textView.string as NSString).length
+        return EditorState(sel: [sel.location, sel.length], scroll: topCharacterIndex(), end: atEnd ? true : nil)
+    }
+
+    /// No stored state: the caret goes to the end of the text, scrolled into view.
+    private func restoreOrPlaceAtEnd(_ state: EditorState?) {
+        if let state { restore(state); return }
+        textView.setSelectedRange(NSRange(location: (textView.string as NSString).length, length: 0))
+        textView.scrollRangeToVisible(textView.selectedRange())
     }
 
     /// Clamped to the current text: the file may have been edited elsewhere.
     func restore(_ state: EditorState) {
         let length = (textView.string as NSString).length
+        if state.end == true {
+            textView.setSelectedRange(NSRange(location: length, length: 0))
+            textView.scrollRangeToVisible(textView.selectedRange())
+            return
+        }
         if state.sel.count == 2 {
             let location = min(max(state.sel[0], 0), length)
             textView.setSelectedRange(NSRange(location: location, length: min(max(state.sel[1], 0), length - location)))
@@ -468,8 +481,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
                    textSize = "TextSizeStep", spelling = "ContinuousSpellChecking", grammar = "GrammarChecking"
     }
     private static let defaults: UserDefaults = {
-        UserDefaults.standard.register(defaults: [DefaultsKey.spelling: true, DefaultsKey.grammar: false])
-        return .standard
+        AppDefaults.store.register(defaults: [DefaultsKey.spelling: true, DefaultsKey.grammar: false])
+        return AppDefaults.store
     }()
 
     private static let inset = NSSize(width: 24, height: 24)
