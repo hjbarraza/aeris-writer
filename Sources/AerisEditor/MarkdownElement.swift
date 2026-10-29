@@ -7,6 +7,7 @@ import MarkdownCore
 enum MarkdownElement {
     case inline(InlineMarker)
     case clearFormatting
+    case insertDate, addHashtag
     case heading(Int)  // 0 = body text
     case quote, codeBlock, callout(String), displayMath, horizontalRule, pageBreak, tableOfContents
     case list(ListEdit.Kind)
@@ -23,6 +24,8 @@ enum MarkdownElement {
         switch self {
         case .inline(let m): return InlineEdit.toggle(m, in: text, selection: selection)
         case .clearFormatting: return InlineEdit.clearStyles(in: text, selection: selection)
+        case .insertDate: return InlineEdit.insertDate(Date(), in: text, selection: selection)
+        case .addHashtag: return InlineEdit.addHashtag(in: text, selection: selection)
         case .heading(let level): return BlockEdit.heading(level, text: text, selection: selection)
         case .quote: return BlockEdit.quote(text: text, selection: selection)
         case .codeBlock: return BlockEdit.codeFence(text: text, selection: selection)
@@ -82,8 +85,11 @@ enum MarkdownElement {
             case .footnote: return "Footnote"
             case .wikilink: return "Wikilink"
             case .comment: return "Comment"
+            case .math: return "Inline Math"
             }
         case .clearFormatting: return "Clear Formatting"
+        case .insertDate: return "Insert Date"
+        case .addHashtag: return "Add Hashtag"
         case .heading(let level): return level == 0 ? "Body Text" : "Heading \(level)"
         case .quote: return "Quote"
         case .codeBlock: return "Code Block"
