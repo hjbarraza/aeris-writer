@@ -33,6 +33,7 @@ enum SelfCheck {
         MarkdownDocument.askToConvert = { _, example, answer in encodingAsks.append(example); answer(false) }
         // Never show the disk change sheet: record the ask and hold the answer.
         MarkdownDocument.askAboutDiskChange = { doc, change, answer in diskAsks.append((doc, change, answer)) }
+        fileListOptionChecks()
         shellChecks()
         layoutChecks()
         libraryChecks()
@@ -2045,6 +2046,149 @@ enum SelfCheck {
               && errors.count == 1, "links: an existing .md opens in the same window")
 
         wc.close()
+    }
+
+    /// M2-7: the file list's sort and view options. Runs first and leaves the options at the old
+    /// behaviour (Name A to Z, folders mixed, List navigation) so the checks below it are unchanged.
+    @MainActor static func fileListOptionChecks() {
+        let fm = FileManager.default
+        let settings = FileListSettings.shared
+        func set(_ change: (inout FileListOptions) -> Void) { settings.update(change) }
+        set { $0 = FileListOptions() }
+        check(settings.options == FileListOptions() && settings.options.sortKey == .dateModified && !settings.options.reversed
+              && !settings.options.foldersOnTop && settings.options.showExcerpts && settings.options.navigation == .tree,
+              "options: defaults are Date Modified, Newest First, folders mixed, excerpts on, Tree")
+
+        func day(_ n: Int) -> Date { Date(timeIntervalSince1970: 1_700_000_000 + Double(n) * 86_400) }
+        let loc = scratch.appending(path: "SortLib")
+        try? fm.createDirectory(at: loc.appending(path: "zdir/sub2"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: loc.appending(path: "adir"), withIntermediateDirectories: true)
+        for (path, text) in [("b.md", "bee"), ("A.txt", "ay"), ("c.markdown", "cee"), ("zdir/inner.md", "in"), ("zdir/z-last.md", "zl")] {
+            try? text.write(to: loc.appending(path: path), atomically: true, encoding: .utf8)
+        }
+        // name: (modified day, created day)
+        let dates: [(String, Int, Int)] = [("b.md", 13, 2), ("A.txt", 11, 6), ("c.markdown", 15, 1), ("zdir", 14, 3), ("adir", 12, 5)]
+        for (name, m, c) in dates {
+            try? fm.setAttributes([.creationDate: day(c)], ofItemAtPath: loc.appending(path: name).path)
+            try? fm.setAttributes([.modificationDate: day(m)], ofItemAtPath: loc.appending(path: name).path)
+        }
+        let canonicalLoc = LibraryListing.canonicalPath(loc)
+        Library.shared.addLocation(loc)
+        let root = Library.shared.tree.node(atPath: canonicalLoc)!
+        let wc = EditorWindowController()
+        wc.sidebar.loadViewIfNeeded()
+        selectLocation(wc, root)
+        let list = wc.fileList, table = list.tableView
+        func names() -> [String] { listNames(wc) }
+        /// Selects a top-level row without opening it (a file row would open a document and show a window).
+        func select(_ name: String) { list.restoreSelection(path: canonicalLoc + "/" + name) }
+        func cell(_ name: String) -> FileCellView {
+            let row = names().firstIndex(of: name)!
+            return (table.view(atColumn: 0, row: row, makeIfNecessary: false)
+                ?? table.view(atColumn: 0, row: row, makeIfNecessary: true)) as! FileCellView
+        }
+
+        check(names() == ["c.markdown", "zdir", "b.md", "adir", "A.txt"], "sort: default is Date Modified, Newest First (\(names()))")
+        set { $0.reversed = true }
+        check(names() == ["A.txt", "adir", "b.md", "zdir", "c.markdown"], "sort: Oldest First reverses it (\(names()))")
+        set { $0.reversed = false; $0.sortKey = .dateCreated }
+        check(names() == ["A.txt", "adir", "zdir", "b.md", "c.markdown"], "sort: Date Created (\(names()))")
+        set { $0.reversed = true }
+        check(names() == ["c.markdown", "b.md", "zdir", "adir", "A.txt"], "sort: Date Created, Oldest First (\(names()))")
+        set { $0.reversed = false; $0.sortKey = .name }
+        check(names() == ["A.txt", "adir", "b.md", "c.markdown", "zdir"], "sort: Name A to Z (\(names()))")
+        set { $0.reversed = true }
+        check(names() == ["zdir", "c.markdown", "b.md", "adir", "A.txt"], "sort: Name Z to A (\(names()))")
+        set { $0.reversed = false; $0.sortKey = .fileExtension }
+        check(names() == ["adir", "zdir", "c.markdown", "b.md", "A.txt"], "sort: Extension A to Z (\(names()))")
+        set { $0.reversed = true }
+        check(names() == ["A.txt", "b.md", "c.markdown", "adir", "zdir"], "sort: Extension Z to A (\(names()))")
+
+        // Folders on Top, at every level (Tree: open zdir in place).
+        set { $0.reversed = false; $0.sortKey = .dateModified; $0.foldersOnTop = true }
+        check(names() == ["zdir", "adir", "c.markdown", "b.md", "A.txt"], "sort: Folders on Top (\(names()))")
+        select("zdir")
+        check(table.onExpand?() == true, "tree: Right arrow opens the selected folder")
+        check(names() == ["zdir", "sub2", "z-last.md", "inner.md", "adir", "c.markdown", "b.md", "A.txt"],
+              "tree: the folder opens in place and its subfolder is on top inside it (\(names()))")
+        let nested = names().firstIndex(of: "inner.md")!
+        check(cell("inner.md").indent == 16 && cell("c.markdown").indent == 0 && nested > 0, "tree: opened rows are indented one level")
+        check(table.onCollapse?() == true && names() == ["zdir", "adir", "c.markdown", "b.md", "A.txt"], "tree: Left arrow closes it again (\(names()))")
+        set { $0.foldersOnTop = false }
+        check(names() == ["c.markdown", "zdir", "b.md", "adir", "A.txt"], "sort: Folders on Top off mixes them again")
+
+        // List navigation: Return on a folder drills in, the up button comes back.
+        set { $0.navigation = .list }
+        select("zdir")
+        table.onReturn?()
+        check(list.folder?.name == "zdir" && Set(names()) == ["sub2", "inner.md", "z-last.md"], "list: opening a folder shows its contents (\(names()))")
+        list.goUp()
+        check(list.folder === root && names().count == 5, "list: back returns to the enclosing folder")
+        select("zdir")
+        check(table.onExpand?() == false, "list: Right arrow does not open folders inline")
+        set { $0.navigation = .tree }
+
+        // Dates and excerpts.
+        let short = DateFormatter(); short.dateStyle = .short; short.timeStyle = .none
+        check(wait(timeout: 5) { cell("b.md").dateLabel.stringValue == short.string(from: day(13)) }, "view: Show Date Modified")
+        set { $0.showDate = .created }
+        check(wait(timeout: 5) { cell("b.md").dateLabel.stringValue == short.string(from: day(2)) }, "view: Show Date Created")
+        set { $0.showDate = .none }
+        check(cell("b.md").dateLabel.stringValue.isEmpty, "view: Show Date None")
+        check(wait(timeout: 5) { cell("b.md").excerptLabel.stringValue == "bee" } && !cell("b.md").excerptLabel.isHidden
+              && list.tableView(table, heightOfRow: names().firstIndex(of: "b.md")!) == 64, "view: excerpts are shown by default")
+        set { $0.showExcerpts = false }
+        check(cell("b.md").excerptLabel.isHidden && list.tableView(table, heightOfRow: names().firstIndex(of: "b.md")!) < 64,
+              "view: Show Excerpts off hides them and shortens the rows")
+        set { $0.showExcerpts = true; $0.showDate = .modified }
+
+        // Sort bar and the three menus.
+        check(!list.sortBar.isHidden && list.sortBar.title == "Date Modified, Newest First", "sortbar: shows the sort (\(list.sortBar.title))")
+        let view = MainMenu.make().item(withTitle: "View")?.submenu
+        let sortBy = view?.item(withTitle: "Sort By")?.submenu, viewOptions = view?.item(withTitle: "View Options")?.submenu
+        check(sortBy != nil && viewOptions != nil && view?.item(withTitle: "Hide Sort Bar") != nil, "menu: View has Sort By, View Options and Hide Sort Bar")
+        let ctx = table.menu
+        check(ctx?.item(withTitle: "Sort By") != nil && ctx?.item(withTitle: "View Options") != nil, "menu: the list's context menu has the same options")
+        let barMenu = Mirror(reflecting: list).children.first { $0.label == "sortMenu" }?.value as? NSMenu
+        check(barMenu?.item(withTitle: "Sort By") != nil, "menu: the sort bar's menu has the same options")
+        let nameItem = sortBy!.item(withTitle: "Name")!
+        FileListMenu.shared.choose(nameItem)
+        check(settings.options.sortKey == .name && names() == ["A.txt", "adir", "b.md", "c.markdown", "zdir"] && list.sortBar.title == "Name, A → Z",
+              "menu: choosing Name in Sort By reorders the list and the bar (\(list.sortBar.title))")
+        _ = FileListMenu.shared.validateMenuItem(nameItem)
+        let reverseItem = sortBy!.items.first { ($0.representedObject as? FileListMenu.Command).map { if case .reversed(true) = $0 { true } else { false } } ?? false }!
+        _ = FileListMenu.shared.validateMenuItem(reverseItem)
+        check(nameItem.state == .on && reverseItem.title == "Z → A", "menu: checkmark follows the key, direction reads A to Z for names")
+        let hide = view!.item(withTitle: "Hide Sort Bar")!
+        FileListMenu.shared.choose(hide)
+        _ = FileListMenu.shared.validateMenuItem(hide)
+        check(list.sortBar.isHidden && hide.title == "Show Sort Bar" && !settings.options.showSortBar, "menu: Hide Sort Bar hides the bar")
+        FileListMenu.shared.choose(hide)
+        check(!list.sortBar.isHidden, "menu: Show Sort Bar brings it back")
+
+        // Every option survives a relaunch: a fresh settings object reads what was saved.
+        set { $0 = FileListOptions(sortKey: .dateCreated, reversed: true, foldersOnTop: true, showDate: .created,
+                                   showExcerpts: false, navigation: .list, showSortBar: false) }
+        let saved = settings.options
+        check(FileListSettings(defaults: .standard).options == saved && FileListOptions.load(from: .standard) == saved,
+              "persist: every option is read back by a new settings object")
+        set { $0 = FileListOptions() }
+
+        // Live re-sort: with Date Modified, a file edited elsewhere moves to the top.
+        select("b.md")
+        let selectedBefore = list.node(atRow: table.selectedRow)
+        check(names().first == "c.markdown", "live: c.markdown is on top before the edit")
+        let started = Date()
+        try? "edited elsewhere".write(to: loc.appending(path: "A.txt"), atomically: true, encoding: .utf8)
+        let moved = wait(timeout: 3) { names().first == "A.txt" }
+        let took = Date().timeIntervalSince(started)
+        check(moved && took < 1.0, "live: an edited file moves to the top within 1 s (\(String(format: "%.2f", took)) s)")
+        check(list.node(atRow: table.selectedRow) === selectedBefore && selectedBefore?.name == "b.md", "live: the selected row stays selected (\(list.node(atRow: table.selectedRow)?.name ?? "none"), was \(selectedBefore?.name ?? "none"))")
+
+        // The old behaviour for the checks that follow.
+        set { $0 = FileListOptions(sortKey: .name, reversed: false, foldersOnTop: false, showDate: .modified,
+                                   showExcerpts: true, navigation: .list, showSortBar: true) }
+        Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
 }
 #endif
