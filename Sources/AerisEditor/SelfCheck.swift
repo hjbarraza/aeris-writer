@@ -50,6 +50,7 @@ enum SelfCheck {
         navigationChecks()
         rowChecks()
         restorationChecks()
+        lineEndingChecks()
         try? FileManager.default.removeItem(at: scratch)
         if failed { print("selfcheck FAILED"); exit(1) }
         print("selfcheck passed")
@@ -709,6 +710,134 @@ enum SelfCheck {
                 unsafeBitCast(target.method(for: selector), to: ShouldClose.self)(target, selector, self, ok, contextInfo)
             }
         }
+    }
+
+    /// M1-12: in a CRLF document, Return, list continuation and a paste of LF text all
+    /// insert CRLF; an LF document stays LF. Existing endings are never converted.
+    @MainActor static func lineEndingChecks() {
+        let dir = scratch.appending(path: "LineEndings")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let board = NSPasteboard(name: NSPasteboard.Name("aeris-selfcheck-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        for (name, eol) in [("crlf.md", "\r\n"), ("lf.md", "\n")] {
+            let url = dir.appending(path: name)
+            try? Data("# Title\(eol)\(eol)- a".utf8).write(to: url)
+            let dc = NSDocumentController.shared
+            guard let doc = try? dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                    as? MarkdownDocument else { check(false, "line endings: \(name) opens"); continue }
+            dc.addDocument(doc); doc.makeWindowControllers()
+            let wc = doc.windowControllers[0] as! EditorWindowController
+            let tv = editorTextView(wc)
+            tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // list continuation: "- "
+            tv.insertText("b", replacementRange: tv.selectedRange())
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // continuation again
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // empty item: clears the line
+            tv.insertText("plain", replacementRange: tv.selectedRange())
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // plain Return
+            board.clearContents()
+            board.setString(eol == "\n" ? "p1\r\np2\rp3\n" : "p1\np2\rp3\n", forType: .string)
+            tv.readSelection(from: board, type: .string)                  // paste of foreign endings
+            var saved = false
+            doc.save(to: url, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+            _ = wait(timeout: 3) { saved }
+            let bytes = [UInt8]((try? Data(contentsOf: url)) ?? Data())
+            let text = String(decoding: bytes, as: UTF8.self)
+            let breaks = text.utf16.filter { $0 == 0x0A }.count
+            let crs = bytes.filter { $0 == 0x0D }.count
+            let consistent = eol == "\r\n"
+                ? crs == breaks && !text.replacingOccurrences(of: "\r\n", with: "").contains(where: { $0 == "\r" || $0 == "\n" })
+                : crs == 0
+            let expected = ["# Title", "", "- a", "- b", "plain", "p1", "p2", "p3", ""].joined(separator: eol)
+            check(saved && consistent && text == expected,
+                  "line endings: \(name) stays \(eol == "\n" ? "LF" : "CRLF") after Return, list continuation and paste"
+                  + (consistent && text == expected ? "" : " (got \(text.debugDescription))"))
+            doc.close()
+        }
+
+        // A mixed file keeps its existing endings; new lines follow its first one.
+        let mixed = dir.appending(path: "mixed.md")
+        try? Data("a\r\nb\nc".utf8).write(to: mixed)
+        if let doc = try? NSDocumentController.shared.makeDocument(withContentsOf: mixed, ofType: "net.daringfireball.markdown")
+            as? MarkdownDocument {
+            NSDocumentController.shared.addDocument(doc); doc.makeWindowControllers()
+            let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+            tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+            tv.insertText("d", replacementRange: tv.selectedRange())
+            var saved = false
+            doc.save(to: mixed, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+            _ = wait(timeout: 3) { saved }
+            check(saved && (try? Data(contentsOf: mixed)) == Data("a\r\nb\nc\r\nd".utf8),
+                  "line endings: a mixed file keeps its endings; Return inserts its first (CRLF)")
+            doc.close()
+        } else {
+            check(false, "line endings: mixed.md opens")
+        }
+
+        // A paste over two selections (Option-drag) is AppKit's multi-range change: the
+        // first range gets the text, the second is emptied. Converting the first part
+        // would shift the second range onto the wrong text, so it is left as AppKit does it.
+        let multi = dir.appending(path: "multi.md")
+        try? Data("foo\r\nmid\nfoo".utf8).write(to: multi)
+        if let doc = try? NSDocumentController.shared.makeDocument(withContentsOf: multi, ofType: "net.daringfireball.markdown")
+            as? MarkdownDocument {
+            NSDocumentController.shared.addDocument(doc); doc.makeWindowControllers()
+            let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+            tv.selectedRanges = [NSValue(range: NSRange(location: 0, length: 3)), NSValue(range: NSRange(location: 9, length: 3))]
+            board.clearContents()
+            board.setString("x\ny", forType: .string)
+            tv.readSelection(from: board, type: .string)
+            var saved = false
+            doc.save(to: multi, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+            _ = wait(timeout: 3) { saved }
+            let disk = (try? Data(contentsOf: multi)) ?? Data()
+            check(saved && disk == Data("x\ny\r\nmid\n".utf8),
+                  "line endings: a paste over two selections keeps the text between them"
+                  + (disk == Data("x\ny\r\nmid\n".utf8) ? "" : " (got \(String(decoding: disk, as: UTF8.self).debugDescription))"))
+            doc.close()
+        } else {
+            check(false, "line endings: multi.md opens")
+        }
+
+        // Changes AppKit makes itself (Replace All, Transformations) are never converted
+        // when they span several ranges or replace existing line breaks.
+        func edit(_ name: String, _ text: String, _ body: (NSTextView) -> Void) -> String? {
+            let url = dir.appending(path: name)
+            try? Data(text.utf8).write(to: url)
+            guard let doc = try? NSDocumentController.shared.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                    as? MarkdownDocument else { return nil }
+            NSDocumentController.shared.addDocument(doc); doc.makeWindowControllers()
+            let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+            body(tv)
+            let out = tv.string
+            doc.close()
+            return out
+        }
+        // Replace All: one multi-range change, applied as NSTextView applies it.
+        let replaced = edit("replace.md", "ab\r\nab") { tv in
+            let ranges = [NSRange(location: 0, length: 2), NSRange(location: 4, length: 2)]
+            guard tv.shouldChangeText(inRanges: ranges.map { NSValue(range: $0) },
+                                      replacementStrings: ["x\ny", "x\ny"]) else { return }
+            for r in ranges.reversed() { tv.textStorage?.replaceCharacters(in: r, with: "x\ny") }
+            tv.didChangeText()
+        }
+        func got(_ s: String?, _ want: String) -> String { s == want ? "" : " (got \(s.debugDescription))" }
+        check(replaced == "x\ny\r\nx\ny", "line endings: Replace All over two ranges replaces exactly those"
+              + got(replaced, "x\ny\r\nx\ny"))
+        let upper = edit("upper.md", "aa\r\nbb\ncc dd ee ff") { tv in
+            tv.selectedRanges = [NSRange(location: 0, length: 5), NSRange(location: 5, length: 3),
+                                 NSRange(location: 13, length: 5)].map { NSValue(range: $0) }
+            tv.uppercaseWord(nil)
+        }
+        check(upper == "AA\r\nBB\nCC dd EE FF", "line endings: Make Upper Case over three selections changes only letters"
+              + got(upper, "AA\r\nBB\nCC dd EE FF"))
+        let mixedUpper = edit("upper1.md", "aa\r\nbb\ncc") { tv in
+            tv.setSelectedRange(NSRange(location: 0, length: 9))
+            tv.uppercaseWord(nil)
+        }
+        check(mixedUpper == "AA\r\nBB\nCC", "line endings: Make Upper Case over a mixed range keeps its endings"
+              + got(mixedUpper, "AA\r\nBB\nCC"))
     }
 
     @MainActor static func editorTextView(_ wc: EditorWindowController) -> NSTextView { wc.editorForTesting.textViewForTesting }

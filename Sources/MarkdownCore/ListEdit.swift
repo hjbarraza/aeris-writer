@@ -83,7 +83,7 @@ public enum ListEdit {
         let li = BlockLines.touched(lines, selection).first
         let line = lines[li]
         let col = selection.location - line.start
-        let eol = BlockLines.eol(text)
+        let eol = LineEnding.of(text)
         if isSetextUnderline(lines, li) { return nil }
 
         func clear() -> TextEdit {
