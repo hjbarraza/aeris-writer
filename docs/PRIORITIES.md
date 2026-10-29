@@ -5,7 +5,7 @@ what H asked for, then the rest. First pass by the decision model over every ope
 corrected by H's anchors (themes, PDF and authorship are Could; Substack and Hugo are the
 publishing Musts). Done tickets are not listed.
 
-## Must (daily driver) (34)
+## Must (daily driver) (35)
 
 - M1-4 — Per-document metadata in xattrs
 - M1-5 — Full HTML rendering in `MarkdownCore`
@@ -41,6 +41,7 @@ publishing Musts). Done tickets are not listed.
 - M6-4 — Publish UI
 - M6-13 — Publish to Substack
 - M6-14 — Publish to a Hugo site
+- M6-15 — Links between published notes (several publications, slug-built links)
 
 ## Should (soon after) (57)
 
