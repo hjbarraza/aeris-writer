@@ -173,6 +173,9 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   by default (not `.txt`); the format pop-up still allows `.markdown` and `.txt`.
   *Verify:* ⌘N, type, ⌘S → the save panel proposes `Untitled.md`; save → the file on disk
   ends in `.md`.
+  *Note (2026-10-29):* not reproduced. The default type is already Markdown and a new
+  document's extension is `md`; the two `.txt` drafts carry another editor's metadata and
+  predate this app's save path. Kept open until H tries ⌘N → ⌘S once.
 
 - [ ] **M1-18 — Our own link menu in the preview.** Right-clicking a link in the preview shows
   Aeris's menu instead of WebKit's, so every item works. A link to a note: Open, Open in
@@ -184,4 +187,13 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   note opens in this window; Open in New Tab → same window, one more tab; Open in New
   Window → a second window; Copy Link → the pasteboard holds the absolute URL; no item is
   a no-op. On screen: right-click each link in `aeris-link-test/Start.md`.
+
+- [ ] **M1-19 — Rename everything to Aeris Writer.** Bundle id `com.aeris.writer`; on first
+  launch the app copies the old `com.aeris.editor` preferences and the old Application
+  Support folder (library locations) to the new names, once, never deleting the old ones.
+  Swift targets, source folders and scripts use `AerisWriter`; the repository becomes
+  `aeris-writer` (H, 2026-10-29). Done in one sweep with no other work in flight.
+  *Verify:* self-check with a fake old domain and folder → migrated once, second launch
+  doesn't migrate again, old data untouched; `grep -ri 'aeris-md-editor\|AerisEditor\|com.aeris.editor'`
+  finds only the migration code; build, tests, mdcheck, self-check green.
 

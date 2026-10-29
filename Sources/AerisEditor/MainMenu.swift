@@ -7,12 +7,12 @@ import MarkdownCore
 enum MainMenu {
     static func make() -> NSMenu {
         let main = NSMenu()
-        main.addItem(submenu("Aeris", [
-            item("About Aeris", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+        main.addItem(submenu("Aeris Writer", [
+            item("About Aeris Writer", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
             .separator(),
-            item("Hide Aeris", #selector(NSApplication.hide(_:)), "h"),
+            item("Hide Aeris Writer", #selector(NSApplication.hide(_:)), "h"),
             .separator(),
-            item("Quit Aeris", #selector(NSApplication.terminate(_:)), "q"),
+            item("Quit Aeris Writer", #selector(NSApplication.terminate(_:)), "q"),
         ]))
         main.addItem(submenu("File", [
             item("New", #selector(NSDocumentController.newDocument(_:)), "n"),
