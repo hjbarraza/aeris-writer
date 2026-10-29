@@ -46,7 +46,7 @@ public enum Excerpt {
     }
 
     /// Drops a `---` block opened on the first line and closed by `---` or `...`; unclosed, the text is kept.
-    private static func withoutFrontMatter(_ text: Substring) -> Substring {
+    public static func withoutFrontMatter(_ text: Substring) -> Substring {
         let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
         guard let first = lines.first, isFence(first, "---"),
               let close = lines.indices.dropFirst().first(where: { isFence(lines[$0], "---") || isFence(lines[$0], "...") })
