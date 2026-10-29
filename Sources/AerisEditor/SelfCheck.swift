@@ -21,7 +21,44 @@ enum SelfCheck {
         setenv("AERIS_LIBRARY_FILE", scratch.appending(path: "Locations.plist").path, 1)
     }
 
+    /// Every app preference goes to a private, emptied domain, and every split view autosave name
+    /// starts with `Aeris.SelfCheck`, so a run never changes the user's settings or layout.
+    @MainActor static func isolateDefaults() {
+        let store = UserDefaults(suiteName: AppDefaults.selfCheckSuite)!
+        store.removePersistentDomain(forName: AppDefaults.selfCheckSuite)
+        AppDefaults.store = store
+        AppDefaults.isolated = true
+        EditorWindowController.layoutKey = "Aeris.SelfCheck.MainSplit"
+    }
+
+    /// Removes what a run (or an earlier, interrupted one) left in the standard defaults: the split
+    /// view autosave records under `Aeris.SelfCheck` names.
+    static func cleanStandardDefaults() {
+        let defaults = UserDefaults.standard
+        for key in defaults.dictionaryRepresentation().keys
+        where key.hasPrefix("Aeris.SelfCheck") || key.hasPrefix("NSSplitView Subview Frames Aeris.SelfCheck") {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.synchronize()
+    }
+
+    /// The label of the last check printed, for the watchdog (written on main, read on its queue).
+    nonisolated(unsafe) private static var lastCheck = "start"
+    private static let lastCheckLock = NSLock()
+
     @MainActor static func run() -> Never {
+        // Watchdog: a run that hangs reports where and exits instead of waiting forever.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 240) {
+            let last = lastCheckLock.withLock { lastCheck }
+            print("FAIL - selfcheck timed out after \(last)")
+            cleanStandardDefaults()
+            try? FileManager.default.removeItem(at: scratch)
+            fflush(stdout)
+            _exit(1)
+        }
+        // A run that was killed may have left split view records behind.
+        cleanStandardDefaults()
+        let recentsBefore = NSDocumentController.shared.recentDocumentURLs
         let real = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "Aeris/Locations.plist").path
         guard LocationStore.defaultFileURL.path != real else {
@@ -54,7 +91,9 @@ enum SelfCheck {
         restorationChecks()
         lineEndingChecks()
         hashtagMenuChecks()
+        check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
         try? FileManager.default.removeItem(at: scratch)
+        cleanStandardDefaults()
         if failed { print("selfcheck FAILED"); exit(1) }
         print("selfcheck passed")
         exit(0)
@@ -86,6 +125,7 @@ enum SelfCheck {
 
     static func check(_ ok: Bool, _ label: String) {
         print(ok ? "ok - \(label)" : "FAIL - \(label)")
+        lastCheckLock.withLock { lastCheck = label }
         if !ok { failed = true }
     }
 
@@ -427,7 +467,7 @@ enum SelfCheck {
         let layout = "Aeris.SelfCheck.Organizer"
         EditorWindowController.layoutKey = layout
         let defaultsKeys = ["\(layout).CollapsedSections", "\(layout).HiddenSections"]
-        func clean() { defaultsKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) } }
+        func clean() { defaultsKeys.forEach { AppDefaults.store.removeObject(forKey: $0) } }
         clean()
         defer { clean(); EditorWindowController.layoutKey = previousKey }
 
@@ -515,23 +555,23 @@ enum SelfCheck {
         // Collapsing a section is remembered, and sections start expanded in a fresh window.
         let tags = sections().first { $0.kind == .tags }!
         ov.collapseItem(tags)
-        check(UserDefaults.standard.stringArray(forKey: defaultsKeys[0]) == ["tags"] && hints().count == 2, "organizer: collapsing Tags is saved")
+        check(AppDefaults.store.stringArray(forKey: defaultsKeys[0]) == ["tags"] && hints().count == 2, "organizer: collapsing Tags is saved")
         let wc2 = EditorWindowController()
         wc2.sidebar.loadViewIfNeeded()
         let ov2 = wc2.sidebar.outlineView
         let sections2 = (0..<ov2.numberOfRows).compactMap { ov2.item(atRow: $0) as? OrganizerSection }
         check(sections2.map { ov2.isItemExpanded($0) } == [true, true, true, false], "organizer: a new window restores the collapsed Tags")
         ov.expandItem(tags)
-        check((UserDefaults.standard.stringArray(forKey: defaultsKeys[0]) ?? []).isEmpty, "organizer: expanding Tags again is saved")
+        check((AppDefaults.store.stringArray(forKey: defaultsKeys[0]) ?? []).isEmpty, "organizer: expanding Tags again is saved")
         wc2.close()
 
         // Revealing a document expands a collapsed Locations without forgetting the collapse.
         let locations = sections().first { $0.kind == .locations }!
         ov.collapseItem(locations)
         wc.sidebar.reveal(loc.appending(path: "top.md"))
-        check(UserDefaults.standard.stringArray(forKey: defaultsKeys[0]) == ["locations"],
+        check(AppDefaults.store.stringArray(forKey: defaultsKeys[0]) == ["locations"],
               "organizer: revealing into a collapsed Locations keeps the collapse saved")
-        UserDefaults.standard.removeObject(forKey: defaultsKeys[0])
+        AppDefaults.store.removeObject(forKey: defaultsKeys[0])
         ov.expandItem(locations)
 
         // Hiding sections: the View > Organizer submenu, live in open windows, kept for new ones.
@@ -542,7 +582,7 @@ enum SelfCheck {
         check(appDelegate.validateMenuItem(smart) && smart.state == .on, "organizer: a shown section is checked in the menu")
         check(NSApp.sendAction(smart.action!, to: nil, from: smart), "organizer: the menu item reaches the app")
         check(sections().map(\.title) == ["Locations", "Favorites", "Tags"] && hints().count == 2, "organizer: hiding Smart Folders removes the section")
-        check(UserDefaults.standard.stringArray(forKey: defaultsKeys[1]) == ["smartFolders"], "organizer: the hidden section is stored")
+        check(AppDefaults.store.stringArray(forKey: defaultsKeys[1]) == ["smartFolders"], "organizer: the hidden section is stored")
         _ = appDelegate.validateMenuItem(smart)
         check(smart.state == .off, "organizer: a hidden section is unchecked in the menu")
         let wc3 = EditorWindowController()
@@ -553,7 +593,7 @@ enum SelfCheck {
         wc3.close()
         _ = NSApp.sendAction(smart.action!, to: nil, from: smart)
         check(sections().map(\.title) == ["Locations", "Favorites", "Smart Folders", "Tags"]
-              && (UserDefaults.standard.stringArray(forKey: defaultsKeys[1]) ?? []).isEmpty, "organizer: enabling it again brings the section back")
+              && (AppDefaults.store.stringArray(forKey: defaultsKeys[1]) ?? []).isEmpty, "organizer: enabling it again brings the section back")
         let wc4 = EditorWindowController()
         wc4.sidebar.loadViewIfNeeded()
         check(wc4.sidebar.outlineView.numberOfRows == ov.numberOfRows, "organizer: and a new window shows it")
@@ -1816,8 +1856,8 @@ enum SelfCheck {
             try? fm.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
         }
         try? fm.setAttributes([.posixPermissions: 0], ofItemAtPath: loc.appending(path: "locked.md").path)
-        UserDefaults.standard.removeObject(forKey: FileListViewController.showExtensionsKey)
-        defer { UserDefaults.standard.removeObject(forKey: FileListViewController.showExtensionsKey) }
+        AppDefaults.store.removeObject(forKey: FileListViewController.showExtensionsKey)
+        defer { AppDefaults.store.removeObject(forKey: FileListViewController.showExtensionsKey) }
         Library.shared.addLocation(loc)
 
         let doc = try! dc.makeDocument(withContentsOf: loc.appending(path: "old.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
@@ -1863,7 +1903,7 @@ enum SelfCheck {
         check(wait(timeout: 5) { !cell("locked.md").dateLabel.stringValue.isEmpty } && cell("locked.md").excerptLabel.stringValue.isEmpty,
               "rows: an unreadable file does not say \"No text\"")
 
-        UserDefaults.standard.set(true, forKey: FileListViewController.showExtensionsKey)
+        AppDefaults.store.set(true, forKey: FileListViewController.showExtensionsKey)
         table.reloadData()
         check(cell("today.md").nameLabel.stringValue == "today.md", "rows: the show-extensions setting keeps the extension")
 
@@ -1926,6 +1966,47 @@ enum SelfCheck {
         check(wc2.fileList.folder === Library.shared.tree.roots.first, "restore: an unresolved location falls back to the first location")
         check(Library.shared.tree.roots.map(\.path) == rootsBefore, "restore: locations were not reordered")
         close(wc1, d1); close(wc2, d2)
+
+        // The app's own store, which a plain ⌘Q keeps: a launch with no window restored reopens the
+        // last document with its library view.
+        let store = AppDefaults.store, key = EditorWindowController.sessionKey
+        store.removeObject(forKey: key)
+        let d3 = try! dc.makeDocument(withContentsOf: urlC, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(d3); d3.makeWindowControllers()
+        let wc3 = d3.windowControllers[0] as! EditorWindowController
+        wc3.fileList.showFolder(node(loc))
+        wc3.fileList.restoreSelection(path: canonical(loc.appending(path: "sub")))
+        wc3.fileList.onStateChange?()  // as the selection change notification does for a folder row
+        let saved = store.dictionary(forKey: key) ?? [:]
+        check(saved["folder"] as? String == canonical(loc) && saved["selection"] as? String == canonical(loc.appending(path: "sub"))
+              && (saved["document"] as? String).map { canonical(URL(fileURLWithPath: $0)) } == canonical(urlC),
+              "restore: the folder, selection and document are stored by the app (\(saved))")
+        let expanded = wc3.sidebar.expandedFolderPaths
+        close(wc3, d3)
+        check(NSDictionary(dictionary: store.dictionary(forKey: key) ?? [:]).isEqual(to: saved),
+              "restore: closing the window keeps the stored session")
+        let opened = Set(dc.documents.map(ObjectIdentifier.init))
+        check(EditorWindowController.reopenLastSession(display: false), "restore: a launch reopens the stored session")
+        let d4 = dc.documents.first { !opened.contains(ObjectIdentifier($0)) }
+        let wc4 = d4?.windowControllers.first as? EditorWindowController
+        check(d4?.fileURL.map(canonical) == canonical(urlC) && d4?.isDocumentEdited == false && d4?.hasUnautosavedChanges == false,
+              "restore: the last document reopens, not edited")
+        check(wc4?.fileList.folder === node(loc) && wc4?.fileList.selectedPath == canonical(loc.appending(path: "sub"))
+              && wc4?.sidebar.expandedFolderPaths == expanded,
+              "restore: the reopened window shows the same folder, selection and organizer expansion")
+        if let wc4, let d4 { wc4.close(); d4.close() }
+
+        // A deleted document and folder: an untitled window at the location's root, no error.
+        store.set(["folder": canonical(loc) + "/gone", "document": canonical(loc) + "/gone/Deleted.md", "expanded": [String]()],
+                  forKey: key)
+        let opened2 = Set(dc.documents.map(ObjectIdentifier.init))
+        check(EditorWindowController.reopenLastSession(display: false), "restore: a missing document still opens a window")
+        let d5 = dc.documents.first { !opened2.contains(ObjectIdentifier($0)) }
+        let wc5 = d5?.windowControllers.first as? EditorWindowController
+        check(d5 != nil && d5?.fileURL == nil && d5?.isDocumentEdited == false && wc5?.fileList.folder === node(loc),
+              "restore: a missing document opens untitled, a deleted folder falls back to its location's root")
+        if let wc5, let d5 { wc5.close(); d5.close() }
+        store.removeObject(forKey: key)
         Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
 

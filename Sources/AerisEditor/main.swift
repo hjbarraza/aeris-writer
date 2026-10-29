@@ -12,6 +12,9 @@ let selfCheck = CommandLine.arguments.contains("--selfcheck")
 #else
 let selfCheck = false
 #endif
+// The self-check neither restores the user's saved windows nor overwrites their saved state
+// (registration domain only: nothing is written to disk).
+if selfCheck { UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true]) }
 app.setActivationPolicy(selfCheck ? .prohibited : .regular)
 if !selfCheck { app.activate(ignoringOtherApps: true) }
 app.run()

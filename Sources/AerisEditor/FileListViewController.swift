@@ -383,7 +383,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let id = NSUserInterfaceItemIdentifier("fileCell")
         let cell = tableView.makeView(withIdentifier: id, owner: nil) as? FileCellView ?? FileCellView()
         cell.identifier = id
-        let showExtension = UserDefaults.standard.bool(forKey: Self.showExtensionsKey)
+        let showExtension = AppDefaults.store.bool(forKey: Self.showExtensionsKey)
         cell.nameLabel.stringValue = showExtension ? node.name : (node.name as NSString).deletingPathExtension
         show(infos.info(path: node.path), in: cell)
         infos.refresh(path: node.path)
