@@ -179,6 +179,13 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
     /// reload's text is the file's, so neither is converted.
     private var applyingEdit = false
 
+    /// Two jobs, each on a one-range change with one selection, never while `apply`
+    /// runs or during IME composition:
+    /// 1. Renumbering (M1.5-23): a deletion that removes a line break, outside code
+    ///    blocks, in a sequential ordered list is replaced by `ListEdit.delete`'s edit
+    ///    (the deletion plus the new numbers below it), one undo step named "Typing".
+    ///    That covers Backspace/Delete and also Cut and Edit > Delete.
+    /// 2. Line endings (M1-12):
     /// Typed, pasted and dropped text takes the document's line ending (its first one;
     /// LF if none), so a CRLF file never gains a lone LF. Existing text is never touched.
     /// Only a one-range change whose replaced text has no line break is converted. The
@@ -189,14 +196,14 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
     /// The converted insert is its own undo step.
     func textView(_ textView: NSTextView, shouldChangeTextInRanges ranges: [NSValue],
                   replacementStrings strings: [String]?) -> Bool {
-        // A deletion that removes a line break renumbers the ordered list below it, in
-        // the same undo step (outside code blocks).
+        // 1. Renumbering after a deletion.
         if !applyingEdit, !textView.hasMarkedText(), ranges.count == 1, textView.selectedRanges.count == 1,
            strings == [""], !lineIsCode(at: ranges[0].rangeValue.location),
            let edit = ListEdit.delete(text: textView.string, range: ranges[0].rangeValue) {
             apply(edit, undoName: "Typing")
             return false
         }
+        // 2. Line endings of inserted text.
         func hasBreak(_ s: String) -> Bool { s.utf16.contains { $0 == 0x0A || $0 == 0x0D } }
         // A paste over several selections arrives one range at a time, hence both counts.
         guard !applyingEdit, !textView.hasMarkedText(), ranges.count == 1, textView.selectedRanges.count == 1,

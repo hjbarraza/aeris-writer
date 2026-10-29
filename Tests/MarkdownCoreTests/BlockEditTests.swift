@@ -151,6 +151,14 @@ struct BlockEditTests {
         #expect(ListEdit.delete(text: "1. ab\n2. c", range: r(4, 1)) == nil, "renumber: deletion without a line break is nil")
         #expect(ListEdit.delete(text: "- a\n- b\n- c", range: r(3, 4)) == nil, "renumber: bullet list is nil")
         #expect(ListEdit.delete(text: "1. a\n2. b\n3. c", range: r(9, 5)) == nil, "renumber: deleting the last item needs no renumbering")
+        #expect(ap("1. a\n1. b\n1. c", ListEdit.newline(text: "1. a\n1. b\n1. c", selection: r(4))!) == "1. a\n2. \n1. b\n1. c", "renumber: a 1. 1. 1. list keeps its numbers")
+        #expect(ap("2019. a\n2021. b", ListEdit.newline(text: "2019. a\n2021. b", selection: r(7))!) == "2019. a\n2020. \n2021. b", "renumber: hand-picked numbers (years) are untouched")
+        #expect(ListEdit.delete(text: "1. a\n1. b\n1. c", range: r(4, 1)) == nil, "renumber: joining items of a 1. 1. 1. list renumbers nothing")
+        #expect(ListEdit.delete(text: "2019. a\n\n2021. b\n2022. c", range: r(7, 1)) == nil, "renumber: deleting a blank line in a year list renumbers nothing")
+        e = ListEdit.delete(text: "1. a\n2. b\n3. c", range: r(0, 5))!
+        #expect(ap("1. a\n2. b\n3. c", e) == "1. b\n2. c" && e.selection == r(0), "renumber: deleting the first item renumbers the rest from 1")
+        #expect(ap("# T\n1. a\n2. b", ListEdit.delete(text: "# T\n1. a\n2. b", range: r(4, 5))!) == "# T\n1. b", "renumber: deleting the first item under a heading")
+        #expect(ap("1. a\n   1. x\n   2. y\n2. b", ListEdit.delete(text: "1. a\n   1. x\n   2. y\n2. b", range: r(5, 8))!) == "1. a\n   1. y\n2. b", "renumber: deleting a nested list's first item")
 
         // Lists: indent / outdent
         e = ListEdit.indent(text: "- a", selection: r(3))

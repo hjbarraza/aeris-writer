@@ -26,9 +26,14 @@ public enum ListEdit {
         }
     }
 
+    /// Compiled once: renumbering parses every line of a list per keystroke.
+    nonisolated(unsafe) private static let itemPattern =
+        try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|(\d{1,9})([.)]))([ \t]+|$)(?:(\[[ xX]\])([ \t]+|$))?(.*)$"#)
+
     private static func parse(_ s: String) -> Item? {
-        guard let c = BlockLines.captures(#"^([ \t]*)([-*+]|(\d{1,9})([.)]))([ \t]+|$)(?:(\[[ xX]\])([ \t]+|$))?(.*)$"#, s)
+        guard let m = itemPattern.firstMatch(in: s, range: NSRange(location: 0, length: (s as NSString).length))
         else { return nil }
+        let c = (0..<m.numberOfRanges).map { m.range(at: $0) }
         let marker = BlockLines.sub(s, c[2]) ?? ""
         return Item(indent: BlockLines.sub(s, c[1]) ?? "",
                     bulletChar: c[3].location == NSNotFound ? marker : nil,
@@ -128,82 +133,111 @@ public enum ListEdit {
         return result == edit ? nil : result
     }
 
-    /// `edit` plus the renumbering of the ordered list it leaves the caret in, as
-    /// one edit: the items below the anchor item count up from its number.
+    /// `edit` plus the renumbering of the ordered list it touches, as one edit.
+    /// Only a list that was sequential before the edit (from the anchor item down,
+    /// each sibling = previous + 1) is renumbered: a `1. 1. 1.` list or hand-picked
+    /// numbers (years, references) are never rewritten. After the edit the anchor
+    /// line takes the anchor's old number (so deleting a list's first item
+    /// renumbers the rest from it) and its siblings below count up from there.
+    /// The whole text is copied only once the edit is known to be in such a list.
     private static func renumbered(_ text: String, _ edit: TextEdit) -> TextEdit {
+        let old = text as NSString
+        guard let a = anchor(old, at: edit.range.location), let start = a.item.number else { return edit }
+        var expect = start
+        for (num, _) in siblings(old, of: a) {
+            expect += 1
+            guard num == expect else { return edit }
+        }
         let new = NSMutableString(string: text)
         new.replaceCharacters(in: edit.range, with: edit.replacement)
+        let line = new.lineRange(for: NSRange(location: a.line.location, length: 0))
+        guard let item = parse(content(new, line)), let first = item.number,
+              item.indent == a.item.indent, item.delim == a.item.delim else { return edit }
+        var changes: [(NSRange, String)] = []
+        if first != start { changes.append((digits(line, item), "\(start)")) }
+        var n = start
+        for (num, r) in siblings(new, of: (line, item)) {
+            n += 1
+            if num != n { changes.append((r, "\(n)")) }
+        }
         let at = edit.range.location + edit.replacement.utf16.count
-        guard let (r, rep) = renumberBelow(new, at: at) else { return edit }
+        guard let head = changes.first?.0, head.location >= at else { return edit }
+        var rep = "", pos = head.location
+        for (r, s) in changes {
+            rep += new.substring(with: NSRange(location: pos, length: r.location - pos)) + s
+            pos = NSMaxRange(r)
+        }
         let delta = edit.replacement.utf16.count - edit.range.length
-        let head = new.substring(with: NSRange(location: edit.range.location, length: r.location - edit.range.location))
-        return TextEdit(range: NSRange(location: edit.range.location, length: NSMaxRange(r) - delta - edit.range.location),
-                        replacement: head + rep, selection: edit.selection)
+        let between = new.substring(with: NSRange(location: edit.range.location, length: head.location - edit.range.location))
+        return TextEdit(range: NSRange(location: edit.range.location, length: pos - delta - edit.range.location),
+                        replacement: between + rep, selection: edit.selection)
     }
 
-    /// The anchor is the ordered item on the line holding `p`, or above it past
-    /// blank and more-indented lines; when `p` starts a line, the search starts on
-    /// the line above (that line's item is the one `p`'s line follows). Its
-    /// siblings below (same indent and delimiter, nested lines and blank lines
-    /// skipped) are renumbered from its number up. The list ends at any other
-    /// line. Returns the changed span (first to last rewritten number) and its
-    /// new text, or nil when no number changes. Looks up at most 1000 lines.
-    private static func renumberBelow(_ ns: NSString, at p: Int) -> (NSRange, String)? {
-        func line(_ i: Int) -> NSRange { ns.lineRange(for: NSRange(location: i, length: 0)) }
-        func content(_ r: NSRange) -> String {
-            var s = ns.substring(with: r)
-            while s.hasSuffix("\n") || s.hasSuffix("\r") || s.hasSuffix("\r\n") { s.removeLast() }
-            return s
-        }
-        func leading(_ s: String) -> Int { s.prefix { $0 == " " || $0 == "\t" }.count }
+    /// A line's text without its terminator.
+    private static func content(_ ns: NSString, _ r: NSRange) -> String {
+        var s = ns.substring(with: r)
+        while s.hasSuffix("\n") || s.hasSuffix("\r") || s.hasSuffix("\r\n") { s.removeLast() }
+        return s
+    }
 
+    /// The UTF-16 range of an ordered item's number on its line.
+    private static func digits(_ line: NSRange, _ item: Item) -> NSRange {
+        NSRange(location: line.location + item.indent.utf16.count, length: item.markerWidth - 2)
+    }
+
+    /// The ordered item an edit at `p` belongs to: the item on the line holding
+    /// `p`, or above it past blank and more-indented lines. When `p` starts a line
+    /// the search starts on the line above (the item `p`'s line follows); if that
+    /// finds none, `p`'s own line is the anchor when it is an ordered item (a
+    /// list's first item). Looks up at most 1000 lines.
+    private static func anchor(_ ns: NSString, at p: Int) -> (line: NSRange, item: Item)? {
+        func line(_ i: Int) -> NSRange { ns.lineRange(for: NSRange(location: i, length: 0)) }
+        func leading(_ s: String) -> Int { s.prefix { $0 == " " || $0 == "\t" }.count }
         var cur = line(min(p, ns.length))
         var target: Int?
+        var own: (line: NSRange, item: Item)?
         if p == cur.location, p > 0 {
-            if let item = parse(content(cur)), item.number != nil { target = item.indent.count }
+            if let item = parse(content(ns, cur)), item.number != nil {
+                target = item.indent.count
+                own = (cur, item)
+            }
             cur = line(p - 1)
         }
-        var anchor: (range: NSRange, item: Item)?
         for _ in 0..<1000 {
-            let s = content(cur)
+            let s = content(ns, cur)
             if !BlockLines.isBlank(s) {
-                let indent = parse(s)?.indent.count ?? leading(s)
-                if let item = parse(s), item.number != nil, target == nil || indent == target {
-                    anchor = (cur, item); break
-                }
+                let item = parse(s)
+                let indent = item?.indent.count ?? leading(s)
+                if let item, item.number != nil, target == nil || indent == target { return (cur, item) }
                 // Nested lines are skipped; an item or text at the list's level ends it.
-                guard parse(s) == nil ? indent > (target ?? 0) : indent > (target ?? Int.max) else { return nil }
+                guard item == nil ? indent > (target ?? 0) : indent > (target ?? Int.max) else { return own }
             }
-            guard cur.location > 0 else { return nil }
+            guard cur.location > 0 else { return own }
             cur = line(cur.location - 1)
         }
-        guard let anchor, var n = anchor.item.number else { return nil }
+        return own
+    }
+
+    /// The anchor's sibling items below it (same indent and delimiter; nested and
+    /// blank lines skipped) as (number, digits range). The list ends at any other line.
+    private static func siblings(_ ns: NSString, of anchor: (line: NSRange, item: Item)) -> [(Int, NSRange)] {
         let indent = anchor.item.indent.count
-        var changes: [(NSRange, String)] = []
-        var pos = NSMaxRange(anchor.range)
+        var out: [(Int, NSRange)] = []
+        var pos = NSMaxRange(anchor.line)
         while pos < ns.length {
-            let r = line(pos)
+            let r = ns.lineRange(for: NSRange(location: pos, length: 0))
             pos = NSMaxRange(r)
-            let s = content(r)
+            let s = content(ns, r)
             if BlockLines.isBlank(s) { continue }
             if let item = parse(s) {
                 if item.indent.count > indent { continue }
                 guard item.indent.count == indent, let num = item.number, item.delim == anchor.item.delim else { break }
-                n += 1
-                if num != n {
-                    changes.append((NSRange(location: r.location + item.indent.utf16.count, length: item.markerWidth - 2), "\(n)"))
-                }
-            } else if leading(s) <= indent {
+                out.append((num, digits(r, item)))
+            } else if s.prefix(while: { $0 == " " || $0 == "\t" }).count <= indent {
                 break
             }
         }
-        guard let first = changes.first else { return nil }
-        var rep = "", at = first.0.location
-        for (r, s) in changes {
-            rep += ns.substring(with: NSRange(location: at, length: r.location - at)) + s
-            at = NSMaxRange(r)
-        }
-        return (NSRange(location: first.0.location, length: at - first.0.location), rep)
+        return out
     }
 
     // MARK: Indent / outdent
