@@ -181,12 +181,17 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
 
     /// Typed, pasted and dropped text takes the document's line ending (its first one;
     /// LF if none), so a CRLF file never gains a lone LF. Existing text is never touched.
+    /// A change over several selections passes unconverted: it is one multi-range change,
+    /// and inserting into its first range would shift the others onto the wrong text.
+    /// The converted insert is its own undo step.
     func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString text: String?) -> Bool {
-        guard !applyingEdit, !textView.hasMarkedText(), let text,
+        guard !applyingEdit, !textView.hasMarkedText(), textView.selectedRanges.count == 1, let text,
               text.utf16.contains(where: { $0 == 0x0A || $0 == 0x0D }) else { return true }
         let converted = LineEnding.convert(text, to: LineEnding.of(textView.string))
         guard converted != text else { return true }
+        textView.breakUndoCoalescing()
         textView.insertText(converted, replacementRange: range)
+        textView.breakUndoCoalescing()
         return false
     }
 

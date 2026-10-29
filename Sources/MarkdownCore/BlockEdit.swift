@@ -56,11 +56,6 @@ enum BlockLines {
         }
     }
 
-    /// The document's line ending (first one found), default LF.
-    static func eol(_ lines: [BlockLine]) -> String {
-        lines.first { !$0.terminator.isEmpty }?.terminator ?? "\n"
-    }
-
     static func isBlank(_ s: String) -> Bool {
         s.allSatisfy { $0 == " " || $0 == "\t" }
     }
@@ -201,7 +196,7 @@ public enum BlockEdit {
             return TextEdit(range: NSRange(location: first.start, length: first.length), replacement: header,
                                  selection: NSRange(location: first.start + header.utf16.count, length: 0))
         }
-        let eol = BlockLines.eol(lines)
+        let eol = LineEnding.of(text)
         let a = first.start
         let end = lines[t.last].start + lines[t.last].length
         let body = lines[t.first...t.last].map { (t.last > t.first && BlockLines.isBlank($0.content)) ? ">" : "> " + $0.content }
@@ -242,7 +237,7 @@ public enum BlockEdit {
             return TextEdit(range: NSRange(location: a, length: end - a), replacement: inner,
                                  selection: NSRange(location: a, length: inner.utf16.count))
         }
-        let eol = BlockLines.eol(lines)
+        let eol = LineEnding.of(text)
         let block = (text as NSString).substring(with: NSRange(location: a, length: end - a))
         let openLen = delim.utf16.count + eol.utf16.count
         let sel: NSRange
@@ -270,7 +265,7 @@ public enum BlockEdit {
     private static func insertBlock(_ block: String, text: String, selection: NSRange) -> TextEdit {
         let lines = BlockLines.split(text)
         let l = BlockLines.touched(lines, selection).last
-        let eol = BlockLines.eol(lines)
+        let eol = LineEnding.of(text)
         let line = lines[l]
         let p = line.start + line.length
         var prefix = ""

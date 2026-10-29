@@ -691,6 +691,31 @@ enum SelfCheck {
         } else {
             check(false, "line endings: mixed.md opens")
         }
+
+        // A paste over two selections (Option-drag) is AppKit's multi-range change: the
+        // first range gets the text, the second is emptied. Converting the first part
+        // would shift the second range onto the wrong text, so it is left as AppKit does it.
+        let multi = dir.appending(path: "multi.md")
+        try? Data("foo\r\nmid\nfoo".utf8).write(to: multi)
+        if let doc = try? NSDocumentController.shared.makeDocument(withContentsOf: multi, ofType: "net.daringfireball.markdown")
+            as? MarkdownDocument {
+            NSDocumentController.shared.addDocument(doc); doc.makeWindowControllers()
+            let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+            tv.selectedRanges = [NSValue(range: NSRange(location: 0, length: 3)), NSValue(range: NSRange(location: 9, length: 3))]
+            board.clearContents()
+            board.setString("x\ny", forType: .string)
+            tv.readSelection(from: board, type: .string)
+            var saved = false
+            doc.save(to: multi, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+            _ = wait(timeout: 3) { saved }
+            let disk = (try? Data(contentsOf: multi)) ?? Data()
+            check(saved && disk == Data("x\ny\r\nmid\n".utf8),
+                  "line endings: a paste over two selections keeps the text between them"
+                  + (disk == Data("x\ny\r\nmid\n".utf8) ? "" : " (got \(String(decoding: disk, as: UTF8.self).debugDescription))"))
+            doc.close()
+        } else {
+            check(false, "line endings: multi.md opens")
+        }
     }
 
     @MainActor static func editorTextView(_ wc: EditorWindowController) -> NSTextView { wc.editorForTesting.textViewForTesting }
