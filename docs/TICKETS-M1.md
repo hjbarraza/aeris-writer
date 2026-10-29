@@ -82,6 +82,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   *Verify:* mdcheck cases for UTF-8, UTF-8 BOM, UTF-16 LE/BE BOM, Windows-1252 with
   accents; open a Latin-1 file → text correct; edit, save → `file -I` still reports the
   original charset and bytes outside the edit are unchanged.
+  Save As always writes UTF-8 (H, 2026-10-29).
 
 - [x] **M1-9 — Smart punctuation in the preview.** Render `"quotes"` → “quotes”,
   `'` → ’, `--` → –, `---` → —, `...` → … (swift-markdown smart opts on). The `.md`
