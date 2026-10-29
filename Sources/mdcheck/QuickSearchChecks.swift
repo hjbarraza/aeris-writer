@@ -92,7 +92,20 @@ import LibraryCore
     try? Data("# needle\n".utf8).write(to: small)
     try? Data(repeating: 0x61, count: QuickSearch.maxFileBytes + 1).write(to: big)
     check(QuickSearch.readIfSmall(small.path) != nil && QuickSearch.readIfSmall(big.path) == nil, "content search: files over 2 MB are skipped")
+    let link = tmp.appending(path: "link.md"), fifo = tmp.appending(path: "x.md")
+    try? fm.createSymbolicLink(at: link, withDestinationURL: big)
+    check(QuickSearch.readIfSmall(link.path) == nil, "content search: a symlink to a file over 2 MB is skipped")
+    let smallLink = tmp.appending(path: "slink.md")
+    try? fm.createSymbolicLink(at: smallLink, withDestinationURL: small)
+    check(QuickSearch.readIfSmall(smallLink.path) != nil, "content search: a symlink to a small file is read")
+    check(mkfifo(fifo.path, 0o644) == 0 && QuickSearch.readIfSmall(fifo.path) == nil, "content search: a FIFO named x.md is skipped without blocking")
+    check(QuickSearch.readIfSmall(tmp.path) == nil, "content search: a directory is skipped")
     try? fm.removeItem(at: tmp)
+    let manyLines = String(repeating: "beta\n", count: 5000)
+    var asked = 0
+    let partial = QuickSearch.search(in: manyLines, query: "beta", headings: true, text: true, maxFound: 100_000,
+                                     isCancelled: { asked += 1; return true })
+    check(partial.count < 5000 && asked >= 1, "content search: cancellation is checked inside a large file (\(partial.count) of 5000)")
     let cands = (0..<10).map { QuickSearch.Candidate(path: "/r/f\($0).md", fileName: "f\($0).md", breadcrumb: "R") }
     var delivered: [QuickSearch.FileHits] = []
     QuickSearch.searchFiles(query: "beta", candidates: cands, headings: true, text: true, maxFiles: 3,

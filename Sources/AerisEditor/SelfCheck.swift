@@ -840,8 +840,19 @@ enum SelfCheck {
         check(wait(timeout: 5) { has("find and replace") }, "quick search inside: Find and Replace offered for the open document")
         qs.selectRow(containing: "find and replace")
         qs.openSelected()
-        check(!qs.isShown && wait(timeout: 5) { tv.enclosingScrollView?.isFindBarVisible == true && findBoard.string(forType: .string) == "filler" },
-              "quick search inside: Find and Replace opens the find bar with the query (\(findBoard.string(forType: .string) ?? "nil"))")
+        // The bar's own views: every editable text field in it, with what it shows.
+        func barFields() -> [String] {
+            var out: [String] = []
+            func walk(_ v: NSView) {
+                if let f = v as? NSTextField, f.isEditable { out.append(f.stringValue) }
+                v.subviews.forEach(walk)
+            }
+            if let bar = tv.enclosingScrollView?.findBarView { walk(bar) }
+            return out
+        }
+        check(!qs.isShown && wait(timeout: 5) { tv.enclosingScrollView?.isFindBarVisible == true && barFields().contains("filler") },
+              "quick search inside: the find bar's own search field shows the query (editable fields: \(barFields()))")
+        check(barFields().count >= 2, "quick search inside: the find bar has its replace field (\(barFields().count) editable fields)")
         tv.enclosingScrollView?.isFindBarVisible = false
         findBoard.clearContents()
         if let savedFind { findBoard.setString(savedFind, forType: .string) }

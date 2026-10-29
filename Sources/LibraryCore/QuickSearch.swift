@@ -166,16 +166,18 @@ public enum QuickSearch {
     /// at most `maxFound`. A heading is an ATX `#` line outside a code fence; heading lines only
     /// ever give heading results, every other line only text results. Headings come first.
     public static func search(in text: String, query: String, headings wantHeadings: Bool, text wantText: Bool,
-                              maxFound: Int) -> [ContentMatch] {
+                              maxFound: Int, isCancelled: () -> Bool = { false }) -> [ContentMatch] {
         let q = Array(query.trimmingCharacters(in: .whitespaces).map(fold))
         guard !q.isEmpty, wantHeadings || wantText, maxFound > 0 else { return [] }
         var headings: [ContentMatch] = [], texts: [ContentMatch] = []
         var fence: Character?
         var lineNumber = 0
         let ns = text as NSString
+        withoutActuallyEscaping(isCancelled) { cancelled in
         ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: .byLines) { sub, subRange, _, stop in
             guard let line = sub else { return }
             lineNumber += 1
+            if lineNumber % 1000 == 0, cancelled() { stop.pointee = true; return }
             let chars = Array(line)
             let lead = chars.prefix { $0 == " " }.count
             if lead <= 3, let f = chars.dropFirst(lead).first, f == "`" || f == "~",
@@ -202,6 +204,7 @@ public enum QuickSearch {
                                  snippet: snippet, highlight: highlight)
             if case .heading = kind { headings.append(m) } else { texts.append(m) }
             if headings.count + texts.count >= maxFound { stop.pointee = true }
+        }
         }
         return headings + texts
     }
@@ -248,8 +251,10 @@ public enum QuickSearch {
 
     /// The file's bytes, or nil when it is unreadable or over `maxFileBytes`.
     public static func readIfSmall(_ path: String) -> Data? {
-        let url = URL(fileURLWithPath: path)
-        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= maxFileBytes else { return nil }
+        // Through symlinks to the real file, which must be a regular one (a FIFO or device would block).
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]), values.isRegularFile == true,
+              let size = values.fileSize, size <= maxFileBytes else { return nil }
         return try? Data(contentsOf: url)
     }
 
@@ -263,7 +268,7 @@ public enum QuickSearch {
         for cand in candidates {
             if isCancelled() || delivered >= maxFiles { return }
             guard let body = read(cand) else { continue }
-            let found = search(in: body, query: query, headings: headings, text: text, maxFound: maxPerFile)
+            let found = search(in: body, query: query, headings: headings, text: text, maxFound: maxPerFile, isCancelled: isCancelled)
             if !found.isEmpty { deliver(FileHits(candidate: cand, matches: found)); delivered += 1 }
         }
     }

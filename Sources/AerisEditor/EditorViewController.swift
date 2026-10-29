@@ -58,7 +58,6 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
     /// Opens the find bar with its replace field, searching for `query` (the find pasteboard is
     /// what the bar reads, as with the system's own Find).
     func showFindAndReplace(query: String) {
-        textView.usesFindBar = true
         let pasteboard = NSPasteboard(name: .find)
         pasteboard.clearContents()
         pasteboard.setString(query, forType: .string)
@@ -84,6 +83,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
         scroll.documentView = editorView
         editorView.richPaste = { [weak self] in self?.pasteRichTextIfSet() ?? false }
         textView = editorView
+        textView.usesFindBar = true
         textView.isRichText = false
         textView.importsGraphics = false
         textView.usesFontPanel = false
