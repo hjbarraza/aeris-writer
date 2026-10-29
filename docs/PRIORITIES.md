@@ -3,9 +3,9 @@
 Build order: every Must first, then Should, then Could. Within a tier, data safety first, then
 what H asked for, then the rest. First pass by the decision model over every open ticket,
 corrected by H's anchors (themes, PDF and authorship are Could; Substack and Hugo are the
-publishing Musts). Done tickets are not listed.
+publishing Musts), then (H, 2026-10-29 evening) publishing moved to Could: an existing script covers it for now. Done tickets are not listed.
 
-## Must (daily driver) (35)
+## Must (daily driver) (30)
 
 - M1-4 — Per-document metadata in xattrs
 - M1-5 — Full HTML rendering in `MarkdownCore`
@@ -37,11 +37,6 @@ publishing Musts). Done tickets are not listed.
 - M4-7 — macOS Versions
 - M4-13 — Local snapshot history: store and thinning
 - M4-14 — Local history: browse and restore
-- M6-0 — Publishing core
-- M6-4 — Publish UI
-- M6-13 — Publish to Substack
-- M6-14 — Publish to a Hugo site
-- M6-15 — Links between published notes (several publications, slug-built links)
 
 ## Should (soon after) (57)
 
@@ -103,7 +98,7 @@ publishing Musts). Done tickets are not listed.
 - M5-6 — Paste as conversation
 - M6-12 — Publish from the library
 
-## Could (later) (32)
+## Could (later) (37)
 
 - M1.5-4 — Live stats popover
 - M1.5-11 — Completion list follows the editor
@@ -137,6 +132,11 @@ publishing Musts). Done tickets are not listed.
 - M6-11 — Choose the blog
 - M2-32 — Renaming a file updates the links to it
 - M2-33 — Find and repair broken links
+- M6-0 — Publishing core
+- M6-4 — Publish UI
+- M6-13 — Publish to Substack
+- M6-14 — Publish to a Hugo site
+- M6-15 — Links between published notes (several publications, slug-built links)
 
 ## Won't for v1 (2)
 
