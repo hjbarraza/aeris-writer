@@ -28,6 +28,8 @@ enum SelfCheck {
         check(true, "isolation: library file is a temp file, not the real Locations.plist")
         // Never show the convert alert: record the ask and answer Keep.
         MarkdownDocument.askToConvert = { _, example, answer in encodingAsks.append(example); answer(false) }
+        // Never show the disk change sheet: record the ask and hold the answer.
+        MarkdownDocument.askAboutDiskChange = { doc, change, answer in diskAsks.append((doc, change, answer)) }
         shellChecks()
         layoutChecks()
         libraryChecks()
@@ -37,6 +39,7 @@ enum SelfCheck {
         liveRefreshChecks()
         liveRefreshEdgeChecks()
         encodingChecks()
+        externalChangeChecks()
         try? FileManager.default.removeItem(at: scratch)
         if failed { print("selfcheck FAILED"); exit(1) }
         print("selfcheck passed")
@@ -951,6 +954,173 @@ enum SelfCheck {
         while let i = Library.shared.tree.roots.firstIndex(where: { $0.path.hasPrefix(prefix + "/") }) {
             Library.shared.removeLocation(at: i)
         }
+    }
+
+    /// What `MarkdownDocument.askAboutDiskChange` was asked during the self-check; answers are held.
+    nonisolated(unsafe) static var diskAsks: [(doc: MarkdownDocument, change: MarkdownDocument.DiskChange,
+                                              answer: (Bool) -> Void)] = []
+
+    final class SaveProbe: NSObject {
+        var saved: Bool?
+        @objc func document(_ doc: NSDocument, didSave: Bool, contextInfo: UnsafeMutableRawPointer?) { saved = didSave }
+    }
+
+    /// Another app changes, moves or deletes the file of an open document. The changes come
+    /// from a separate process, as from another app; the prompt is answered through the seam.
+    @MainActor static func externalChangeChecks() {
+        guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else {
+            print("skip - external: NSCloseAlwaysConfirmsChanges is set, external change checks did not run")
+            return
+        }
+        let dir = scratch.appending(path: "External")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dc = NSDocumentController.shared
+        /// Runs `command` in /bin/sh in its own process, inside the test folder.
+        func elsewhere(_ command: String) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            p.arguments = ["-c", command]
+            p.currentDirectoryURL = dir
+            try? p.run(); p.waitUntilExit()
+        }
+        func disk(_ name: String) -> String? { try? String(contentsOf: dir.appending(path: name), encoding: .utf8) }
+        func open(_ name: String, _ text: String) -> (ErrorAnsweringDocument, EditorWindowController) {
+            let url = dir.appending(path: name)
+            try? text.write(to: url, atomically: false, encoding: .utf8)
+            let doc = try! ErrorAnsweringDocument(contentsOf: url, ofType: "net.daringfireball.markdown")
+            dc.addDocument(doc); doc.makeWindowControllers()
+            let wc = doc.windowControllers[0] as! EditorWindowController
+            wc.editorForTesting.viewDidAppear()
+            return (doc, wc)
+        }
+        /// Types inside one closed undo group (see `openChecks`), then waits a turn so a save can follow.
+        func type(_ text: String, in wc: EditorWindowController) {
+            let undo = (wc.document as? NSDocument)?.undoManager
+            undo?.beginUndoGrouping()
+            editorTextView(wc).insertText(text, replacementRange: NSRange(location: 0, length: 0))
+            undo?.endUndoGrouping()
+            (wc.document as? NSDocument)?.updateChangeCount(.changeDone)
+            _ = wait(timeout: 0.5) { false }
+        }
+        /// ⌘S: the user's save, through NSDocument's own checks.
+        func save(_ doc: NSDocument) -> Bool {
+            let probe = SaveProbe()
+            doc.save(withDelegate: probe, didSave: #selector(SaveProbe.document(_:didSave:contextInfo:)), contextInfo: nil)
+            _ = wait(timeout: 3) { probe.saved != nil }
+            return probe.saved == true
+        }
+        func asks(_ doc: MarkdownDocument) -> [MarkdownDocument.DiskChange] {
+            diskAsks.filter { $0.doc === doc }.map(\.change)
+        }
+        func answer(_ doc: MarkdownDocument, _ followDisk: Bool) {
+            diskAsks.last { $0.doc === doc }?.answer(followDisk)
+        }
+        func caret(_ wc: EditorWindowController) -> Int { editorTextView(wc).selectedRange().location }
+        /// The user comes back to Aeris from the app that changed the file.
+        func activate() { NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApp) }
+        diskAsks = []
+
+        // Our own ⌘S, autosave and editor-state write never ask.
+        let (own, ownWC) = open("own.md", "one")
+        type("x", in: ownWC)
+        let ownSaved = save(own)
+        type("y", in: ownWC)
+        var autosaved = false
+        own.autosave(withImplicitCancellability: false) { autosaved = $0 == nil }
+        _ = wait(timeout: 3) { autosaved }
+        own.detachEditor()
+        _ = wait(timeout: 1.5) { false }
+        check(ownSaved && autosaved && disk("own.md") == "yxone" && asks(own).isEmpty && own.presented.isEmpty,
+              "external: our own ⌘S, autosave and caret write never ask")
+        own.close()
+
+        // A clean document changed on disk asks and does not reload by itself.
+        let (b, bWC) = open("b.md", "one")
+        type("x", in: bWC)
+        _ = save(b)
+        editorTextView(bWC).setSelectedRange(NSRange(location: 3, length: 0))
+        _ = wait(timeout: 1.5) { false }
+        elsewhere("printf 'disk two' > b.md")
+        let bAsked = wait(timeout: 3) { asks(b) == [.modified] }
+        activate()
+        check(bAsked && b.textStorage.string == "xone" && !wait(timeout: 0.5) { b.textStorage.string != "xone" },
+              "external: a write to a clean document's file asks, no silent reload")
+        elsewhere("printf 'disk three' > b.md; sleep 0.2; printf 'disk four' > b.md")
+        check(!wait(timeout: 1.5) { asks(b).count > 1 } && b.textStorage.string == "xone",
+              "external: more writes while asking collapse into the one prompt")
+        answer(b, true)
+        check(b.textStorage.string == "disk four" && caret(bWC) == 3 && !b.hasUnautosavedChanges,
+              "external: Reload shows the latest disk text, caret stays at offset 3, nothing unsaved")
+        b.undoManager?.undo()
+        let undone = b.textStorage.string
+        b.undoManager?.undo()
+        check(undone == "xone" && b.textStorage.string == "one", "external: ⌘Z after Reload restores the old text, older undo still works")
+        editorTextView(bWC).setSelectedRange(NSRange(location: 2, length: 0))
+        elsewhere("printf 'z' > b.md")
+        check(wait(timeout: 3) { asks(b).count == 2 }, "external: a later write to the now-edited document asks again")
+        answer(b, true)
+        check(b.textStorage.string == "z" && caret(bWC) == 1 && b.presented.isEmpty,
+              "external: Reload to shorter text clamps the caret to the new length")
+        elsewhere("printf 'caf\\351' > b.md")  // Windows-1252
+        check(wait(timeout: 3) { asks(b).count == 3 }, "external: a Windows-1252 write asks")
+        answer(b, true)
+        check(b.textStorage.string == "café" && b.encoding == .windows1252, "external: Reload detects the file's encoding again")
+        b.close()
+
+        // Ignore keeps the window's text; the next ⌘S writes it with no "changed by another app" error.
+        let (c, _) = open("c.md", "mine")
+        elsewhere("printf 'theirs' > c.md")
+        check(wait(timeout: 3) { asks(c) == [.modified] }, "external: Ignore case asks")
+        answer(c, false)
+        check(!wait(timeout: 1) { asks(c).count > 1 } && c.textStorage.string == "mine" && disk("c.md") == "theirs",
+              "external: Ignore keeps the window's text and leaves the file alone until saved")
+        check(save(c) && disk("c.md") == "mine" && c.presented.isEmpty,
+              "external: after Ignore, ⌘S writes the window's text with no error")
+        c.close()
+
+        // A deleted file with unsaved edits: the text stays, autosave never re-creates the file,
+        // a switch can't close it; Keep then save writes it back.
+        let (d, dWC) = open("d.md", "keep me")
+        type("x ", in: dWC)
+        elsewhere("rm d.md")
+        activate()
+        check(wait(timeout: 3) { asks(d) == [.deleted] } && d.textStorage.string == "x keep me",
+              "external: deleting the file of an edited document asks, text stays")
+        var autosaveDone = false
+        d.autosave(withImplicitCancellability: true) { _ in autosaveDone = true }
+        _ = wait(timeout: 3) { autosaveDone }
+        var switched: Result<Void, Error>?
+        dWC.replaceDocument(with: dir.appending(path: "own.md")) { switched = $0 }
+        _ = wait(timeout: 3) { switched != nil }
+        check(disk("d.md") == nil && dWC.document === d && d.textStorage.string == "x keep me" && dc.documents.contains(d),
+              "external: while asking, autosave doesn't re-create the file and a switch doesn't close it")
+        answer(d, false)
+        check(wait(timeout: 3) { disk("d.md") == "x keep me" } && d.presented.isEmpty,
+              "external: Keep writes the file back")
+        type("y", in: dWC)
+        check(save(d) && disk("d.md") == "yx keep me" && asks(d) == [.deleted],
+              "external: after Keep, ⌘S saves with no new prompt")
+        d.close()
+
+        // Close discards only once picked.
+        let (e, eWC) = open("e.md", "bye")
+        type("x", in: eWC)
+        elsewhere("rm e.md")
+        activate()
+        check(wait(timeout: 3) { asks(e) == [.deleted] } && dc.documents.contains(e), "external: deleted file, Close case asks")
+        answer(e, true)
+        check(wait(timeout: 2) { !dc.documents.contains(e) } && disk("e.md") == nil,
+              "external: Close closes the document without re-creating the file")
+
+        // A move or rename follows the file silently.
+        let (f, fWC) = open("f.md", "move")
+        elsewhere("mv f.md g.md")
+        check(wait(timeout: 3) { f.fileURL?.lastPathComponent == "g.md" && fWC.window?.title.hasPrefix("g") == true }
+              && asks(f).isEmpty && f.textStorage.string == "move",
+              "external: a rename follows the file silently and the title updates")
+        f.close()
+
+        check(NSApp.windows.allSatisfy { !$0.isVisible }, "external: no window was ordered in")
     }
 }
 #endif

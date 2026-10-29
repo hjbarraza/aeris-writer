@@ -132,6 +132,16 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
         textView.scrollRangeToVisible(edit.selection)
     }
 
+    /// Replaces the whole text as one undoable edit (reloading the file), keeping the
+    /// selection's offsets, clamped to the new text.
+    func replaceAllText(with text: String, undoName: String) {
+        let sel = textView.selectedRange(), length = (text as NSString).length
+        let location = min(sel.location, length)
+        apply(TextEdit(range: NSRange(location: 0, length: (textView.string as NSString).length), replacement: text,
+                       selection: NSRange(location: location, length: min(sel.length, length - location))),
+              undoName: undoName)
+    }
+
     /// An undo step that selects `set` (if any) and registers its inverse, so the
     /// same step on the redo stack selects `inverse`. Registered before and after a
     /// text change, it runs after the text's own undo (and redo), which would
