@@ -1,4 +1,4 @@
-import XCTest
+import Testing
 import Foundation
 @testable import MarkdownCore
 
@@ -24,8 +24,8 @@ private func run(_ marked: String, _ op: (String, Int) -> TextEdit?) -> String? 
     return op(text, caret).map { applied(text, $0) }
 }
 
-final class TableEditTests: XCTestCase {
-    func testOperations() {
+struct TableEditTests {
+    @Test func operations() {
         let fixture = """
         | Name | Qty  | Note  |
         | :--- | ---: | :---: |
@@ -146,17 +146,17 @@ final class TableEditTests: XCTestCase {
                 "| ^    |     |     |\n| --- | --- | --- |\n|     |     |     |"),
         ]
         for (label, input, op, expected) in cases {
-            XCTAssertEqual(run(input, op), expected, label)
+            #expect(run(input, op) == expected, Comment(rawValue: label))
         }
     }
 
-    func testParseSerializeAndVerifyFlow() {
+    @Test func parseSerializeAndVerifyFlow() {
         // parse: raw cells, alignments, and the caret's cell in header / delimiter / body.
         let raw = "|x|`a\\|b`|\n|:-:|-:|\n|p \\| q|**y**|"
         if let p = TableEdit.parse(text: raw, at: 0) {
-            XCTAssertTrue(p.table == MarkdownTable(header: ["x", "`a\\|b`"], alignments: [.center, .right], rows: [["p \\| q", "**y**"]])
+            #expect(p.table == MarkdownTable(header: ["x", "`a\\|b`"], alignments: [.center, .right], rows: [["p \\| q", "**y**"]])
                   && p.range == NSRange(location: 0, length: (raw as NSString).length), "table parse raw cells")
-        } else { XCTAssertTrue(false, "table parse raw cells") }
+        } else { Issue.record("table parse raw cells") }
         let cellAt: [(String, Int, Int)] = [
             ("^|x|y|\n|-|-|\n|p|q|", 0, 0), ("|x|^y|\n|-|-|\n|p|q|", 0, 1), ("|x|y|^\n|-|-|\n|p|q|", 0, 1),
             ("|x|y|\n|-|-^|\n|p|q|", 0, 1), ("|x|y|\n|-|-|\n|p \\^| q|r|", 1, 0), ("|x|y|\n|-|-|\n|p|q^|", 1, 1),
@@ -165,16 +165,16 @@ final class TableEditTests: XCTestCase {
         for (marked, row, col) in cellAt {
             let (text, caret) = unmark(marked)
             let c = TableEdit.parse(text: text, at: caret)?.cell
-            XCTAssertTrue(c?.row == row && c?.col == col, "table caret cell \(marked.debugDescription)")
+            #expect(c?.row == row && c?.col == col, "table caret cell \(marked.debugDescription)")
         }
 
-        XCTAssertTrue(TableEdit.serialize(MarkdownTable(header: ["a", "bb"], alignments: [.left, nil], rows: [["1"], ["1", "2", "3"]]))
+        #expect(TableEdit.serialize(MarkdownTable(header: ["a", "bb"], alignments: [.left, nil], rows: [["1"], ["1", "2", "3"]]))
               == "| a    | bb  |\n| :--- | --- |\n| 1    |     |\n| 1    | 2   | 3   |", "table serialize pads short rows, keeps extra cells")
         // Menu validation's cheap check: a piped line with a delimiter row in its block.
-        XCTAssertTrue(TableEdit.looksLikeTable(text: "p\n\n|a|b|\n|-|-|\n|1|2|", at: 14), "looksLikeTable in a body row")
-        XCTAssertTrue(TableEdit.looksLikeTable(text: "a | b\n:-- | --", at: 0), "looksLikeTable without outer pipes")
-        XCTAssertTrue(!TableEdit.looksLikeTable(text: "a | b\nc | d", at: 0), "looksLikeTable: pipes, no delimiter row")
-        XCTAssertTrue(!TableEdit.looksLikeTable(text: "|a|b|\n|-|-|\n\nprose", at: 15), "looksLikeTable: prose after a table")
+        #expect(TableEdit.looksLikeTable(text: "p\n\n|a|b|\n|-|-|\n|1|2|", at: 14), "looksLikeTable in a body row")
+        #expect(TableEdit.looksLikeTable(text: "a | b\n:-- | --", at: 0), "looksLikeTable without outer pipes")
+        #expect(!TableEdit.looksLikeTable(text: "a | b\nc | d", at: 0), "looksLikeTable: pipes, no delimiter row")
+        #expect(!TableEdit.looksLikeTable(text: "|a|b|\n|-|-|\n\nprose", at: 15), "looksLikeTable: prose after a table")
 
         // Only top-level tables: never inside code, HTML blocks or list items (the
         // parse runs from `parseFrom`, default 0, so what comes before decides).
@@ -189,16 +189,15 @@ final class TableEditTests: XCTestCase {
             let ops: [TextEdit?] = [TableEdit.reformat(in: t, at: c), TableEdit.addRow(below: true, in: t, at: c),
                                     TableEdit.sort(ascending: true, in: t, at: c), TableEdit.nextCell(in: t, at: c),
                                     TableEdit.previousCell(in: t, at: c), TableEdit.transpose(in: t, at: c)]
-            XCTAssertTrue(TableEdit.parse(text: t, at: c) == nil && ops.allSatisfy { $0 == nil }, "no table ops on a non-top-level table: \(t.debugDescription)")
+            #expect(TableEdit.parse(text: t, at: c) == nil && ops.allSatisfy { $0 == nil }, "no table ops on a non-top-level table: \(t.debugDescription)")
         }
         let afterFence = "```\ncode\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"
-        XCTAssertTrue(TableEdit.nextCell(in: afterFence, at: (afterFence as NSString).range(of: "| 1").location + 2) != nil, "a table after a closed fence is a table")
+        #expect(TableEdit.nextCell(in: afterFence, at: (afterFence as NSString).range(of: "| 1").location + 2) != nil, "a table after a closed fence is a table")
         let tableAfterList = "- item\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"
-        XCTAssertTrue(TableEdit.parse(text: tableAfterList, at: (tableAfterList as NSString).range(of: "| 1").location + 2) != nil,
-              "an unindented table after a list is top-level")
+        #expect(TableEdit.parse(text: tableAfterList, at: (tableAfterList as NSString).range(of: "| 1").location + 2) != nil, "an unindented table after a list is top-level")
         // parseFrom: a top-level block start gives the same answer, cheaper.
         let twoTables = "| x |\n|---|\n| y |\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"
-        XCTAssertTrue(TableEdit.parse(text: twoTables, at: 41, parseFrom: 19)?.cell.row == 1, "parseFrom at a block start finds the table")
+        #expect(TableEdit.parse(text: twoTables, at: 41, parseFrom: 19)?.cell.row == 1, "parseFrom at a block start finds the table")
 
         // GFM escapes: only `\|` escapes a pipe; `\\|` is a backslash then an escaped pipe.
         // Re-serializing must leave every cell's rendered text identical.
@@ -210,9 +209,9 @@ final class TableEditTests: XCTestCase {
         ]
         for t in roundTrip {
             let caret = (t as NSString).length - 3
-            guard let e = TableEdit.reformat(in: t, at: caret) else { XCTAssertTrue(false, "round trip: located \(t.debugDescription)"); continue }
+            guard let e = TableEdit.reformat(in: t, at: caret) else { Issue.record("round trip: located \(t.debugDescription)"); continue }
             let out = (t as NSString).replacingCharacters(in: e.range, with: e.replacement)
-            XCTAssertTrue(MarkdownCore.html(out) == MarkdownCore.html(t), "round trip keeps every cell: \(t.debugDescription) → \(out.debugDescription)")
+            #expect(MarkdownCore.html(out) == MarkdownCore.html(t), "round trip keeps every cell: \(t.debugDescription) → \(out.debugDescription)")
         }
 
 
@@ -220,28 +219,26 @@ final class TableEditTests: XCTestCase {
         // the run start would read it as an opener. Parses start at restart points only.
         let secondFence = "```\nfoo\n\nbar\n```\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n```\n"
         let sf = (secondFence as NSString).range(of: "| 1").location + 2
-        XCTAssertTrue(TableEdit.reformat(in: secondFence, at: sf) == nil && TableEdit.addRow(below: true, in: secondFence, at: sf) == nil
+        #expect(TableEdit.reformat(in: secondFence, at: sf) == nil && TableEdit.addRow(below: true, in: secondFence, at: sf) == nil
               && TableEdit.reformat(in: secondFence, at: sf, parseFrom: 17) == nil, "table-looking text in a fence right after another fence is not a table")
         let afterFenceNoBlank = "```\nfoo\n\nbar\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n"
         let af = (afterFenceNoBlank as NSString).range(of: "| 1").location + 2
-        XCTAssertTrue(TableEdit.reformat(in: afterFenceNoBlank, at: af) != nil && TableEdit.nextCell(in: afterFenceNoBlank, at: af) != nil
+        #expect(TableEdit.reformat(in: afterFenceNoBlank, at: af) != nil && TableEdit.nextCell(in: afterFenceNoBlank, at: af) != nil
               && TableEdit.reformat(in: afterFenceNoBlank, at: af, parseFrom: 17) != nil, "a table right after a closing fence (no blank line) is a table")
         let listInFence = "```\nfoo\n\nbar\n```\n```\nyy\n- x\n```\n\ntail\n"
-        XCTAssertTrue(MarkdownCore.isInCodeBlock(listInFence, at: 24) && MarkdownCore.isInCodeBlock(listInFence, at: 24, parseFrom: 17),
-              "a list line in a fence right after another fence is code")
-        XCTAssertTrue(MarkdownCore.isRestartPoint(listInFence, 17, parseFrom: 0) && !MarkdownCore.isRestartPoint(listInFence, 13, parseFrom: 0),
-              "restart points: the second fence's opener is one, the first fence's closing line is not")
+        #expect(MarkdownCore.isInCodeBlock(listInFence, at: 24) && MarkdownCore.isInCodeBlock(listInFence, at: 24, parseFrom: 17), "a list line in a fence right after another fence is code")
+        #expect(MarkdownCore.isRestartPoint(listInFence, 17, parseFrom: 0) && !MarkdownCore.isRestartPoint(listInFence, 13, parseFrom: 0), "restart points: the second fence's opener is one, the first fence's closing line is not")
         let list = "- a\n- b\n\n  more\n- c\n"
-        XCTAssertTrue(MarkdownCore.isRestartPoint(list, 4, parseFrom: 0) && MarkdownCore.isRestartPoint(list, 16, parseFrom: 0)
+        #expect(MarkdownCore.isRestartPoint(list, 4, parseFrom: 0) && MarkdownCore.isRestartPoint(list, 16, parseFrom: 0)
               && !MarkdownCore.isRestartPoint(list, 9, parseFrom: 0), "restart points: top-level list items, not their continuation lines")
 
         // Column commands with the caret in an extra cell are no-ops (nil).
         let extra = "| a | b |\n|---|---|\n| 1 | 2 | 3 |"
         let c3 = (extra as NSString).range(of: "3").location
-        XCTAssertTrue(TableEdit.deleteColumn(in: extra, at: c3) == nil && TableEdit.moveColumn(right: false, in: extra, at: c3) == nil
+        #expect(TableEdit.deleteColumn(in: extra, at: c3) == nil && TableEdit.moveColumn(right: false, in: extra, at: c3) == nil
               && TableEdit.addColumn(after: true, in: extra, at: c3) == nil && TableEdit.setAlignment(.left, in: extra, at: c3) == nil
               && TableEdit.sort(ascending: true, in: extra, at: c3) == nil, "column commands in an extra cell are no-ops")
-        XCTAssertTrue(TableEdit.deleteColumn(in: extra, at: c3 - 4) != nil, "…and still act from a real cell")
+        #expect(TableEdit.deleteColumn(in: extra, at: c3 - 4) != nil, "…and still act from a real cell")
 
         // Ticket verify: insert 2×2, tab through the cells, add a column, reformat.
         var doc = ""
@@ -256,10 +253,10 @@ final class TableEditTests: XCTestCase {
             caret = step(TableEdit.nextCell(in: doc, at: caret))
             if let c = TableEdit.parse(text: doc, at: caret)?.cell { visited.append((c.row, c.col)) }
         }
-        XCTAssertTrue(visited.map { "\($0.0),\($0.1)" } == ["0,1", "1,0", "1,1", "2,0", "2,1", "3,0"], "table verify: tab through cells (adds row at end)")
+        #expect(visited.map { "\($0.0),\($0.1)" } == ["0,1", "1,0", "1,1", "2,0", "2,1", "3,0"], "table verify: tab through cells (adds row at end)")
         caret = step(TableEdit.addColumn(after: true, in: doc, at: caret))
         caret = step(TableEdit.reformat(in: doc, at: caret))
-        XCTAssertTrue(doc == "|     |     |     |\n| --- | --- | --- |\n|     |     |     |\n|     |     |     |\n|     |     |     |"
+        #expect(doc == "|     |     |     |\n| --- | --- | --- |\n|     |     |     |\n|     |     |     |\n|     |     |     |"
               && caret == 88, "table verify: add column, reformat → pipes aligned")
     }
 }

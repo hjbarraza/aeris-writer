@@ -1,10 +1,10 @@
-import XCTest
+import Testing
 import Foundation
 @testable import MarkdownCore
 
 /// Mirrors Sources/mdcheck/InlineEditChecks.swift. Text marks the selection as
 /// «…» or a caret as `|`, in both the input and the expected result.
-final class InlineEditTests: XCTestCase {
+struct InlineEditTests {
     private func cases() -> [(InlineMarker, String, String)] {
         let pairs: [(InlineMarker, String, String)] = [
             (.strong, "**", "**"), (.emphasis, "_", "_"), (.code, "`", "`"), (.strikethrough, "~~", "~~"),
@@ -96,23 +96,23 @@ final class InlineEditTests: XCTestCase {
         return out as String
     }
 
-    func testToggleTable() {
+    @Test func toggleTable() {
         for (m, input, expected) in cases() {
             let (text, sel) = unmark(input)
-            XCTAssertEqual(mark(text, InlineEdit.toggle(m, in: text, selection: sel)), expected, "\(m) \(input)")
+            #expect(mark(text, InlineEdit.toggle(m, in: text, selection: sel)) == expected, "\(m) \(input)")
         }
     }
 
-    func testClearStyles() {
+    @Test func clearStyles() {
         for (input, expected) in clearCases() {
             let (text, sel) = unmark(input)
-            XCTAssertEqual(mark(text, InlineEdit.clearStyles(in: text, selection: sel)), expected, input)
+            #expect(mark(text, InlineEdit.clearStyles(in: text, selection: sel)) == expected, Comment(rawValue: input))
         }
     }
 
-    func testSelectionClamped() {
+    @Test func selectionClamped() {
         let e = InlineEdit.toggle(.strong, in: "ab", selection: NSRange(location: 5, length: 3))
-        XCTAssertLessThanOrEqual(NSMaxRange(e.range), 2)
-        XCTAssertEqual(e.applied(to: "ab"), "**ab**")
+        #expect(NSMaxRange(e.range) <= 2)
+        #expect(e.applied(to: "ab") == "**ab**")
     }
 }
