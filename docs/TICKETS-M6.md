@@ -23,8 +23,15 @@ and unit-tested.
 - [ ] **M6-1 — Accounts + Keychain.** `WebServiceAccount` (service, display name,
   endpoint, payload choice) in Application Support; secret in Keychain via
   `Security.framework` (no third-party wrapper). Preferences ▸ Publishing pane
-  (SwiftUI leaf): add / edit / remove account.
-  *Verify:* add an account → entry in Keychain Access; remove → gone.
+  (SwiftUI leaf): add / edit / remove account; an empty state when there are none;
+  rename inline; drag to reorder; remove asks first (it deletes a Keychain secret).
+  Every sign-in sheet keeps its action button disabled until the inputs are valid (URLs
+  need scheme, host and path), locks its fields while working, and on failure shows the
+  error and unlocks them. Each sheet says plainly that Aeris creates drafts to review
+  before publishing.
+  *Verify:* add an account → entry in Keychain Access; remove → asks, then gone; rename and
+  reorder → survive relaunch; `example.com` without a scheme keeps Add disabled; a wrong
+  Ghost key → error, fields editable again.
 
 - [ ] **M6-2 — WordPress, self-hosted.** WP REST API, application password (Basic).
   Create draft post (`status=draft`), upload media, update post.
@@ -36,8 +43,10 @@ and unit-tested.
 
 - [ ] **M6-4 — Publish UI.** File ▸ Publish to ▸ (account). Sheet: title (from first
   H1), payload, tags; progress; result with "Open on site" link. Republish updates the
-  mapped post instead of creating a new one.
-  *Verify:* publish twice → one remote draft, updated.
+  mapped post instead of creating a new one. The Publish submenu is hidden when no
+  account exists.
+  *Verify:* publish twice → one remote draft, updated; remove all accounts → no Publish
+  item in the File menu.
 
 - [ ] **M6-5 — Ghost.** Admin API: Staff Access Token → JWT; create/update draft
   (`status: draft`); image upload.
@@ -56,6 +65,26 @@ and unit-tested.
   internal-endpoint client (create/put draft, upload image) + Markdown→ProseMirror
   converter in `MarkdownCore` (tested).
   *Verify:* draft appears in the Substack dashboard; paywall node survives re-read.
+
+- [ ] **M6-10 — Browser sign-in for self-hosted WordPress and Micropub.** Self-hosted
+  WordPress: after the site URL, Authorize opens the site's application-password
+  approval page and the password returns through `aeris://`; manual username + app
+  password stays available. Micropub: IndieAuth sign-in in the browser, returning
+  through `aeris://`; manual token stays available.
+  *Verify:* against a test WordPress site, Authorize → approve in the browser → account
+  appears with no typing; against an IndieAuth test endpoint → account appears.
+
+- [ ] **M6-11 — Choose the blog.** When an account has several blogs or publications
+  (WordPress.com, Micro.blog, Medium), Publish asks which one, preselecting the last one
+  used for that account.
+  *Verify:* an account with two blogs → picker shows, choose B → draft on B; next
+  publish preselects B.
+
+- [ ] **M6-12 — Publish from the library.** The file list's context menu on a single
+  text file has Publish ▸ (accounts), working without opening the file; hidden when no
+  account exists. Needs M2-10.
+  *Verify:* right-click a closed file ▸ Publish ▸ account → draft created, same flow as
+  File ▸ Publish.
 
 Exit criteria for M6: add a WordPress account (token in Keychain), Publish → draft on
 the site, nothing public; republish updates the same post. Ghost/Micropub/Micro.blog

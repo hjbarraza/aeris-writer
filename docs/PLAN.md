@@ -22,12 +22,21 @@ file per milestone. Run `scripts/status.sh` to see progress and validate the gat
 | # | Milestone | Goal (one line) | Tickets | Exit criteria | Done |
 |---|---|---|---|---|---|
 | M1 | Core editor | Open, edit, style, preview, save a real `.md` | [TICKETS-M1](TICKETS-M1.md) | open a `.md` → edit with live styling → live preview → save: bytes clean, cursor restored on reopen | |
-| M1.5 | Editor commands | Every P0 editing command from PRD §4.3 | [TICKETS-M1.5](TICKETS-M1.5.md) | write a doc using only menu/shortcut commands: headings, lists, task list, table, link, image, footnote; stats popover shows correct counts; typewriter + focus toggle | |
-| M2 | Library | Sidebar over on-disk folders, tags, smart folders, search | [TICKETS-M2](TICKETS-M2.md) | add a folder → browse, create, rename, trash files from sidebar; `#tag` appears in Tags; smart folder filters; ⌘K jumps to a file; Finder change shows live | |
-| M3 | Export | Markdown / HTML / PDF export, copy matrix, print | [TICKETS-M3](TICKETS-M3.md) | export the same doc to `.md`, `.html`, `.pdf` and open each in another app; copy-as-HTML pastes into a browser; print preview renders | |
-| M4 | Polish | Style check, URL scheme, themes, prefs | [TICKETS-M4](TICKETS-M4.md) | `aeris://open?path=…` opens a file; style check highlights adverbs; theme switch persists | |
+| M1.5 | Editor commands | Every editing command and writing behaviour: formatting, lists, tables, stats, completions, one Focus Mode (dimming + centring), line commands, auto-pairing | [TICKETS-M1.5](TICKETS-M1.5.md) | write a doc using only menu/shortcut commands: headings, lists, task list, table (size asked), link, image, footnote; stats correct for doc and selection; Focus Mode dims and centres in one toggle | |
+| M2 | Library | Three-column window (organizer \| file list \| editor) over on-disk folders: excerpts, sort, filter, self-saving drafts, file ops, favorites, tags, smart folders, quick search inside files, history, tabs | [TICKETS-M2](TICKETS-M2.md) | add a folder → browse files with excerpts and dates; ⌘N in a folder saves itself there, no dialog; rename/trash/Get Info from the list; `#tag` in Tags; smart folder + Recents filter; ⇧⌘O finds text inside a file and jumps to it; Back/Forward; Finder change shows live | |
+| M3 | Preview & export | Complete preview (show/hide, full size, two-way sync, extended syntax incl. maths, offline), then Markdown / HTML / PDF export, copy matrix, print — also from the library | [TICKETS-M3](TICKETS-M3.md) | extended-syntax fixture renders with Wi-Fi off; preview syncs both ways; export the same doc to `.md`, `.html`, `.pdf` and open each in another app; copy-as-HTML pastes into a browser; print preview renders; Export… from the library menu | |
+| M4 | Polish | Prefs, themes (per document), style check, syntax settings, URL scheme with consent | [TICKETS-M4](TICKETS-M4.md) | `aeris://open?path=…` opens a file after the consent prompt; style check highlights adverbs; theme switch persists per document | |
 | M5 | Optional | Authorship analytics (Human/AI/Reference %), annotations, transclusion | [TICKETS-M5](TICKETS-M5.md) | only if M1–M4 are done; see file | |
 | M6 | Publishing | Push a document as a *draft* to WordPress, Ghost, Micropub, Micro.blog (Medium, Substack P2) | [TICKETS-M6](TICKETS-M6.md) | add a WordPress account (token in Keychain) → Publish → draft appears on the site, nothing public; republish updates the same post | |
+
+**Three-column library and full behaviour set (decided 2026-10-29).** H chose a
+three-column window (organizer | file list | editor) and the full library feature set;
+M2 was re-planned around it. Order inside M2 is *visible first*: the three-column shell
+with a working file list (M2-4), then the organizer (M2-5), rows with excerpts (M2-6),
+sorting (M2-7) and self-saving drafts (M2-8) — before file ops, index, tags, favorites,
+smart folders, search, history and tabs. Focus Mode is one toggle for dimming and
+centring (M1.5-12 replaces the separate typewriter toggle). Preview completeness moved
+into M3 ahead of export, since export reuses the preview's HTML.
 
 **Publishing goes last (decided 2026-10-28).** The PRD puts it at M4; H moved it to
 the end so the editor, library and export are solid before any network code. Nothing
@@ -54,6 +63,9 @@ These unblock validation itself. Tracked in [TICKETS-M1](TICKETS-M1.md) as `INF-
 |---|---|---|
 | Word export library | M3-7 | Defer; P1 |
 | Substack: Swift reimplementation vs bundled Python helper | M6-9 | Swift, cookie-authed, minimal endpoints |
+| Draft file name: keep following the first line until the user renames (as planned), or fix it at first write | M2-8 | Follow until rename |
+| Renaming a favorite renames the file on disk, or favorite labels are not editable | M2-19 | Renames on disk |
+| Maths renderer to bundle (offline, licence-compatible) | M3-12 | Record in an ADR in-ticket |
 
 Resolved: AppKit-primary (ADR-001) · WKWebView preview (ADR-001) · swift-markdown (ADR-001) ·
 **Distribution = direct download, not Mac App Store** (decided 2026-10-28; no sandbox
@@ -65,7 +77,8 @@ constraints on folder access, Sparkle for updates later).
 INF-1 ─┐
 M1 ────┼─▶ M1.5 ─▶ M2 ─▶ M3 ─▶ M4 ─▶ M5 ─▶ M6 (publishing, last)
 INF-2 ─┘           (M3 only depends on M1; it can be parallelised
-                    with M1.5/M2 if a second person joins)
+                    with M1.5/M2 if a second person joins; M3-13 and M3-15
+                    need M2)
 ```
 
 ## Scope guard

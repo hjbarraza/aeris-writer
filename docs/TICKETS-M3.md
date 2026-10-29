@@ -1,16 +1,73 @@
-# M3 — Export, copy, print
+# M3 — Preview, export, copy, print
 
-Milestone goal: get a document out as Markdown, HTML, PDF; copy as Markdown/HTML/rich
-text; print. All free and ungated. Depends on M1 (preview HTML pipeline).
+Milestone goal: a complete preview (show/hide, full size, two-way scroll sync, every
+syntax the editor inserts rendered), then get a document out as Markdown, HTML, PDF; copy
+as Markdown/HTML/rich text; print — from the editor and from the library. All free,
+ungated and offline. Depends on M1 (preview HTML pipeline); the library items need M2.
 
 Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` green.
 
+Order: the preview tickets (M3-9…M3-13) come first, because export reuses their HTML.
+
 ---
+
+## Preview
+
+- [ ] **M3-9 — Preview controls.** View ▸ Show/Hide Preview (persisted per window);
+  Split / Full size (Full hides the editor; Split restores it); View ▸ Reload Preview.
+  The preview only renders while visible and renders at once when shown. An empty
+  document shows a centred, quiet placeholder line. The page's `lang` follows the
+  document's language (detected with NaturalLanguage), so hyphenation and quotes match.
+  The preview's context menu has no browser navigation or reload items.
+  *Verify:* hide the preview → relaunch → still hidden; Full → editor gone, Split → back;
+  empty document → placeholder; a French document → `<html lang="fr">`; right-click the
+  preview → no Back/Reload.
+
+- [ ] **M3-10 — Two-way scroll sync, with a setting.** Scrolling the preview moves the
+  editor to the same source line, as the editor already moves the preview (M1-7). The
+  preview also follows caret moves while typing. When the preview is shown it starts at
+  the editor's position. A setting turns sync off (default on). No feedback loops: the
+  pane being scrolled by the user leads.
+  *Verify:* scroll the preview to a heading → the editor shows that heading's line; move
+  the caret down with arrows past the visible preview → preview follows; sync off →
+  neither pane moves the other; no jitter while scrolling either pane.
+
+- [ ] **M3-11 — Extended syntax: highlight, footnotes, callouts, comments, page break,
+  TOC.** `MarkdownCore.html` renders `==x==` as `<mark>`, footnotes as numbered
+  references with a back-linked list at the end, callouts/alerts (`> [!NOTE]` etc.) as
+  styled boxes, `<!-- comments -->` hidden, page breaks as a print page break, and the
+  table-of-contents marker as a linked list of headings (heading ids from M1-11).
+  Applies to preview, export, copy and print.
+  *Verify:* a fixture with each syntax → `mdcheck` asserts the HTML; the preview shows a
+  highlight, a clickable footnote, a coloured callout and a working TOC; PDF export
+  breaks the page at the page-break marker.
+
+- [ ] **M3-12 — Math.** Inline `$…$` and display `$$…$$` render as typeset maths in
+  the preview and every export, fully offline: a bundled maths renderer (open-source,
+  licence-compatible, recorded in an ADR) produces static markup before the page loads,
+  so page scripts stay off. Invalid TeX shows the source in an error style, never a
+  blank.
+  *Verify:* `$e^{i\pi}+1=0$` and a display matrix render with Wi-Fi off; exported HTML
+  shows the same maths in Safari; `$\frac{$` shows an error-styled source.
+
+- [ ] **M3-13 — Wikilinks, hashtags and autolinks in HTML.** `[[Name]]` renders as a
+  link that opens the library file (M2-24) in the preview; `#tag` renders as a tag span;
+  bare URLs autolink. Settings choose, separately for the preview and for other output
+  (copy, export, publish), how wikilinks render (link / plain text / span), hashtags
+  (span / plain text) and autolinks (link / plain text). Pane in M4-0.
+  *Verify:* `mdcheck` cases for each setting; click `[[Other]]` in the preview → opens
+  it in Aeris; exported HTML with "wikilinks as plain text" has no `<a>` for them.
+
+## Export, copy, print
 
 - [ ] **M3-0 — Export menu + save panel.** File ▸ Export… with a format popover
   (`ExportFormat` enum: markdown, html, pdf; word/archive added later). `NSSavePanel`
-  with the right extension. One `Exporter` protocol, one type per format.
-  *Verify:* menu shows; choosing a format changes the suggested extension.
+  with the right extension, the name prefilled from the document, extension visible.
+  One `Exporter` protocol, one type per format. A line under the format popup explains
+  the choice (for PDF: page size comes from File ▸ Page Setup). The last format used is
+  remembered across launches. Failures show as a sheet on the window.
+  *Verify:* menu shows; choosing a format changes the suggested extension and the info
+  line; export as PDF, relaunch, Export… → PDF preselected.
 
 - [ ] **M3-1 — Markdown export.** Write the document text; if folder-wrapped, copy
   referenced images beside it.
@@ -22,8 +79,10 @@ Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` gre
   *Verify:* open the `.html` in Safari → matches the preview pane.
 
 - [ ] **M3-3 — PDF export.** Render the export HTML in an off-screen `WKWebView` →
-  `createPDF` with page size / margins options.
-  *Verify:* `.pdf` opens in Preview.app; headings, code, table paginate sanely.
+  paginated PDF, using the paper size and orientation from File ▸ Page Setup (no
+  separate size options to build).
+  *Verify:* `.pdf` opens in Preview.app; headings, code, table paginate sanely, long code
+  blocks and tables don't clip; Page Setup A4 → Letter is reflected in the next export.
 
 - [ ] **M3-4 — Copy matrix.** Edit ▸ Copy as Markdown / HTML / Rich Text, each for
   selection and whole document. Rich text via `NSAttributedString(html:)` on the
@@ -47,5 +106,23 @@ Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` gre
   maintained zip lib.
   *Verify:* archive unzips to the original folder.
 
-Exit criteria for M3: export one doc to `.md`, `.html`, `.pdf` and open each in another
-app; Copy as HTML pastes into a browser; print preview renders.
+- [ ] **M3-14 — Title page, headers and footers for print and PDF.** Settings: an
+  optional title page (title from the first heading, author name from settings, date),
+  a header (document title) and a footer (page number "n / total"). Apply to Print and
+  PDF export, not the live preview.
+  *Verify:* enable all three → exported PDF page 1 is the title page, every other page
+  has the title on top and "n / total" at the bottom; disable → plain pages.
+
+- [ ] **M3-15 — Export, print and copy from the library.** The file list's context menu
+  (single text file) gains Export…, Print ▸ (Formatted / Plain Text) and Copy ▸
+  (Markdown / HTML / Rich Text / File Path / Aeris Link — an `aeris://open?path=` URL),
+  all working without opening the file in the editor. Needs M2-10.
+  *Verify:* right-click a closed file ▸ Export… ▸ PDF → PDF written, no editor window
+  opened; Print ▸ Plain Text prints the source; Copy ▸ Markdown pastes the whole file;
+  Copy ▸ Aeris Link pasted into Terminal `open "…"` opens the file.
+
+Exit criteria for M3: the preview hides, goes full size, and syncs both ways; a fixture
+with highlight, footnotes, maths, a callout and a TOC renders in the preview with Wi-Fi
+off; export one doc to `.md`, `.html`, `.pdf` and open each in another app; Copy as HTML
+pastes into a browser; print preview renders; Export… works from the library's context
+menu.

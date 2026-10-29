@@ -25,3 +25,9 @@ Legend: `[ ]` todo · `[x]` done.
 - [ ] **M5-4 — Scroll-synced PDF preview.** Preview mode showing paginated PDF with
   fit-page / fit-width.
   *Verify:* toggle PDF mode → pages render; zoom options work.
+
+- [ ] **M5-5 — Content-block warnings.** When an embedded file (M5-3) is missing or
+  can't be read, the preview toolbar shows a warning badge; clicking it lists each
+  problem with its path. Export, print and publish ask Continue or Cancel first.
+  *Verify:* embed a missing file → badge appears, its list names the path; Export →
+  Continue/Cancel; Cancel writes nothing.

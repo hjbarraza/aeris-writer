@@ -128,3 +128,22 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   command insert CRLF, so a file never ends up with mixed endings.
   *Verify:* open a CRLF file, add lines with Return and list continuation, save → every line
   ends in CRLF (`od -c`).
+
+## Added 2026-10-29
+
+- [ ] **M1-13 — Open any text file.** A file with no extension or an unknown one (e.g.
+  `README`, `notes.text`) opens as text when its bytes decode cleanly with M1-8's
+  detection (no lossy decoding). Empty files open. RTF and binary files are refused
+  with a clear message and no half-open window.
+  *Verify:* open a UTF-8 file named `README` → opens as text; open a PNG renamed to
+  `x.text` → refused with a message, no window left behind; open an empty file → empty
+  document.
+
+- [ ] **M1-14 — Caret at the end on first open.** A file with no stored caret (M1-4)
+  opens with the caret at the end of the text, scrolled into view. If the stored caret
+  was at the very end, it stays anchored to the end: a file that grew since reopens
+  with the caret at the new end.
+  *Verify:* open a file never opened before → caret at the end; put the caret at the
+  end, close, `echo more >> file.md`, reopen → caret after "more"; `cmp` shows the file
+  bytes unchanged by opening.
+
