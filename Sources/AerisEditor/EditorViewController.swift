@@ -110,10 +110,13 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
     /// view, so undo, the edited state, the styler and the preview all see it.
     /// Undo puts back the selection from before the edit, redo the one after it.
     /// An edit that changes nothing only moves the selection.
-    private func apply(_ edit: TextEdit, undoName: String) {
+    /// Returns false when the text view refused the edit (the text is unchanged).
+    @discardableResult
+    private func apply(_ edit: TextEdit, undoName: String) -> Bool {
         let storage = textView.textStorage!
+        var applied = true
         if storage.attributedSubstring(from: edit.range).string != edit.replacement {
-            guard textView.isEditable else { return }
+            guard textView.isEditable else { return false }
             let undo = textView.undoManager
             textView.breakUndoCoalescing()
             undo?.beginUndoGrouping()
@@ -124,20 +127,23 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
                 storage.endEditing()
                 textView.didChangeText()
                 registerSelection(undo, set: nil, inverse: edit.selection)
+            } else {
+                applied = false
             }
             undo?.setActionName(undoName)
             undo?.endUndoGrouping()
         }
         textView.setSelectedRange(edit.selection)
         textView.scrollRangeToVisible(edit.selection)
+        return applied
     }
 
     /// Replaces the whole text as one undoable edit (reloading the file), keeping the
-    /// selection's offsets, clamped to the new text.
-    func replaceAllText(with text: String, undoName: String) {
+    /// selection's offsets, clamped to the new text. False when the text view refused it.
+    func replaceAllText(with text: String, undoName: String) -> Bool {
         let sel = textView.selectedRange(), length = (text as NSString).length
         let location = min(sel.location, length)
-        apply(TextEdit(range: NSRange(location: 0, length: (textView.string as NSString).length), replacement: text,
+        return apply(TextEdit(range: NSRange(location: 0, length: (textView.string as NSString).length), replacement: text,
                        selection: NSRange(location: location, length: min(sel.length, length - location))),
               undoName: undoName)
     }

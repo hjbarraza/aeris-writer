@@ -40,7 +40,7 @@ class MarkdownDocument: NSDocument {
         }
 
     /// What another app or process did to the document's file.
-    enum DiskChange { case modified, deleted }
+    enum DiskChange { case modified, deleted, unreadable }
 
     /// Asks what to do about a change to the file on disk. `answer(true)` follows the disk
     /// (Reload, or Close for a deletion); `answer(false)` keeps the window's text (Ignore, or
@@ -49,28 +49,50 @@ class MarkdownDocument: NSDocument {
         = { doc, change, answer in
             // No window to ask in: the question stays open, so nothing is reloaded or closed.
             guard let window = doc.windowForSheet else { return }
-            let name = doc.displayName ?? "This document"
-            let edited = doc.isDocumentEdited
-            let alert = NSAlert()
-            switch change {
-            case .modified:
-                alert.messageText = "“\(name)” was changed by another application."
-                alert.informativeText = edited
-                    ? "Reload shows the version on disk, and your unsaved changes will be lost "
-                        + "(Undo brings them back). Ignore keeps your version; saving it replaces the one on disk."
-                    : "Reload shows the version on disk. Ignore keeps this version; saving it replaces the one on disk."
-                alert.addButton(withTitle: "Reload").hasDestructiveAction = edited
-                alert.addButton(withTitle: "Ignore")
-                alert.beginSheetModal(for: window) { answer($0 == .alertFirstButtonReturn) }
-            case .deleted:
-                alert.messageText = "“\(name)” was deleted by another application."
-                alert.informativeText = (edited ? "It has unsaved changes. " : "")
-                    + "Keep it open to save it again in the same place, or close it."
-                alert.addButton(withTitle: "Keep")
-                alert.addButton(withTitle: "Close").hasDestructiveAction = edited
-                alert.beginSheetModal(for: window) { answer($0 == .alertSecondButtonReturn) }
+            diskChangeAlert(for: doc, change).beginSheetModal(for: window) {
+                answer($0 == (change == .modified ? .alertFirstButtonReturn : .alertSecondButtonReturn))
             }
         }
+
+    /// The sheet that asks about `change`. The first button is Reload for a modification and
+    /// keeps the window's text otherwise.
+    static func diskChangeAlert(for doc: MarkdownDocument, _ change: DiskChange) -> NSAlert {
+        let name = doc.displayName ?? "This document"
+        let edited = doc.isDocumentEdited
+        let alert = NSAlert()
+        switch change {
+        case .unreadable:
+            alert.messageText = "“\(name)” was changed by another application, and its contents can’t be read as text."
+            alert.informativeText = "Ignore keeps this version; saving it replaces the one on disk."
+                + (edited ? " Closing discards your unsaved changes." : "")
+            alert.addButton(withTitle: "Ignore")
+            alert.addButton(withTitle: edited ? "Close Without Saving" : "Close").hasDestructiveAction = edited
+        case .modified:
+            alert.messageText = "“\(name)” was changed by another application."
+            alert.informativeText = edited
+                ? "Reload shows the version on disk, and your unsaved changes will be lost "
+                    + "(Undo brings them back). Ignore keeps your version; saving it replaces the one on disk."
+                : "Reload shows the version on disk. Ignore keeps this version; saving it replaces the one on disk."
+            alert.addButton(withTitle: "Reload").hasDestructiveAction = edited
+            alert.addButton(withTitle: "Ignore")
+        case .deleted:
+            alert.messageText = "“\(name)” was deleted by another application."
+            alert.informativeText = (edited ? "It has unsaved changes. " : "")
+                + "Keep it open to save it again in the same place, or close it."
+                + (edited ? " Closing discards your unsaved changes." : "")
+            alert.addButton(withTitle: "Keep")
+            alert.addButton(withTitle: edited ? "Close Without Saving" : "Close").hasDestructiveAction = edited
+        }
+        return alert
+    }
+
+    /// Whether a file moved to `url` went to the Trash. A seam so the self-check never
+    /// touches the real Trash.
+    nonisolated(unsafe) static var isInTrash: (URL) -> Bool = { url in
+        guard let trash = try? FileManager.default.url(for: .trashDirectory, in: .userDomainMask,
+                                                       appropriateFor: url, create: false) else { return false }
+        return url.resolvingSymlinksInPath().path.hasPrefix(trash.resolvingSymlinksInPath().path + "/")
+    }
 
     /// The file's bytes as this document last read, wrote or accepted them. A change notice
     /// while the file still holds them (our own save, a caret xattr write) asks nothing.
@@ -91,15 +113,23 @@ class MarkdownDocument: NSDocument {
         let old = presentedItemURL
         // Follows the file (the title updates). Moved to the Trash, it was deleted.
         super.presentedItemDidMove(to: newURL)
-        guard let trash = try? FileManager.default.url(for: .trashDirectory, in: .userDomainMask,
-                                                       appropriateFor: newURL, create: false),
-              newURL.resolvingSymlinksInPath().path.hasPrefix(trash.resolvingSymlinksInPath().path + "/")
-        else { return }
+        guard Self.isInTrash(newURL) else { return }
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                guard !self.askingAboutDisk else { return }
+                // While another question is open, this one is asked once that is answered.
                 self.trashedFrom = old
-                self.ask(.deleted)
+                if !self.askingAboutDisk { self.ask(.deleted) }
+            }
+        }
+    }
+
+    /// A coordinated delete (Finder, another app) asks at once; the document stays open.
+    nonisolated override func accommodatePresentedItemDeletion(completionHandler: @escaping @Sendable (Error?) -> Void) {
+        // Not super: the question decides what happens to the document.
+        completionHandler(nil)
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                if !self.askingAboutDisk, !self.windowControllers.isEmpty { self.ask(.deleted) }
             }
         }
     }
@@ -139,46 +169,69 @@ class MarkdownDocument: NSDocument {
             switch (change, followDisk) {
             case (.modified, true):
                 self.reloadFromDisk()
-            case (.modified, false):
+            case (.modified, false), (.unreadable, false):
                 // Ignore: whatever the file holds now (later writes included) is overwritten on save.
                 if let url = self.fileURL, let data = try? Data(contentsOf: url) { self.accept(data, of: url) }
-            case (.deleted, true):
+            case (.deleted, true), (.unreadable, true):
+                self.trashedFrom = nil
                 self.close()
+                return
             case (.deleted, false):
                 self.keepsDeletedFile = true
                 if let original = self.trashedFrom { self.fileURL = original }
+                self.trashedFrom = nil
                 // Saved back now: NSDocument's ⌘S won't save to a file that no longer exists.
                 self.updateChangeCount(.changeDone)
                 self.autosave(withImplicitCancellability: false) { error in
                     guard let error, let window = self.windowForSheet else { return }
                     self.presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)
                 }
+                return
             }
-            self.trashedFrom = nil
-            // The file may have gone since the question; that asks anew.
-            if change == .modified { self.checkDisk() }
+            // A move to the Trash during the question is asked now; otherwise the file may have
+            // changed or gone since, which asks anew.
+            guard !self.askingAboutDisk else { return }
+            if self.trashedFrom != nil { self.ask(.deleted) } else { self.checkDisk() }
         }
     }
 
-    /// Reload: the file's text replaces the window's as one undoable edit, in the encoding
-    /// detected afresh. Not `read(from:)`, which clears the undo history.
+    /// Reload: the file's text replaces the window's as one undoable edit (text and encoding),
+    /// in the encoding detected afresh. Not `read(from:)`, which clears the undo history.
     private func reloadFromDisk() {
         guard let url = fileURL, let editor, let data = try? Data(contentsOf: url) else { return }
         guard let (text, detected) = TextEncoding.decode(data) else {
-            // Can't be shown: the window's text stays, as with Ignore.
-            accept(data, of: url)
-            if let window = windowForSheet {
-                presentError(CocoaError(.fileReadInapplicableStringEncoding, userInfo: [NSURLErrorKey: url]),
-                             modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)
-            }
+            // Nothing is accepted, so autosave keeps off the file until the user picks Ignore.
+            ask(.unreadable)
             return
         }
+        let old = (encoding, keepsUnstorableEncoding)
+        undoManager?.beginUndoGrouping()
+        // Set before the text changes, so the new text is checked against its own encoding.
         encoding = detected
         keepsUnstorableEncoding = false
-        editor.replaceAllText(with: text, undoName: "Reload")
+        let replaced = editor.replaceAllText(with: text, undoName: "Reload")
+        // Registered after the text: undo restores the encoding first, then the old text.
+        if replaced { registerEncodingUndo(old.0) }
+        undoManager?.setActionName("Reload")
+        undoManager?.endUndoGrouping()
+        guard replaced else {
+            (encoding, keepsUnstorableEncoding) = old
+            return
+        }
         accept(data, of: url)
-        // Matches the disk; undoing the reload makes it edited again.
-        updateChangeCount(.changeCleared)
+        // Matches the disk. After NSDocument has counted the closed undo group as a change,
+        // so the reload leaves it unedited and undoing the reload makes it edited again.
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.updateChangeCount(.changeCleared) } }
+    }
+
+    private func registerEncodingUndo(_ previous: TextEncoding) {
+        let current = encoding
+        undoManager?.registerUndo(withTarget: self) { doc in
+            MainActor.assumeIsolated {
+                doc.encoding = previous
+                doc.registerEncodingUndo(current)
+            }
+        }
     }
 
     /// While a disk change question is open the document stays: a close or a switch to

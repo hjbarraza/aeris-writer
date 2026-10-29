@@ -988,6 +988,9 @@ enum SelfCheck {
             let url = dir.appending(path: name)
             try? text.write(to: url, atomically: false, encoding: .utf8)
             let doc = try! ErrorAnsweringDocument(contentsOf: url, ofType: "net.daringfireball.markdown")
+            // Every edit closes its own top-level undo group, as AppKit's event loop closes the
+            // event's group (headless, an auto-opened event group would never close).
+            doc.undoManager?.groupsByEvent = false
             dc.addDocument(doc); doc.makeWindowControllers()
             let wc = doc.windowControllers[0] as! EditorWindowController
             wc.editorForTesting.viewDidAppear()
@@ -1049,7 +1052,7 @@ enum SelfCheck {
         check(!wait(timeout: 1.5) { asks(b).count > 1 } && b.textStorage.string == "xone",
               "external: more writes while asking collapse into the one prompt")
         answer(b, true)
-        check(b.textStorage.string == "disk four" && caret(bWC) == 3 && !b.hasUnautosavedChanges,
+        check(b.textStorage.string == "disk four" && caret(bWC) == 3 && wait(timeout: 1) { !b.hasUnautosavedChanges },
               "external: Reload shows the latest disk text, caret stays at offset 3, nothing unsaved")
         b.undoManager?.undo()
         let undone = b.textStorage.string
@@ -1065,10 +1068,47 @@ enum SelfCheck {
         check(wait(timeout: 3) { asks(b).count == 3 }, "external: a Windows-1252 write asks")
         answer(b, true)
         check(b.textStorage.string == "café" && b.encoding == .windows1252, "external: Reload detects the file's encoding again")
+        b.undoManager?.undo()
+        check(b.textStorage.string == "z" && b.encoding == .utf8, "external: ⌘Z after Reload restores the old encoding too")
         b.close()
 
+        // The edited state with undo groups closed per step, as AppKit's event loop closes them:
+        // Reload leaves a clean document clean, ⌘Z marks it edited.
+        let (r, _) = open("r.md", "one")
+        elsewhere("printf 'two' > r.md")
+        check(wait(timeout: 3) { asks(r) == [.modified] }, "external: clean Reload case asks")
+        let rUndo = r.undoManager!
+        // The sheet's answer arrives inside the event's undo group, which closes after it.
+        rUndo.beginUndoGrouping(); answer(r, true); rUndo.endUndoGrouping()
+        _ = wait(timeout: 0.3) { false }
+        check(r.textStorage.string == "two" && !r.isDocumentEdited, "external: after Reload a clean document is not edited")
+        rUndo.undo()
+        _ = wait(timeout: 0.3) { false }
+        check(r.textStorage.string == "one" && r.isDocumentEdited, "external: ⌘Z after Reload marks the document edited")
+        r.close()
+
+        // A file that can't be read as text: Reload keeps the window's text and asks Ignore or
+        // Close; nothing overwrites the file until Ignore.
+        let (u, uWC) = open("u.md", "mine")
+        type("E", in: uWC)
+        elsewhere("printf 'their\\000data' > u.md")
+        check(wait(timeout: 3) { asks(u) == [.modified] }, "external: unreadable case asks")
+        answer(u, true)
+        var uAutosaved = false
+        u.autosave(withImplicitCancellability: true) { _ in uAutosaved = true }
+        _ = wait(timeout: 3) { uAutosaved }
+        let theirs = Data("their\0data".utf8)
+        check(asks(u) == [.modified, .unreadable] && u.textStorage.string == "Emine"
+              && (try? Data(contentsOf: dir.appending(path: "u.md"))) == theirs,
+              "external: Reload of an unreadable file keeps the text, asks again, autosave leaves the file alone")
+        check(MarkdownDocument.diskChangeAlert(for: u, .unreadable).buttons.map(\.title) == ["Ignore", "Close Without Saving"],
+              "external: the unreadable question offers Ignore or Close Without Saving")
+        answer(u, false)
+        check(save(u) && disk("u.md") == "Emine", "external: after Ignore, a save replaces the unreadable file")
+        u.close()
+
         // Ignore keeps the window's text; the next ⌘S writes it with no "changed by another app" error.
-        let (c, _) = open("c.md", "mine")
+        let (c, cWC) = open("c.md", "mine")
         elsewhere("printf 'theirs' > c.md")
         check(wait(timeout: 3) { asks(c) == [.modified] }, "external: Ignore case asks")
         answer(c, false)
@@ -1076,6 +1116,16 @@ enum SelfCheck {
               "external: Ignore keeps the window's text and leaves the file alone until saved")
         check(save(c) && disk("c.md") == "mine" && c.presented.isEmpty,
               "external: after Ignore, ⌘S writes the window's text with no error")
+        // A Reload the editor refuses changes nothing, accepts nothing, and asks again.
+        _ = wait(timeout: 1.5) { false }  // a write right after our own save sends no notice
+        elsewhere("printf 'again' > c.md")
+        check(wait(timeout: 3) { asks(c).count == 2 }, "external: refused-Reload case asks")
+        editorTextView(cWC).isEditable = false
+        answer(c, true)
+        check(wait(timeout: 2) { asks(c).count == 3 } && c.textStorage.string == "mine",
+              "external: a Reload the editor refuses keeps the text and asks again")
+        editorTextView(cWC).isEditable = true
+        answer(c, false)
         c.close()
 
         // A deleted file with unsaved edits: the text stays, autosave never re-creates the file,
@@ -1108,6 +1158,8 @@ enum SelfCheck {
         elsewhere("rm e.md")
         activate()
         check(wait(timeout: 3) { asks(e) == [.deleted] } && dc.documents.contains(e), "external: deleted file, Close case asks")
+        check(MarkdownDocument.diskChangeAlert(for: e, .deleted).buttons.map(\.title) == ["Keep", "Close Without Saving"],
+              "external: with unsaved edits the deletion question says Close Without Saving")
         answer(e, true)
         check(wait(timeout: 2) { !dc.documents.contains(e) } && disk("e.md") == nil,
               "external: Close closes the document without re-creating the file")
@@ -1119,6 +1171,36 @@ enum SelfCheck {
               && asks(f).isEmpty && f.textStorage.string == "move",
               "external: a rename follows the file silently and the title updates")
         f.close()
+
+        // A coordinated delete (as Finder's or another app's) asks at once, without coming back to Aeris.
+        let (k, _) = open("k.md", "coordinated")
+        let kURL = dir.appending(path: "k.md")
+        DispatchQueue.global().async {
+            NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: kURL, options: .forDeleting, error: nil) {
+                try? FileManager.default.removeItem(at: $0)
+            }
+        }
+        check(wait(timeout: 3) { asks(k) == [.deleted] }, "external: a coordinated delete asks at once")
+        answer(k, true)
+
+        // A move to the Trash is a deletion; one that comes while another question is open is
+        // asked once that question is answered, and Keep saves the file back in its old place.
+        let previousTrash = MarkdownDocument.isInTrash
+        MarkdownDocument.isInTrash = { $0.path.contains("/External/Trash/") }
+        defer { MarkdownDocument.isInTrash = previousTrash }
+        elsewhere("mkdir -p Trash")
+        let (t, _) = open("t.md", "trash me")
+        elsewhere("printf 'other' > t.md")
+        check(wait(timeout: 3) { asks(t) == [.modified] }, "external: Trash case: the write asks first")
+        elsewhere("mv t.md Trash/t.md")
+        _ = wait(timeout: 1.5) { false }
+        answer(t, false)
+        check(wait(timeout: 3) { asks(t) == [.modified, .deleted] },
+              "external: a move to the Trash while asking is asked after the answer")
+        answer(t, false)
+        check(wait(timeout: 3) { disk("t.md") == "trash me" } && t.fileURL?.path.contains("/Trash/") == false,
+              "external: Keep after a move to the Trash saves the file back in its old place")
+        t.close()
 
         check(NSApp.windows.allSatisfy { !$0.isVisible }, "external: no window was ordered in")
     }
