@@ -31,7 +31,9 @@ final class QuickSearchController: NSObject, NSSearchFieldDelegate, NSTableViewD
     /// The query `results` were ranked for; a result list for any other text is never applied or opened.
     private var resultsQuery = ""
     /// Return was pressed before the ranking for the current text landed; it opens when it does.
-    private var openWhenRanked = false
+    /// The text Return was pressed for while its ranking was still running (and which press it was).
+    private var openWhenRanked: String?
+    private var returnPress = 0
     /// Self-check hook: a delay before ranking a given query, to make rankings land out of order.
     var rankDelayForTesting: ((String) -> TimeInterval)?
 
@@ -53,7 +55,7 @@ final class QuickSearchController: NSObject, NSSearchFieldDelegate, NSTableViewD
         candidates = []
         results = []
         resultsQuery = ""
-        openWhenRanked = false
+        openWhenRanked = nil
         generation += 1
         let panel = self.window ?? QuickSearchPanel(controller: self)
         if self.window == nil { build(in: panel); self.window = panel }
@@ -76,7 +78,7 @@ final class QuickSearchController: NSObject, NSSearchFieldDelegate, NSTableViewD
         guard let panel else { return }
         generation += 1
         enumeration?.cancel(); ranking?.cancel()
-        openWhenRanked = false
+        openWhenRanked = nil
         onScreen = false
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
         closeObserver = nil
@@ -120,6 +122,7 @@ final class QuickSearchController: NSObject, NSSearchFieldDelegate, NSTableViewD
 
     private func rerank() {
         ranking?.cancel()
+        if openWhenRanked != field.stringValue { openWhenRanked = nil }   // typing on cancels a pending Return
         let query = field.stringValue, snapshot = candidates, gen = generation
         let delay = rankDelayForTesting?(query) ?? 0
         let showExtension = AppDefaults.store.bool(forKey: FileListViewController.showExtensionsKey)
@@ -148,7 +151,7 @@ final class QuickSearchController: NSObject, NSSearchFieldDelegate, NSTableViewD
             table.scrollRowToVisible(row)
         }
         layoutPanel()
-        if openWhenRanked { openWhenRanked = false; openSelected() }
+        if let pending = openWhenRanked, pending == field.stringValue { openWhenRanked = nil; openSelected() }
     }
 
     // MARK: Choosing
@@ -159,10 +162,11 @@ final class QuickSearchController: NSObject, NSSearchFieldDelegate, NSTableViewD
     func openSelected() {
         guard resultsQuery == field.stringValue else {
             guard !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-            openWhenRanked = true
-            let gen = generation
+            openWhenRanked = field.stringValue
+            returnPress += 1
+            let press = returnPress
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-                MainActor.assumeIsolated { if self?.generation == gen { self?.openWhenRanked = false } }
+                MainActor.assumeIsolated { if self?.returnPress == press { self?.openWhenRanked = nil } }
             }
             return
         }
