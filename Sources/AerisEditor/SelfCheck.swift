@@ -184,7 +184,8 @@ enum SelfCheck {
         d1.updateChangeCount(.changeDone)
         autosave(d1)
         check(d1.fileURL?.lastPathComponent == "My Post.md" && disk("My Post.md") == "# Renamed My Post\n"
-                && files() == ["My Post 2.md", "My Post.md"],
+                // NSDocument's safe-save backup (`My Post~.md`) may still be going away.
+                && wait(timeout: 3) { files() == ["My Post 2.md", "My Post.md"] },
               "draft: editing the first line after the first save never renames the file (files \(files()), disk \(disk("My Post.md").debugDescription))")
 
         let d3 = dc.makeDraft(from: hostWC)!
