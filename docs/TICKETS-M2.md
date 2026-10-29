@@ -117,15 +117,13 @@ filter field at the bottom. Editor (right), with the preview beside it.
   list and quote markers and inline Markdown removed, `/` and `:` replaced, trimmed,
   capped at 60 characters on a word boundary). A clash gets " 2", " 3", …; a missing
   folder is created. An empty draft is never written and closes without a prompt.
-  Until the user renames the file, the file name keeps following the first line; after
-  a rename (from the list, the title bar or Finder) it never changes again (flag kept
-  in an xattr). File ▸ New Untitled Document (⌥⌘N) is the classic flow. A setting picks
+  The name is fixed once the file is first written; later edits to the first line never
+  rename it (H, 2026-10-29). File ▸ New Untitled Document (⌥⌘N) is the classic flow. A setting picks
   which one ⌘N runs, and the default extension (`.md`; plain-text extensions only).
   *Verify:* `mdcheck` cases for the name cleaner; ⌘N in folder X, type `# My Post`,
   Return → `X/My Post.md` exists, no dialog; second draft with the same line → `My Post
-  2.md`; change the first line → file renamed to match; rename the file in the list,
-  then change the first line → name unchanged; ⌘N then close without typing → no file,
-  no prompt.
+  2.md`; change the first line after the first save → file name unchanged; ⌘N then
+  close without typing → no file, no prompt.
 
 - [ ] **M2-9 — Untitled documents named from their first line.** For a document that
   is not a library draft (⌥⌘N, or no folder shown): the window title follows the first
