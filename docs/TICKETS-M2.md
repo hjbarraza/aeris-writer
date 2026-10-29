@@ -94,6 +94,17 @@ filter field at the bottom. Editor (right), with the preview beside it.
   "Yesterday"; select another row → open marker stays on the open file; a 2 000-file
   folder scrolls smoothly.
 
+- [ ] **M2-6a — Relaunch returns to where you were.** On relaunch each restored window
+  shows the same folder in the file list it showed at quit, with the same file
+  selected, and the organizer keeps which folders were expanded. Stored per window
+  as paths (no bookmarks needed: the location bookmark already resolves the root). A
+  folder that no longer exists falls back to its location's root; a location that no
+  longer resolves falls back to the first location.
+  *Verify:* self-check: set folder + selection + expanded state, save the window
+  state, restore into a fresh controller → same folder, selection, expansion; a
+  deleted folder falls back to the root. On screen: open a subfolder, expand two
+  folders in the organizer, quit, relaunch → same view.
+
 - [ ] **M2-7 — Sort bar and view options.** Sort by Date Modified, Date Created, Name,
   Extension; Newest/Oldest First (dates) or A→Z/Z→A (name, extension); Folders on Top;
   Show Date (Modified / Created / None); Show Excerpts; Navigation: **Tree** (folders
