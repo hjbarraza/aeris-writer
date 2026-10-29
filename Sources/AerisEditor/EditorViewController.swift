@@ -189,6 +189,14 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
     /// The converted insert is its own undo step.
     func textView(_ textView: NSTextView, shouldChangeTextInRanges ranges: [NSValue],
                   replacementStrings strings: [String]?) -> Bool {
+        // A deletion that removes a line break renumbers the ordered list below it, in
+        // the same undo step (outside code blocks).
+        if !applyingEdit, !textView.hasMarkedText(), ranges.count == 1, textView.selectedRanges.count == 1,
+           strings == [""], !lineIsCode(at: ranges[0].rangeValue.location),
+           let edit = ListEdit.delete(text: textView.string, range: ranges[0].rangeValue) {
+            apply(edit, undoName: "Typing")
+            return false
+        }
         func hasBreak(_ s: String) -> Bool { s.utf16.contains { $0 == 0x0A || $0 == 0x0D } }
         // A paste over several selections arrives one range at a time, hence both counts.
         guard !applyingEdit, !textView.hasMarkedText(), ranges.count == 1, textView.selectedRanges.count == 1,
@@ -255,9 +263,12 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
 
     /// The caret's line is in a code block (fenced or indented), as the styler last
     /// saw it: one attribute lookup, no parse.
-    private func caretLineIsCode() -> Bool {
+    private func caretLineIsCode() -> Bool { lineIsCode(at: textView.selectedRange().location) }
+
+    /// The line holding `location` is in a code block, as the styler last saw it.
+    private func lineIsCode(at location: Int) -> Bool {
         let ns = textView.string as NSString
-        var i = ns.lineRange(for: NSRange(location: textView.selectedRange().location, length: 0)).location
+        var i = ns.lineRange(for: NSRange(location: location, length: 0)).location
         while i < ns.length, ns.character(at: i) == 0x20 || ns.character(at: i) == 0x09 { i += 1 }
         return styler?.isInCode(at: i) == true
     }
