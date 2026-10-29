@@ -73,8 +73,10 @@ public enum InlineEdit {
         return TextEdit(range: sel, replacement: o + c, selection: NSRange(location: p + o.utf16.count, length: 0))
     }
 
-    private static func toggleRange(_ m: InlineMarker, _ s: NSString, _ r: NSRange) -> TextEdit {
+    private static func toggleRange(_ m: InlineMarker, _ s: NSString, _ full: NSRange) -> TextEdit {
+        let r = trimmed(s, full)
         if m == .code { return toggleCode(s, r) }
+        if [.strong, .emphasis, .strikethrough, .highlight].contains(m), let e = toggleSpans(m, s, r) { return e }
         let inner = s.substring(with: r)
         for (o, c) in pairs(m) {
             let ol = o.utf16.count, cl = c.utf16.count
@@ -96,6 +98,102 @@ public enum InlineEdit {
         let (o, c) = pairs(m)[0]
         return TextEdit(range: r, replacement: o + inner + c,
                         selection: NSRange(location: r.location + o.utf16.count, length: r.length))
+    }
+
+    /// `r` without leading and trailing whitespace (unchanged if it is all whitespace),
+    /// so the markers never sit next to a space.
+    private static func trimmed(_ s: NSString, _ r: NSRange) -> NSRange {
+        func ws(_ i: Int) -> Bool { Character(UnicodeScalar(s.character(at: i)) ?? "x").isWhitespace }
+        var a = r.location, b = NSMaxRange(r)
+        while a < b, ws(a) { a += 1 }
+        while b > a, ws(b - 1) { b -= 1 }
+        return a < b ? NSRange(location: a, length: b - a) : r
+    }
+
+    /// One marker pair found in the text: the whole span and its two marker runs.
+    private struct MarkSpan { let full: NSRange, open: NSRange, close: NSRange }
+
+    /// Spans of `m` touching `r`, from the parser (`==x==` by scanning, outside code).
+    private static func spans(_ m: InlineMarker, _ s: NSString, _ r: NSRange) -> [MarkSpan] {
+        let text = s as String
+        let conv = SpanCollector(text)
+        var out: [MarkSpan] = [], opaque: [NSRange] = []
+        func walk(_ n: Markup) {
+            if let nr = conv.nsRange(n.range) {
+                switch n {
+                case is Strong where m == .strong, is Emphasis where m == .emphasis, is Strikethrough where m == .strikethrough:
+                    let kids = n.children.compactMap { conv.nsRange($0.range) }
+                    if let f = kids.first, let l = kids.last {
+                        var full = nr, o = f.location - nr.location, c = NSMaxRange(nr) - NSMaxRange(l)
+                        // `***x***`: the parser gives Strong and Emphasis one shared range.
+                        let want = n is Strong ? 2 : n is Emphasis ? 1 : 0
+                        if want > 0 {
+                            if o < want || c < want { o = want; c = want }
+                            else if o > want { full = NSRange(location: nr.location + o - want, length: nr.length - (o - want) - (c - want)); o = want; c = want }
+                        }
+                        out.append(MarkSpan(full: full, open: NSRange(location: full.location, length: o),
+                                            close: NSRange(location: NSMaxRange(full) - c, length: c)))
+                    }
+                case is InlineCode, is CodeBlock, is HTMLBlock, is InlineHTML: opaque.append(nr)
+                default: break
+                }
+            }
+            n.children.forEach(walk)
+        }
+        walk(MarkdownCore.parse(text))
+        if m == .highlight {
+            let re = try! NSRegularExpression(pattern: #"==(?=\S)[^\n=]*?(?<=\S)=="#)
+            for x in re.matches(in: text, range: NSRange(location: 0, length: s.length))
+            where !opaque.contains(where: { NSIntersectionRange($0, x.range).length > 0 }) {
+                out.append(MarkSpan(full: x.range, open: NSRange(location: x.range.location, length: 2),
+                                    close: NSRange(location: NSMaxRange(x.range) - 2, length: 2)))
+            }
+        }
+        return out.filter { NSIntersectionRange($0.full, r).length > 0 }.sorted { $0.full.location < $1.full.location }
+    }
+
+    /// Off / on / mixed for a selection that touches existing spans of `m`. All of it
+    /// marked: remove those spans' markers only. Otherwise wrap the unmarked parts,
+    /// each trimmed of whitespace, in the first span's marker style. Nil: no span here.
+    private static func toggleSpans(_ m: InlineMarker, _ s: NSString, _ r: NSRange) -> TextEdit? {
+        let found = spans(m, s, r)
+        guard let style = found.first else { return nil }
+        var gaps: [NSRange] = []
+        var cursor = r.location
+        for sp in found {
+            if sp.full.location > cursor { gaps.append(trimmed(s, NSRange(location: cursor, length: sp.full.location - cursor))) }
+            cursor = max(cursor, NSMaxRange(sp.full))
+        }
+        if cursor < NSMaxRange(r) { gaps.append(trimmed(s, NSRange(location: cursor, length: NSMaxRange(r) - cursor))) }
+        gaps = gaps.filter { !s.substring(with: $0).allSatisfy(\.isWhitespace) }
+        let o = s.substring(with: style.open), c = s.substring(with: style.close)
+        var ops: [(NSRange, String)] = gaps.isEmpty
+            ? found.flatMap { [($0.open, ""), ($0.close, "")] }
+            : gaps.flatMap { g -> [(NSRange, String)] in
+                // A gap touching a span joins it instead of doubling the markers.
+                let left = found.first { NSMaxRange($0.full) == g.location }, right = found.first { $0.full.location == NSMaxRange(g) }
+                return [left.map { ($0.close, "") } ?? (NSRange(location: g.location, length: 0), o),
+                        right.map { ($0.open, "") } ?? (NSRange(location: NSMaxRange(g), length: 0), c)]
+            }
+        ops.sort { $0.0.location < $1.0.location }
+        let lo = ops.first!.0.location, hi = NSMaxRange(ops.last!.0)
+        var text = "", p = lo
+        for (rg, rep) in ops {
+            text += s.substring(with: NSRange(location: p, length: rg.location - p)) + rep
+            p = NSMaxRange(rg)
+        }
+        text += s.substring(with: NSRange(location: p, length: hi - p))
+        func map(_ x: Int, end: Bool) -> Int {
+            ops.reduce(x) { acc, op in
+                let (rg, rep) = op, delta = rep.utf16.count - rg.length
+                if NSMaxRange(rg) <= x && !(end && rg.length == 0 && rg.location == x) { return acc + delta }
+                if rg.location < x && x < NSMaxRange(rg) { return acc - (x - rg.location) }
+                return acc
+            }
+        }
+        let a = map(r.location, end: false), b = map(NSMaxRange(r), end: true)
+        return TextEdit(range: NSRange(location: lo, length: hi - lo), replacement: text,
+                        selection: NSRange(location: a, length: max(0, b - a)))
     }
 
     /// `o` ends at `r.location` and `c` starts at `NSMaxRange(r)`. A single-char
