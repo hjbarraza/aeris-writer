@@ -98,6 +98,7 @@ enum SelfCheck {
         anyTextFileChecks()
         hashtagMenuChecks()
         quickSearchChecks()
+        quickSearchContentChecks()
         renumberChecks()
         previewControlChecks()
         check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
@@ -208,6 +209,126 @@ enum SelfCheck {
         check(qs.isShown, "quick search: opens again over a visible window")
         wc.close()
         check(!qs.isShown, "quick search: closing the window closes the panel")
+        if let opened = wc.document as? NSDocument { opened.close() }
+        Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
+    }
+
+    /// M2-23: quick search inside files: headings and text of other files, the open file's own
+    /// matches, Find and Replace, the filters (kept), opening with the caret on the match.
+    @MainActor static func quickSearchContentChecks() {
+        let fm = FileManager.default
+        let dir = scratch.appending(path: "qscontent")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let open = (["# Zebra notes"] + (1...6).map { "line \($0) with a zebra" }).joined(separator: "\n") + "\n"
+        let far = (1...400).map { "filler line \($0)" }.joined(separator: "\n") + "\nthe zebra at the very end\nlast\n"
+        let files: [(String, String)] = [("Open.md", open), ("Other.md", "# Zebra habitat\nsome text\nthe zebra runs\n"), ("Far.md", far)]
+        for (name, text) in files { try? text.write(to: dir.appending(path: name), atomically: true, encoding: .utf8) }
+        try? Data(repeating: 0x7A, count: QuickSearch.maxFileBytes + 10).write(to: dir.appending(path: "Huge.md"))  // no match, but over the cap anyway
+        let before = try? fm.contentsOfDirectory(atPath: dir.path)
+        let farBytes = try? Data(contentsOf: dir.appending(path: "Far.md"))
+        Library.shared.addLocation(dir)
+        let dc = NSDocumentController.shared
+        let doc = try! dc.makeDocument(withContentsOf: dir.appending(path: "Open.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        wc.window?.orderFront(nil)
+        let qs = QuickSearchController.shared
+        let defaults = (QuickSearchController.includesText, QuickSearchController.includesHeadings)
+        QuickSearchController.includesText = true; QuickSearchController.includesHeadings = true
+        func rows() -> [String] { qs.rowSummaries }
+        func has(_ text: String) -> Bool { rows().contains { $0.contains(text) } }
+        func current() -> String? { (wc.document as? NSDocument)?.fileURL?.lastPathComponent }
+
+        wc.showQuickSearch(nil)
+        qs.setQuery("zebra")
+        check(wait(timeout: 5) { has("heading 1 in Other.md: Zebra habitat") && has("text in Far.md: the zebra at the very end") },
+              "quick search inside: a word in another file's heading -> heading result (with level) under that file (\(rows()))")
+        let r = rows()
+        let header = r.firstIndex(of: "header: Other.md"), headingRow = r.firstIndex { $0.hasPrefix("heading 1 in Other.md") }
+        check(header != nil && headingRow == header.map { $0 + 1 }, "quick search inside: one header per file, its heading result right under it")
+        check(r.firstIndex { $0.hasPrefix("text in Other.md") }.map { $0 > headingRow! } == true, "quick search inside: headings before text snippets")
+        check(!r.contains { $0.contains("Huge.md") }, "quick search inside: a file over 2 MB is skipped")
+        check(r.contains("section: This file") && r.filter { $0.hasPrefix("this ") && !$0.hasPrefix("this more") }.count == 5
+              && r.contains("this more: 2") && r.contains("find and replace") && !r.contains { $0.contains("in Open.md") },
+              "quick search inside: This file lists the open document's matches with a snippet, 'N more', Find and Replace (\(r))")
+        check(r.contains("section: Other files") && r.firstIndex(of: "section: This file")! < r.firstIndex(of: "section: Other files")!,
+              "quick search inside: This file group comes before Other files")
+
+        // Return on the heading result opens that file with the caret on the heading's match.
+        check(qs.selectRow(containing: "heading 1 in Other.md"), "quick search inside: the heading result can be selected")
+        qs.openSelected()
+        check(wait(timeout: 5) { current() == "Other.md" }, "quick search inside: Return opens the file")
+        let tv = editorTextView(wc)
+        check(wait(timeout: 5) { tv.selectedRange() == NSRange(location: 2, length: 5) && wc.window?.firstResponder === tv },
+              "quick search inside: the caret is on the heading match (\(tv.selectedRange()))")
+
+        // A text match deep in a long file: caret on it and scrolled into view.
+        wc.showQuickSearch(nil)
+        qs.setQuery("zebra at the very")
+        check(wait(timeout: 5) { has("text in Far.md") }, "quick search inside: phrase found in the long file")
+        qs.selectRow(containing: "text in Far.md")
+        qs.openSelected()
+        check(wait(timeout: 5) { current() == "Far.md" }, "quick search inside: opens the long file")
+        let farText = tv.string as NSString
+        let want = farText.range(of: "zebra at the very")
+        check(wait(timeout: 5) { tv.selectedRange() == want }, "quick search inside: the caret selects the text match (\(tv.selectedRange()) vs \(want))")
+        let visible = tv.enclosingScrollView?.contentView.bounds ?? .zero
+        check(visible.minY > 1000, "quick search inside: the match is scrolled into view (offset \(visible.minY))")
+
+        // Start and End of a file's header.
+        wc.showQuickSearch(nil)
+        qs.setQuery("zebra")
+        check(wait(timeout: 5) { has("header: Other.md") }, "quick search inside: listed again")
+        let cand = QuickSearch.Candidate(path: dir.appending(path: "Far.md").path, fileName: "Far.md", breadcrumb: "")
+        qs.jump(toEndOf: QuickSearch.Candidate(path: dir.appending(path: "Other.md").path, fileName: "Other.md", breadcrumb: ""), end: false)
+        check(wait(timeout: 5) { current() == "Other.md" && tv.selectedRange() == NSRange(location: 0, length: 0) }, "quick search inside: a file header jumps to the file's start")
+        wc.showQuickSearch(nil)
+        qs.setQuery("zebra")
+        _ = wait(timeout: 5) { has("header: Far.md") }
+        qs.jump(toEndOf: cand, end: true)
+        check(wait(timeout: 5) { current() == "Far.md" && tv.selectedRange() == NSRange(location: (tv.string as NSString).length, length: 0) },
+              "quick search inside: a file header jumps to the file's end")
+
+        // Find and Replace hands the query to the editor's find bar.
+        let findBoard = NSPasteboard(name: .find)
+        let savedFind = findBoard.string(forType: .string)
+        wc.showQuickSearch(nil)
+        qs.setQuery("filler")
+        check(wait(timeout: 5) { has("find and replace") }, "quick search inside: Find and Replace offered for the open document")
+        qs.selectRow(containing: "find and replace")
+        qs.openSelected()
+        check(!qs.isShown && wait(timeout: 5) { tv.enclosingScrollView?.isFindBarVisible == true && findBoard.string(forType: .string) == "filler" },
+              "quick search inside: Find and Replace opens the find bar with the query (\(findBoard.string(forType: .string) ?? "nil"))")
+        tv.enclosingScrollView?.isFindBarVisible = false
+        findBoard.clearContents()
+        if let savedFind { findBoard.setString(savedFind, forType: .string) }
+
+        // Filters: headings off -> only text results; kept in the defaults.
+        wc.showQuickSearch(nil)
+        qs.setFilters(text: true, headings: false)
+        qs.setQuery("zebra")
+        check(wait(timeout: 5) { has("text in Other.md") }, "quick search inside: text results with headings off")
+        check(!rows().contains { $0.contains("heading") }, "quick search inside: headings off -> no heading results (\(rows()))")
+        let stored = UserDefaults(suiteName: AppDefaults.selfCheckSuite)
+        check(stored?.object(forKey: QuickSearchController.headingsKey) as? Bool == false
+              && stored?.object(forKey: QuickSearchController.textKey) as? Bool != false,
+              "quick search inside: the filter is persisted (still off on a fresh read)")
+        qs.setFilters(text: false, headings: true)
+        check(wait(timeout: 5) { has("heading 1 in Other.md") } && !rows().contains { $0.hasPrefix("text in") || $0.hasPrefix("this text") },
+              "quick search inside: text off -> only heading results (\(rows()))")
+        qs.setFilters(text: true, headings: true)
+
+        // The next keystroke cancels the reading for the old text: nothing of it is shown afterwards.
+        qs.setQuery("zebra")
+        qs.setQuery("qqqqnothing")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+        check(rows().isEmpty, "quick search inside: results for older text are dropped (\(rows()))")
+        qs.panel?.cancelOperation(nil)
+
+        check((try? fm.contentsOfDirectory(atPath: dir.path)) == before && (try? Data(contentsOf: dir.appending(path: "Far.md"))) == farBytes,
+              "quick search inside: no file was changed or created")
+        (QuickSearchController.includesText, QuickSearchController.includesHeadings) = defaults
+        wc.close()
         if let opened = wc.document as? NSDocument { opened.close() }
         Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }

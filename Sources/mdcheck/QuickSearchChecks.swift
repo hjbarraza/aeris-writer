@@ -52,4 +52,55 @@ import LibraryCore
     QuickSearch.enumerate(roots: [tmp], isCancelled: { calls += 1; return calls > 2 }) { seen += $0 }
     check(seen.count < found.count, "quick search enumerate: stops when cancelled (\(seen.count) of \(found.count))")
     try? fm.removeItem(at: tmp)
+    runQuickSearchContentChecks()
+}
+
+/// M2-23: matching inside files (pure).
+@MainActor func runQuickSearchContentChecks() {
+    typealias Hit = QuickSearch.ContentMatch
+    let doc = "# Alpha plan\nIntro line about beta.\n\n## Beta notes\nMore beta text here.\n```\n# beta not a heading\n```\nCaf\u{E9} again, and BETA.\n"
+    func find(_ q: String, headings: Bool = true, text: Bool = true, max: Int = 100) -> [Hit] {
+        QuickSearch.search(in: doc, query: q, headings: headings, text: text, maxFound: max)
+    }
+    let all = find("beta")
+    check(all.map(\.kind) == [.heading(level: 2), .text, .text, .text, .text],
+          "content search: headings first (with level), then text in order (\(all.map(\.kind)))")
+    check(all.first?.snippet == "Beta notes" && all.first?.line == 4, "content search: heading snippet is its title, line number")
+    check(!all.contains { $0.snippet.contains("not a heading") && $0.kind != .text }, "content search: a # line in a code fence is text, not a heading")
+    check(find("beta", headings: false).allSatisfy { $0.kind == .text } && find("beta", headings: false).count == 4,
+          "content search: headings off -> text only")
+    check(find("beta", text: false).map(\.kind) == [.heading(level: 2)], "content search: text off -> headings only")
+    check(find("beta", headings: false, text: false).isEmpty && find("").isEmpty && find("  ").isEmpty, "content search: nothing on / empty query -> nothing")
+    check(find("cafe").first?.snippet.hasPrefix("Caf\u{E9}") == true, "content search: case and accents ignored")
+    let h = all[0]
+    check((doc as NSString).substring(with: h.range).lowercased() == "beta", "content search: range is the match in the text (UTF-16)")
+    check(find("beta", max: 2).count == 2, "content search: stops after maxFound")
+    check(String(Array(all[0].snippet)[all[0].highlight]) == "Beta", "content search: highlight inside the snippet")
+    let long = String(repeating: "word ", count: 60) + "needle " + String(repeating: "tail ", count: 60)
+    let lh = QuickSearch.search(in: long, query: "needle", headings: true, text: true, maxFound: 5)
+    check(lh.count == 1 && lh[0].snippet.count < 120 && String(Array(lh[0].snippet)[lh[0].highlight]) == "needle",
+          "content search: long line -> short snippet around the match")
+    let emoji = "\u{1F600} x\nsee beta"
+    check(QuickSearch.search(in: emoji, query: "beta", headings: true, text: true, maxFound: 5).first.map { (emoji as NSString).substring(with: $0.range) } == "beta",
+          "content search: UTF-16 offsets after an emoji")
+
+    // Files: skipped when over the size cap, cancellable, capped by number of files.
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory.appending(path: "mdcheck-qsc-\(UUID().uuidString)")
+    try? fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+    let small = tmp.appending(path: "small.md"), big = tmp.appending(path: "big.md")
+    try? Data("# needle\n".utf8).write(to: small)
+    try? Data(repeating: 0x61, count: QuickSearch.maxFileBytes + 1).write(to: big)
+    check(QuickSearch.readIfSmall(small.path) != nil && QuickSearch.readIfSmall(big.path) == nil, "content search: files over 2 MB are skipped")
+    try? fm.removeItem(at: tmp)
+    let cands = (0..<10).map { QuickSearch.Candidate(path: "/r/f\($0).md", fileName: "f\($0).md", breadcrumb: "R") }
+    var delivered: [QuickSearch.FileHits] = []
+    QuickSearch.searchFiles(query: "beta", candidates: cands, headings: true, text: true, maxFiles: 3,
+                            read: { $0.fileName == "f1.md" ? "nothing" : doc }, isCancelled: { false }) { delivered.append($0) }
+    check(delivered.map(\.candidate.fileName) == ["f0.md", "f2.md", "f3.md"], "content search: files without matches skipped, capped at maxFiles (\(delivered.map(\.candidate.fileName)))")
+    var n = 0
+    delivered = []
+    QuickSearch.searchFiles(query: "beta", candidates: cands, headings: true, text: true, maxFiles: 10,
+                            read: { _ in doc }, isCancelled: { n += 1; return n > 2 }) { delivered.append($0) }
+    check(delivered.count == 2, "content search: stops when cancelled (\(delivered.count))")
 }
