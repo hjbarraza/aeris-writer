@@ -47,10 +47,11 @@ func runRichTextMarkdownChecks() {
     }
     let (spans, spanMs) = timed { md(String(repeating: "<span>", count: 5000) + "<b>x</b>") }
     check(spans == nil || spans!.count < 100_000, "richtext: 5000 nested spans -> no crash, bounded (\(Int(spanMs)) ms)")
-    check(spanMs < 200, "richtext: 5000 nested spans in under 200 ms (\(Int(spanMs)) ms)")
+    // Idle: spans ~6 ms, lists ~70 ms. Bounds leave room for parallel builds; the old code crashed or took 48 s.
+    check(spanMs < 1000, "richtext: 5000 nested spans in under 1 s (\(Int(spanMs)) ms)")
     let (lists, listMs) = timed { md(String(repeating: "<ul><li>a", count: 10_000)) }
     check(lists != nil && lists!.utf8.count < 4_000_000, "richtext: 10k nested lists -> output bounded (\(lists?.utf8.count ?? 0) bytes)")
-    check(listMs < 200, "richtext: 10k nested lists in under 200 ms (\(Int(listMs)) ms)")
+    check(listMs < 1000, "richtext: 10k nested lists in under 1 s (\(Int(listMs)) ms)")
     check(md("<ul><li>a</li></ul>" + String(repeating: "x", count: RichTextMarkdown.maxHTMLBytes)) == nil,
           "richtext: HTML over 2 MB is not converted")
     check(md("<p>&lt;script&gt;alert(1)&lt;/script&gt; &amp;lt; <a href=u>l</a></p>")
