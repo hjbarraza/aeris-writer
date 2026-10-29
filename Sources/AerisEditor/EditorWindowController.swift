@@ -109,15 +109,22 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
 
     // MARK: Tabs (M2-26)
 
-    /// The tab bar's +: a new untitled document as a tab of this window, listing this tab's folder.
+    /// The tab bar's +: as File ▸ New, a draft for this tab's folder (M2-8), else a new untitled
+    /// document listing this tab's folder; either as a tab of this window.
     override func newWindowForTab(_ sender: Any?) {
         let controller = NSDocumentController.shared
-        guard let host = window, let type = controller.defaultType,
-              let doc = try? controller.makeUntitledDocument(ofType: type) else { return }
-        controller.addDocument(doc)
-        doc.makeWindowControllers()
+        guard let host = window else { return }
+        let doc: NSDocument
+        if let draft = (controller as? AerisDocumentController)?.makeDraft(from: self) {
+            doc = draft
+        } else {
+            guard let type = controller.defaultType, let untitled = try? controller.makeUntitledDocument(ofType: type) else { return }
+            controller.addDocument(untitled)
+            untitled.makeWindowControllers()
+            (untitled.windowControllers.first as? EditorWindowController)?.fileList.showFolder(fileList.folder)
+            doc = untitled
+        }
         guard let new = doc.windowControllers.first as? EditorWindowController, let newWindow = new.window else { return }
-        new.fileList.showFolder(fileList.folder)
         newWindow.tabbingMode = .preferred
         host.addTabbedWindow(newWindow, ordered: .above)
         newWindow.makeKeyAndOrderFront(nil)

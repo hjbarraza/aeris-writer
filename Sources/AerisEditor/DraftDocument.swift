@@ -30,6 +30,8 @@ final class DraftDocument: MarkdownDocument {
     /// untitled document, so nothing typed can be lost).
     private(set) var folder: URL?
     private var settling = false
+    /// Waiting for the folder save under way (a close or autosave that came during it).
+    private var settleWaiters: [(Bool) -> Void] = []
     private var shownName = "Untitled"
 
     /// Shows why the draft couldn't be written. A seam so the self-check shows no sheet.
@@ -76,10 +78,12 @@ final class DraftDocument: MarkdownDocument {
     }
 
     /// Writes the draft into its folder (created if missing) under its first line's name.
-    /// `done(true)` once it has its file; `done(false)` if it is blank, already settling or failed
-    /// (a failure is shown, and the draft becomes a normal untitled document).
+    /// `done(true)` once it has its file; `done(false)` if it is blank or failed (a failure is
+    /// shown, and the draft becomes a normal untitled document). While a save is under way, `done`
+    /// waits for its outcome.
     private func settle(_ done: @escaping (Bool) -> Void = { _ in }) {
-        guard awaitsFile, !isBlank, !settling, let folder else { return done(false) }
+        if settling { return settleWaiters.append(done) }
+        guard awaitsFile, !isBlank, let folder else { return done(false) }
         settling = true
         let fm = FileManager.default
         let url: URL
@@ -101,35 +105,47 @@ final class DraftDocument: MarkdownDocument {
         } catch {
             return failed(error, done)
         }
-        save(to: url, ofType: fileType ?? "net.daringfireball.markdown", for: .saveAsOperation) { error in
+        // The type the file's extension gives (plain text for a .txt draft).
+        let type = (try? NSDocumentController.shared.typeForContents(of: url)) ?? fileType ?? "net.daringfireball.markdown"
+        save(to: url, ofType: type, for: .saveAsOperation) { error in
             if let error {
                 // The name was claimed for this draft: the placeholder, or a partly written file, goes.
                 try? fm.removeItem(at: url)
                 return self.failed(error, done)
             }
-            self.settling = false
-            done(true)
+            self.finish(true, done)
         }
     }
 
     private func failed(_ error: Error, _ done: (Bool) -> Void) {
-        settling = false
         folder = nil
         windowControllers.forEach { $0.synchronizeWindowTitleWithDocumentName() }
         Self.presentSaveFailure(self, error)
-        done(false)
+        finish(false, done)
     }
 
-    /// A draft's autosave is its first save into the folder; a blank draft writes nothing, and a
-    /// failed one falls back to the usual untitled autosave.
+    private func finish(_ saved: Bool, _ done: (Bool) -> Void) {
+        settling = false
+        done(saved)
+        let waiters = settleWaiters
+        settleWaiters = []
+        waiters.forEach { $0(saved) }
+    }
+
+    /// A draft is written with no save panel: Finder shows its extension.
+    override var fileNameExtensionWasHiddenInLastRunSavePanel: Bool {
+        settling ? false : super.fileNameExtensionWasHiddenInLastRunSavePanel
+    }
+
+    /// A draft's autosave is its first save into the folder (or waits for the one under way); a
+    /// blank draft writes nothing, and a failed one falls back to the usual untitled autosave.
     override func autosave(withImplicitCancellability autosavingIsImplicitlyCancellable: Bool,
                            completionHandler: @escaping (Error?) -> Void) {
         guard awaitsFile else {
             return super.autosave(withImplicitCancellability: autosavingIsImplicitlyCancellable,
                                   completionHandler: completionHandler)
         }
-        // Blank, or the folder save is already under way: nothing to write elsewhere.
-        if isBlank || settling { return completionHandler(nil) }
+        if isBlank { return completionHandler(nil) }
         settle { saved in
             if saved { return completionHandler(nil) }
             super.autosave(withImplicitCancellability: autosavingIsImplicitlyCancellable,
@@ -137,7 +153,8 @@ final class DraftDocument: MarkdownDocument {
         }
     }
 
-    /// Closing a draft saves it into the folder, or, when blank, closes it without a prompt.
+    /// Closing a draft saves it into the folder (waiting for a save already under way), or, when
+    /// blank, closes it without a prompt.
     override func canClose(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?,
                            contextInfo: UnsafeMutableRawPointer?) {
         guard awaitsFile else {
