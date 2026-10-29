@@ -38,7 +38,7 @@ Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` gre
   *Verify:* reopen a file — caret and scroll are where you left them; the `.md` bytes
   are unchanged (diff shows no added front-matter). *(built 2026-10-29, verified headlessly; awaiting UI check.)*
 
-- [ ] **M1-5 — Full HTML rendering in `MarkdownCore`.** Extend the AST→HTML walker to
+- [x] **M1-5 — Full HTML rendering in `MarkdownCore`.** Extend the AST→HTML walker to
   cover the rest of CommonMark + GFM we need: code blocks, block quotes, links, images,
   tables, task lists, thematic breaks. Add XCTest cases per node type.
   *Verify:* `swift run mdcheck` (extend it) + `swift test` on Xcode/CI all green. *(mdcheck green 2026-10-28; XCTest pending CI, INF-2.)*
@@ -132,7 +132,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
 
 ## Added 2026-10-29
 
-- [ ] **M1-13 — Open any text file.** A file with no extension or an unknown one (e.g.
+- [x] **M1-13 — Open any text file.** A file with no extension or an unknown one (e.g.
   `README`, `notes.text`) opens as text when its bytes decode cleanly with M1-8's
   detection (no lossy decoding). Empty files open. RTF and binary files are refused
   with a clear message and no half-open window.

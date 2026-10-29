@@ -6,11 +6,16 @@ import MarkdownCore
 final class FileListTableView: NSTableView {
     var onReturn: (@MainActor () -> Void)?
     var onEnclosingFolder: (@MainActor () -> Void)?
+    /// Right and Left arrows on a folder row (Tree navigation expands and collapses it).
+    var onExpand: (@MainActor () -> Bool)?
+    var onCollapse: (@MainActor () -> Bool)?
 
     override func keyDown(with event: NSEvent) {
         switch (event.keyCode, event.modifierFlags.intersection(.deviceIndependentFlagsMask)) {
         case (36, []), (76, []): onReturn?()
         case (126, .command): onEnclosingFolder?()
+        case (124, []) where onExpand?() == true: break
+        case (123, []) where onCollapse?() == true: break
         default: super.keyDown(with: event)
         }
     }
@@ -21,6 +26,9 @@ final class FileCellView: NSTableCellView {
     let nameLabel = NSTextField(labelWithString: "")
     let dateLabel = NSTextField(labelWithString: "")
     let excerptLabel = NSTextField(wrappingLabelWithString: "")
+    private var nameLeading: NSLayoutConstraint!
+    /// Tree navigation: how far the row is pushed in.
+    var indent: CGFloat = 0 { didSet { nameLeading.constant = 8 + indent } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -40,9 +48,10 @@ final class FileCellView: NSTableCellView {
             addSubview(sub)
         }
         textField = nameLabel
+        nameLeading = nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
         NSLayoutConstraint.activate([
             nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 7),
-            nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            nameLeading,
             dateLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameLabel.trailingAnchor, constant: 8),
             dateLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
             dateLabel.firstBaselineAnchor.constraint(equalTo: nameLabel.firstBaselineAnchor),
@@ -53,6 +62,87 @@ final class FileCellView: NSTableCellView {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// A folder row's view: a disclosure button (Tree navigation), the folder icon and the name.
+final class FolderCellView: NSTableCellView {
+    let expandButton = NSButton(image: NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Expand")!,
+                                target: nil, action: nil)
+    private var leading: NSLayoutConstraint!
+    private var buttonWidth: NSLayoutConstraint!
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        let image = NSImageView()
+        image.contentTintColor = .secondaryLabelColor
+        let text = NSTextField(labelWithString: "")
+        text.lineBreakMode = .byTruncatingMiddle
+        expandButton.isBordered = false
+        expandButton.imagePosition = .imageOnly
+        for sub in [expandButton, image, text] as [NSView] {
+            sub.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(sub)
+        }
+        imageView = image
+        textField = text
+        leading = expandButton.leadingAnchor.constraint(equalTo: leadingAnchor)
+        buttonWidth = expandButton.widthAnchor.constraint(equalToConstant: 14)
+        NSLayoutConstraint.activate([
+            leading, buttonWidth,
+            expandButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            image.leadingAnchor.constraint(equalTo: expandButton.trailingAnchor, constant: 2),
+            image.centerYAnchor.constraint(equalTo: centerYAnchor),
+            image.widthAnchor.constraint(equalToConstant: 16),
+            image.heightAnchor.constraint(equalToConstant: 16),
+            text.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 6),
+            text.trailingAnchor.constraint(equalTo: trailingAnchor),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Tree navigation shows the disclosure button, indented by the folder's depth; List navigation hides it.
+    func configure(tree: Bool, expanded: Bool, depth: Int) {
+        expandButton.isHidden = !tree
+        buttonWidth.constant = tree ? 14 : 0
+        leading.constant = tree ? CGFloat(depth) * 16 : 0
+        expandButton.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right",
+                                     accessibilityDescription: expanded ? "Collapse" : "Expand")
+    }
+}
+
+/// The dates the sort looks at (modified and created), by path. Read on first use, then kept until
+/// `refresh` finds a change. Only reads the file system, never writes.
+@MainActor final class SortDateStore {
+    private var cache: [String: [Date?]] = [:]
+    private let queue = DispatchQueue(label: "aeris.sortdates", qos: .utility)
+
+    nonisolated private static func read(_ path: String) -> [Date?] {
+        let v = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey])
+        return [v?.contentModificationDate, v?.creationDate]
+    }
+
+    /// What is known so far; nil until `refresh` has looked at the file (never stats on the main thread).
+    func dates(of node: LibraryNode) -> (modified: Date?, created: Date?)? {
+        cache[node.path].map { ($0[0], $0[1]) }
+    }
+
+    /// Looks at `paths` off the main thread; `done` runs on the main thread with whether any date is new or moved.
+    func refresh(paths: [String], done: @escaping @MainActor (Bool) -> Void) {
+        queue.async {
+            let fresh = paths.map { ($0, Self.read($0)) }
+            DispatchQueue.main.async { MainActor.assumeIsolated {
+                var changed = false
+                if self.cache.count > 50_000 { self.cache.removeAll() }
+                for (path, dates) in fresh where self.cache[path] != dates {
+                    self.cache[path] = dates
+                    changed = true
+                }
+                done(changed)
+            } }
+        }
+    }
 }
 
 /// A row; the document open in this window gets a bar at its leading edge, whatever is selected.
@@ -71,8 +161,9 @@ final class FileRowView: NSTableRowView {
 /// (nil when the file can't be read as text).
 final class RowInfo: NSObject {
     let modified: Date?
+    let created: Date?
     let excerpt: String?
-    init(modified: Date?, excerpt: String?) { self.modified = modified; self.excerpt = excerpt }
+    init(modified: Date?, created: Date?, excerpt: String?) { self.modified = modified; self.created = created; self.excerpt = excerpt }
 }
 
 /// Row info of the files on screen. The stat and the read happen off the main thread; the result
@@ -95,13 +186,14 @@ final class RowInfo: NSObject {
         guard inFlight.insert(path).inserted else { again.insert(path); return }
         let known: Date?? = info(path: path).map { $0.modified }
         queue.async {
-            let modified = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey])
+            let modified = values?.contentModificationDate, created = values?.creationDate
             let fresh = known.map { $0 == modified } ?? false
             let excerpt = fresh ? nil : Excerpt.ofFile(atPath: path)
             DispatchQueue.main.async { MainActor.assumeIsolated {
                 self.inFlight.remove(path)
                 if !fresh {
-                    self.cache.setObject(RowInfo(modified: modified, excerpt: excerpt), forKey: path as NSString)
+                    self.cache.setObject(RowInfo(modified: modified, created: created, excerpt: excerpt), forKey: path as NSString)
                     self.onLoaded?(path)
                 }
                 if self.again.remove(path) != nil { self.refresh(path: path) }
@@ -135,13 +227,24 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     private var openPath: String?
     private let infos = RowInfoStore()
     private let dates = RowDateFormatter()
+    private let sortDates = SortDateStore()
+    /// A sort by date met a file whose dates are not read yet; the background read re-sorts when it lands.
+    private var missingDates = false
+    /// Tree navigation: the folders opened inline, by path.
+    private var expanded: Set<String> = []
+    private var options: FileListOptions { FileListSettings.shared.options }
+    let sortBar = NSButton(title: "", target: nil, action: nil)
+    private var sortBarHeight: NSLayoutConstraint!
+    private let sortMenu = FileListMenu.shared.makeMenu()
 
     /// Whether file names keep their extension. Off by default; the menu toggle comes later.
     static let showExtensionsKey = "ShowFileExtensions"
     private static let fileRowHeight: CGFloat = 64
+    private static let compactFileRowHeight: CGFloat = 32
 
-    /// What the table shows: the folder's children as of the last reload. A disk refresh edits the
-    /// folder's children before the list hears of it; row numbers must keep meaning the old rows until then.
+    /// What the table shows: the folder's children (and, in Tree navigation, those of the folders opened
+    /// inline) in sort order, as of the last reload. A disk refresh edits the folder's children before the
+    /// list hears of it; row numbers must keep meaning the old rows until then.
     private var rows: [LibraryNode] = []
 
     func node(atRow row: Int) -> LibraryNode? {
@@ -160,6 +263,19 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.doubleAction = #selector(rowDoubleClicked(_:))
         tableView.onReturn = { [weak self] in self?.openSelectedFolder() }
         tableView.onEnclosingFolder = { [weak self] in self?.goUp() }
+        tableView.onExpand = { [weak self] in self?.expandSelectedFolder(true) ?? false }
+        tableView.onCollapse = { [weak self] in self?.expandSelectedFolder(false) ?? false }
+        tableView.menu = FileListMenu.shared.makeMenu()
+        NotificationCenter.default.addObserver(self, selector: #selector(optionsChanged), name: FileListSettings.didChange, object: nil)
+        sortBar.target = self
+        sortBar.action = #selector(sortBarClicked(_:))
+        sortBar.isBordered = false
+        sortBar.font = .systemFont(ofSize: 11)
+        sortBar.contentTintColor = .secondaryLabelColor
+        sortBar.alignment = .left
+        sortBar.imagePosition = .imageTrailing
+        sortBar.image = NSImage(systemSymbolName: "chevron.up.chevron.down", accessibilityDescription: "Sort and view options")
+        sortBar.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         upButton.target = self
         upButton.action = #selector(upClicked(_:))
         upButton.isBordered = false
@@ -177,17 +293,22 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         emptyLabel.alignment = .center
 
         let root = NSView()
-        for sub in [upButton, titleLabel, scroll, emptyLabel] as [NSView] {
+        for sub in [upButton, titleLabel, sortBar, scroll, emptyLabel] as [NSView] {
             sub.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(sub)
         }
+        sortBarHeight = sortBar.heightAnchor.constraint(equalToConstant: 20)
         NSLayoutConstraint.activate([
+            sortBarHeight,
+            sortBar.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
+            sortBar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            sortBar.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -14),
             titleLabel.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
             upButton.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
             upButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             titleLabel.leadingAnchor.constraint(equalTo: upButton.trailingAnchor, constant: 6),
             titleLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
-            scroll.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+            scroll.topAnchor.constraint(equalTo: sortBar.bottomAnchor, constant: 4),
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
@@ -196,6 +317,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             emptyLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
         ])
         view = root
+        updateSortBar()
         Library.shared.register(self)
         showFolder(folder)
     }
@@ -208,7 +330,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         if node != nil, node === folder { return }
         folder = node
         node?.loadChildren()
-        rows = node?.children ?? []
+        rebuildRows()
         titleLabel.stringValue = node?.name ?? ""
         upButton.isEnabled = node?.parent != nil
         emptyLabel.isHidden = node != nil
@@ -225,6 +347,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Restoring a window's state: never opens anything.
     func restoreSelection(path: String?) {
         loadViewIfNeeded()
+        expandAncestors(of: path)
         revealing = true
         defer { revealing = false }
         guard let path, let row = rows.firstIndex(where: { $0.path == path }) else {
@@ -239,9 +362,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Never opens anything.
     func reveal(_ url: URL?) {
         loadViewIfNeeded()
+        let path = url.map(LibraryListing.canonicalPath)
+        expandAncestors(of: path)
         revealing = true
         defer { revealing = false }
-        let path = url.map(LibraryListing.canonicalPath)
         setOpenPath(path)
         guard let row = rows.firstIndex(where: { $0.path == path }) else {
             tableView.deselectAll(nil)
@@ -268,6 +392,127 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         for row in visible.location..<(visible.location + visible.length) where rows.indices.contains(row) && !rows[row].isDirectory {
             infos.refresh(path: rows[row].path)
         }
+        // A file whose date moved changes the order when the list is sorted by a date.
+        refreshSortDates()
+    }
+
+    // MARK: Order and options
+
+    private func sorted(_ nodes: [LibraryNode]) -> [LibraryNode] {
+        let o = options
+        return FileListSort.sorted(nodes, options: o) { node in
+            var d: (modified: Date?, created: Date?) = (nil, nil)
+            if o.sortKey.isDate {
+                if let known = sortDates.dates(of: node) { d = known } else { missingDates = true }
+            }
+            return FileListSort.Item(name: node.name, isDirectory: node.isDirectory, modified: d.modified, created: d.created)
+        }
+    }
+
+    /// `rows` from the folder on screen: sorted at every level, with opened folders expanded in place.
+    private func rebuildRows() {
+        guard let folder else { rows = []; return }
+        let tree = options.navigation == .tree
+        var result: [LibraryNode] = []
+        func add(_ parent: LibraryNode) {
+            for child in sorted(parent.children ?? []) {
+                result.append(child)
+                if tree, child.isDirectory, expanded.contains(child.path) {
+                    child.loadChildren()
+                    add(child)
+                }
+            }
+        }
+        missingDates = false
+        add(folder)
+        rows = result
+        if missingDates { refreshSortDates() }
+    }
+
+    private func refreshSortDates() {
+        guard options.sortKey.isDate else { return }
+        sortDates.refresh(paths: rows.map(\.path)) { [weak self] changed in
+            if changed { self?.reloadRows(onlyIfOrderChanged: true) }
+        }
+    }
+
+    /// Rebuilds and reloads the rows, putting the selection back on the same node; never scrolls or opens anything.
+    private func reloadRows(onlyIfOrderChanged: Bool = false) {
+        let selected = node(atRow: tableView.selectedRow)
+        let old = rows
+        rebuildRows()
+        if onlyIfOrderChanged, old.count == rows.count, zip(old, rows).allSatisfy({ $0 === $1 }) { return }
+        let wasRevealing = revealing
+        revealing = true
+        tableView.reloadData()
+        if let selected, let row = rows.firstIndex(where: { $0 === selected }) {
+            tableView.selectRowIndexes([row], byExtendingSelection: false)
+        } else {
+            // The highlighted file is gone: no neighbour inherits its row.
+            tableView.deselectAll(nil)
+        }
+        revealing = wasRevealing
+    }
+
+    @objc private func optionsChanged() {
+        updateSortBar()
+        reloadRows()
+        refreshSortDates()
+    }
+
+    private func updateSortBar() {
+        let o = options
+        sortBar.title = "\(o.sortTitle), \(o.directionTitle)"
+        sortBar.isHidden = !o.showSortBar
+        sortBarHeight.constant = o.showSortBar ? 20 : 0
+    }
+
+    @objc private func sortBarClicked(_ sender: NSButton) {
+        sortMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: 0), in: sender)
+    }
+
+    private func setExpanded(_ node: LibraryNode, _ on: Bool) {
+        guard options.navigation == .tree, node.isDirectory,
+              expanded.contains(node.path) != on else { return }
+        if on { expanded.insert(node.path) } else { expanded.remove(node.path) }
+        reloadRows()
+    }
+
+    /// Right and Left arrows: true if the selected folder row took the key.
+    private func expandSelectedFolder(_ on: Bool) -> Bool {
+        guard options.navigation == .tree, let node = node(atRow: tableView.selectedRow) else { return false }
+        if node.isDirectory, expanded.contains(node.path) != on {
+            setExpanded(node, on)
+            return true
+        }
+        // Left on a file, a closed folder or a nested row goes to the enclosing folder's row.
+        guard !on, let parent = node.parent, parent !== folder, let row = rows.firstIndex(where: { $0 === parent }) else { return false }
+        tableView.selectRowIndexes([row], byExtendingSelection: false)
+        tableView.scrollRowToVisible(row)
+        return true
+    }
+
+    /// Tree navigation: opens the folders between the folder on screen and `path`, so its row is there.
+    private func expandAncestors(of path: String?) {
+        guard options.navigation == .tree, let folder, let path, path.hasPrefix(folder.path + "/") else { return }
+        var changed = false
+        var up = Library.shared.tree.node(atPath: path)?.parent
+        while let p = up, p !== folder {
+            changed = expanded.insert(p.path).inserted || changed
+            up = p.parent
+        }
+        if changed { reloadRows() }
+    }
+
+    @objc private func disclosureClicked(_ sender: NSButton) {
+        guard let node = node(atRow: tableView.row(for: sender)) else { return }
+        setExpanded(node, !expanded.contains(node.path))
+    }
+
+    private func depth(of node: LibraryNode) -> Int {
+        var depth = 0, up = node.parent
+        while let p = up, p !== folder { depth += 1; up = p.parent }
+        return depth
     }
 
     private func infoLoaded(_ path: String) {
@@ -279,7 +524,13 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// The date, and the excerpt: "No text" for an empty file, nothing for an unreadable one
     /// or while it is being read.
     private func show(_ info: RowInfo?, in cell: FileCellView) {
-        cell.dateLabel.stringValue = info?.modified.map { dates.label(for: $0) } ?? ""
+        let date: Date? = switch options.showDate {
+        case .modified: info?.modified
+        case .created: info?.created
+        case .none: nil
+        }
+        cell.dateLabel.stringValue = date.map { dates.label(for: $0) } ?? ""
+        cell.excerptLabel.isHidden = !options.showExcerpts
         cell.excerptLabel.stringValue = info?.excerpt.map { $0.isEmpty ? "No text" : $0 } ?? ""
     }
 
@@ -290,18 +541,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         if Library.shared.tree.node(atPath: folder.path) !== folder {
             return showFolder(Library.shared.tree.node(atPath: folder.path))
         }
-        guard changes.contains(where: { $0.parent === folder }) else { return }
-        let selected = node(atRow: tableView.selectedRow)
-        rows = folder.children ?? []
-        revealing = true
-        tableView.reloadData()
-        if let selected, let row = rows.firstIndex(where: { $0 === selected }) {
-            tableView.selectRowIndexes([row], byExtendingSelection: false)
-        } else {
-            // The highlighted file is gone: no neighbour inherits its row.
-            tableView.deselectAll(nil)
-        }
-        revealing = false
+        guard changes.contains(where: { change in change.parent === folder || rows.contains { $0 === change.parent } }) else { return }
+        reloadRows()
     }
 
     /// The library's roots changed: the folder on screen may be gone or replaced.
@@ -328,11 +569,16 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         }
     }
 
-    /// Shows the selected folder row's contents; a file row does nothing here.
+    /// The selected folder row: Tree navigation opens or closes it in place, List navigation shows its
+    /// contents here. A file row does nothing here.
     private func openSelectedFolder() {
         guard let node = node(atRow: tableView.selectedRow), node.isDirectory else { return }
-        showFolder(node)
-        onNavigate?()
+        if options.navigation == .tree {
+            setExpanded(node, !expanded.contains(node.path))
+        } else {
+            showFolder(node)
+            onNavigate?()
+        }
     }
 
     @objc private func rowDoubleClicked(_ sender: Any?) { openSelectedFolder() }
@@ -358,7 +604,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        node(atRow: row)?.isDirectory == false ? Self.fileRowHeight : tableView.rowHeight
+        node(atRow: row)?.isDirectory == false
+            ? (options.showExcerpts ? Self.fileRowHeight : Self.compactFileRowHeight) : tableView.rowHeight
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -372,8 +619,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let node = node(atRow: row) else { return nil }
         if !node.isDirectory { return fileCell(for: node) }
-        let id = NSUserInterfaceItemIdentifier("cell")
-        let cell = tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView ?? makeCell(id)
+        let id = NSUserInterfaceItemIdentifier("folderCell")
+        let cell = tableView.makeView(withIdentifier: id, owner: nil) as? FolderCellView ?? makeFolderCell(id)
+        cell.configure(tree: options.navigation == .tree, expanded: expanded.contains(node.path), depth: depth(of: node))
         cell.imageView?.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "Folder")
         cell.textField?.stringValue = node.name
         return cell
@@ -384,34 +632,18 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let cell = tableView.makeView(withIdentifier: id, owner: nil) as? FileCellView ?? FileCellView()
         cell.identifier = id
         let showExtension = AppDefaults.store.bool(forKey: Self.showExtensionsKey)
+        cell.indent = options.navigation == .tree ? CGFloat(depth(of: node)) * 16 : 0
         cell.nameLabel.stringValue = showExtension ? node.name : (node.name as NSString).deletingPathExtension
         show(infos.info(path: node.path), in: cell)
         infos.refresh(path: node.path)
         return cell
     }
 
-    private func makeCell(_ id: NSUserInterfaceItemIdentifier) -> NSTableCellView {
-        let cell = NSTableCellView()
+    private func makeFolderCell(_ id: NSUserInterfaceItemIdentifier) -> FolderCellView {
+        let cell = FolderCellView()
         cell.identifier = id
-        let image = NSImageView()
-        image.contentTintColor = .secondaryLabelColor
-        let text = NSTextField(labelWithString: "")
-        text.lineBreakMode = .byTruncatingMiddle
-        for sub in [image, text] as [NSView] {
-            sub.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(sub)
-        }
-        cell.imageView = image
-        cell.textField = text
-        NSLayoutConstraint.activate([
-            image.leadingAnchor.constraint(equalTo: cell.leadingAnchor),
-            image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            image.widthAnchor.constraint(equalToConstant: 16),
-            image.heightAnchor.constraint(equalToConstant: 16),
-            text.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 6),
-            text.trailingAnchor.constraint(equalTo: cell.trailingAnchor),
-            text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
+        cell.expandButton.target = self
+        cell.expandButton.action = #selector(disclosureClicked(_:))
         return cell
     }
 }
