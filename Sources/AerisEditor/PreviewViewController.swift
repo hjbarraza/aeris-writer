@@ -113,9 +113,11 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
             pageReady = false
             pendingBody = nil
             let title = document.displayName ?? "Preview"
+            let base = document.fileURL?.deletingLastPathComponent()
+            pageURL = base ?? URL(string: "about:blank")
+            ownLoadsPending += 1
             pageNav = webView.loadHTMLString(
-                MarkdownCore.htmlDocument(body: body, title: title),
-                baseURL: document.fileURL?.deletingLastPathComponent())
+                MarkdownCore.htmlDocument(body: body, title: title), baseURL: base)
         } else if !pageReady {
             pendingBody = body
         } else {
@@ -163,6 +165,7 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard navigation === pageNav else { return }
         pageReady = true
+        ownLoadsPending = 0  // a superseded load never reports; don't let its credit linger
         if let body = pendingBody {
             pendingBody = nil
             setBody(body)  // applies the sync too
@@ -171,15 +174,31 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
         }
     }
 
-    // The preview never navigates away from the document: a link scrolls it, opens another
-    // Markdown file in Aeris, or goes to the system (web and mail only).
+    /// The base URL of the page on screen, and whether the load we just issued is still to
+    /// be seen by the policy check. Only that one load is allowed; see `NavigationPolicy`.
+    private var pageURL: URL?
+    private var ownLoadsPending = 0
+
+    // The preview never navigates on its own: it shows only the HTML we render. A link click
+    // scrolls it, opens another Markdown file in Aeris, or goes to the system (web and mail
+    // only); forms, meta refresh, iframes and file pages are all cancelled.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
-        if navigationAction.navigationType == .linkActivated {
-            if let url = navigationAction.request.url { handleLink(url) }
-            decisionHandler(.cancel)
-        } else {
-            decisionHandler(.allow)
+        guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
+        let kind: NavigationKind = switch navigationAction.navigationType {
+        case .linkActivated: .linkActivated
+        case .formSubmitted, .formResubmitted: .formSubmitted
+        default: .other
+        }
+        let isMain = navigationAction.targetFrame?.isMainFrame ?? false
+        let ownLoad = isMain && ownLoadsPending > 0 && kind == .other
+        if ownLoad { ownLoadsPending -= 1 }
+        let policy = NavigationPolicy.decide(url, isMainFrame: isMain, kind: kind, isOwnLoad: ownLoad,
+                                             pageURL: pageURL, documentURL: document?.fileURL)
+        switch policy {
+        case .allow: decisionHandler(.allow)
+        case .cancel: decisionHandler(.cancel)
+        case .link(let action): perform(action); decisionHandler(.cancel)
         }
     }
 
@@ -191,8 +210,10 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
     /// Where web and mail links go. Replaceable so a headless check opens nothing.
     var openExternally: (URL) -> Void = { NSWorkspace.shared.open($0) }
 
-    func handleLink(_ url: URL) {
-        switch LinkAction.decide(url, documentURL: document?.fileURL) {
+    func handleLink(_ url: URL) { perform(LinkAction.decide(url, documentURL: document?.fileURL)) }
+
+    private func perform(_ action: LinkAction) {
+        switch action {
         case .scroll(let anchor): scroll(toAnchor: anchor)
         case .openDocument(let target): openDocument(target)
         case .system(let target): openExternally(target)

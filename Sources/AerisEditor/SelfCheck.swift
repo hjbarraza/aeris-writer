@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import WebKit
+import Network
 import MarkdownCore
 import LibraryCore
 
@@ -45,6 +46,7 @@ enum SelfCheck {
         encodingChecks()
         externalChangeChecks()
         linkChecks()
+        navigationChecks()
         rowChecks()
         restorationChecks()
         try? FileManager.default.removeItem(at: scratch)
@@ -1652,6 +1654,121 @@ enum SelfCheck {
         check(Library.shared.tree.roots.map(\.path) == rootsBefore, "restore: locations were not reordered")
         close(wc1, d1); close(wc2, d2)
         Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
+    }
+
+    /// Counts connections to a throwaway local port, so "no network request" is observable.
+    private final class Probe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        private(set) var port: UInt16 = 0
+        private var listener: NWListener?
+        var hits: Int { lock.lock(); defer { lock.unlock() }; return count }
+        init?() {
+            guard let l = try? NWListener(using: .tcp, on: .any) else { return nil }
+            listener = l
+            l.newConnectionHandler = { [self] conn in
+                lock.lock(); count += 1; lock.unlock()
+                conn.cancel()
+            }
+            let ready = DispatchSemaphore(value: 0)
+            l.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
+            l.start(queue: .global())
+            guard ready.wait(timeout: .now() + 3) == .success, let p = l.port?.rawValue else { return nil }
+            port = p
+        }
+        deinit { listener?.cancel() }
+    }
+
+    /// The preview shows only the page we render: no iframe, meta refresh, form or script
+    /// navigation reaches the network or leaves the page; unsaved documents ignore relative links.
+    @MainActor static func navigationChecks() {
+        guard let probe = Probe() else { check(false, "navigation: local probe server starts"); return }
+        let remote = "http://127.0.0.1:\(probe.port)/x"
+        let dir = scratch.appending(path: "nav")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let main = dir.appending(path: "Nav.md")
+        let filler = (0..<60).map { "Paragraph \($0)." }.joined(separator: "\n\n")
+        try? """
+            <iframe src="\(remote)"></iframe>
+
+            <meta http-equiv="refresh" content="0;url=\(remote)">
+
+            <form id="f" action="\(remote)" method="post"><input name="a"></form>
+
+            <form id="g" action="#x" method="post"><input name="b"></form>
+
+            # Marker
+
+            \(filler)
+
+            ## Second
+
+            \(filler)
+            """.write(to: main, atomically: true, encoding: .utf8)
+        let dc = NSDocumentController.shared
+        let doc = try! dc.makeDocument(withContentsOf: main, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        let web = wc.previewForTesting.webViewForTesting
+        wc.window?.setContentSize(NSSize(width: 1320, height: 400))
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        func eval(_ js: String) -> Any? {
+            let out = Box<Any?>(nil), done = Box(false)
+            web.evaluateJavaScript(js) { value, _ in out.value = value; done.value = true }
+            _ = wait(timeout: 3) { done.value }
+            return out.value
+        }
+        let ready = wait(timeout: 10) { (eval("!!document.getElementById('marker')") as? Bool) == true }
+        check(ready, "navigation: the page with iframe, meta refresh and form renders")
+        let pageURL = web.url
+        // Let the iframe and the meta refresh do what they would, then fire the form and
+        // script navigations, which need no click.
+        _ = wait(timeout: 1.5) { false }
+        _ = eval("document.getElementById('f').submit()")
+        _ = wait(timeout: 1) { false }
+        _ = eval("document.getElementById('g').submit()")
+        _ = wait(timeout: 1) { false }
+        _ = eval("location.href = '\(remote)'")
+        _ = wait(timeout: 1) { false }
+        _ = eval("location.href = 'file:///etc/hosts'")
+        _ = wait(timeout: 1) { false }
+        check(probe.hits == 0, "navigation: no network request from iframe, meta refresh, form or script (\(probe.hits) hits)")
+        check(web.url == pageURL && (eval("!!document.getElementById('marker')") as? Bool) == true,
+              "navigation: the preview stays on our page")
+        wc.close()
+
+        // Unsaved document: a link to another file does nothing; an in-page anchor still scrolls.
+        let untitled = try! MarkdownDocument(type: "net.daringfireball.markdown")
+        dc.addDocument(untitled); untitled.makeWindowControllers()
+        let uwc = untitled.windowControllers[0] as! EditorWindowController
+        untitled.textStorage.replaceCharacters(in: NSRange(location: 0, length: 0),
+            with: "[Other](other.md#second) and [Here](#second)\n\n# First\n\n\(filler)\n\n## Second\n\n\(filler)\n")
+        let preview = uwc.previewForTesting, uweb = preview.webViewForTesting
+        uwc.window?.setContentSize(NSSize(width: 1320, height: 400))
+        uwc.window?.contentView?.layoutSubtreeIfNeeded()
+        func ueval(_ js: String) -> Any? {
+            let out = Box<Any?>(nil), done = Box(false)
+            uweb.evaluateJavaScript(js) { value, _ in out.value = value; done.value = true }
+            _ = wait(timeout: 3) { done.value }
+            return out.value
+        }
+        let uready = wait(timeout: 10) { (ueval("!!document.getElementById('second')") as? Bool) == true }
+        check(uready, "navigation: unsaved document renders")
+        let hrefs = ueval("Array.from(document.querySelectorAll('a')).map(a => a.href)") as? [String] ?? []
+        print("info - unsaved hrefs as WebKit resolves them: \(hrefs)")
+        if hrefs.count == 2 {
+            let out = Box<WKNavigationActionPolicy?>(nil)
+            preview.webView(uweb, decidePolicyFor: FakeNavigationAction(URL(string: hrefs[0])!)) { out.value = $0 }
+            _ = wait(timeout: 1) { false }
+            check(out.value == .cancel && (ueval("window.scrollY") as? Double ?? -1) == 0,
+                  "navigation: a relative link in an unsaved document does nothing")
+            preview.webView(uweb, decidePolicyFor: FakeNavigationAction(URL(string: hrefs[1])!)) { _ in }
+            check(wait(timeout: 3) { (ueval("window.scrollY") as? Double ?? 0) > 100 },
+                  "navigation: #anchor still scrolls in an unsaved document")
+        } else {
+            check(false, "navigation: unsaved document links render")
+        }
+        uwc.close()
     }
 
     /// Preview links act like links in a document: scroll, open in Aeris, or hand web/mail to

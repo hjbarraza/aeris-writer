@@ -35,6 +35,36 @@ struct LinkTargetTests {
         #expect(LinkAction.decide(URL(string: "about:blank#second")!, documentURL: nil) == .scroll(anchor: "second"))
     }
 
+    @Test func unsavedAndFileHostLinks() {
+        let unsaved = { (href: String) in LinkAction.resolve(href, documentURL: nil).map { LinkAction.decide($0, documentURL: nil) } }
+        #expect(unsaved("#x") == .scroll(anchor: "x"))
+        #expect(unsaved("other.md#x") == nil && unsaved("other.md") == nil)
+        #expect(unsaved("https://a.b/") == .system(URL(string: "https://a.b/")!))
+        #expect(LinkAction.decide(URL(string: "file://host/x.md")!, documentURL: Self.doc) == .ignore)
+        #expect(LinkAction.decide(URL(string: "file://localhost/tmp/notes/Other.md")!, documentURL: Self.doc) == .openDocument(URL(fileURLWithPath: "/tmp/notes/Other.md")))
+        #expect(LinkAction.decide(URL(string: "file:///tmp/notes/Other.md")!, documentURL: Self.doc) == .openDocument(URL(fileURLWithPath: "/tmp/notes/Other.md")))
+    }
+
+    static let page = URL(fileURLWithPath: "/tmp/notes/")
+    func nav(_ s: String, main: Bool = true, kind: NavigationKind = .other, own: Bool = false, page: URL? = page) -> NavigationPolicy {
+        NavigationPolicy.decide(URL(string: s)!, isMainFrame: main, kind: kind, isOwnLoad: own, pageURL: page, documentURL: Self.doc)
+    }
+    @Test func navigationPolicy() {
+        let page = Self.page
+        #expect(nav(page.absoluteString, own: true) == .allow)
+        #expect(nav(page.absoluteString) == .cancel)
+        #expect(nav("https://example.com") == .cancel && nav("https://example.com", kind: .formSubmitted) == .cancel)
+        #expect(nav("file:///tmp/notes/Other.md") == .cancel && nav("file:///etc/passwd") == .cancel)
+        #expect(nav(page.absoluteString + "#x") == .allow)
+        #expect(nav("file:///tmp/other/#x") == .cancel)
+        #expect(nav("https://example.com", main: false) == .cancel && nav("file:///tmp/x.html", main: false) == .cancel)
+        #expect(nav("about:blank", main: false) == .allow && nav("about:srcdoc", main: false) == .allow)
+        #expect(nav("https://example.com", kind: .linkActivated) == .link(.system(URL(string: "https://example.com")!)))
+        #expect(nav(page.absoluteString + "#x", kind: .formSubmitted) == .cancel && nav("about:blank#x", main: false, kind: .formSubmitted) == .cancel)
+        #expect(nav("https://example.com", own: true) == .cancel && nav("file:///etc/passwd", own: true) == .cancel && nav("about:blank", own: true) == .allow)
+        #expect(nav("about:blank#x", page: URL(string: "about:blank")) == .allow)
+    }
+
     @Test func linkDestination() {
         let src = "é see [the **note**](Other.md \"t\") and `x`"
         #expect(MarkdownCore.linkDestination(in: src, at: 8) == "Other.md")
