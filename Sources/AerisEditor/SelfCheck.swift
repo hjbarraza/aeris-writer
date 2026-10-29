@@ -94,6 +94,7 @@ enum SelfCheck {
         restorationChecks()
         treeClickChecks()
         lineEndingChecks()
+        pasteAsMarkdownChecks()
         anyTextFileChecks()
         hashtagMenuChecks()
         quickSearchChecks()
@@ -1010,6 +1011,80 @@ enum SelfCheck {
                       "any text: stray.bin with the same bytes is refused (got “\(message)”)")
             }
         }
+    }
+
+    /// M1.5-25: Paste as Markdown converts the pasteboard's rich text (a private pasteboard here,
+    /// never H's clipboard) in one undo step, in the document's line ending; plain text is left alone.
+    @MainActor static func pasteAsMarkdownChecks() {
+        let dir = scratch.appending(path: "PasteMarkdown")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let board = NSPasteboard(name: NSPasteboard.Name("aeris-selfcheck-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        func html(_ s: String) {
+            board.clearContents(); board.setData(Data(s.utf8), forType: .html); board.setString("plain", forType: .string)
+        }
+        let table = "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>"
+        for (name, eol) in [("lf.md", "\n"), ("crlf.md", "\r\n")] {
+            let url = dir.appending(path: name)
+            let original = "# T\(eol)\(eol)text"
+            try? Data(original.utf8).write(to: url)
+            let dc = NSDocumentController.shared
+            guard let doc = try? dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                    as? MarkdownDocument else { check(false, "paste md: \(name) opens"); continue }
+            dc.addDocument(doc); doc.makeWindowControllers()
+            let wc = doc.windowControllers[0] as! EditorWindowController
+            let editor = wc.editorForTesting, tv = editorTextView(wc)
+            tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+            html(table)
+            let done = editor.pasteMarkdown(from: board)
+            let want = original + ["| A | B |", "| --- | --- |", "| 1 | 2 |"].joined(separator: eol)
+            check(done && tv.string == want,
+                  "paste md: \(name) a 2x2 table pastes as a pipe table in the document's line ending"
+                  + (tv.string == want ? "" : " (got \(tv.string.debugDescription))"))
+            doc.undoManager?.undo()
+            check(tv.string == original, "paste md: \(name) one undo removes the whole paste")
+            html("<ul><li>a<ul><li>b</li></ul></li></ul><ol><li>x<ol><li>y</li></ol></li></ol>")
+            _ = editor.pasteMarkdown(from: board)
+            let wantList = original + ["- a", "  - b", "", "1. x", "   1. y"].joined(separator: eol)
+            check(tv.string == wantList, "paste md: \(name) nested lists keep nesting"
+                  + (tv.string == wantList ? "" : " (got \(tv.string.debugDescription))"))
+            doc.undoManager?.undo()
+            // Plain text, and HTML without structure, are never converted.
+            board.clearContents(); board.setString("a *b* | c\n- d", forType: .string)
+            check(!editor.pasteMarkdown(from: board) && tv.string == original,
+                  "paste md: \(name) plain text is left to a plain paste")
+            html("<p>just <span>text</span></p>")
+            check(!editor.pasteMarkdown(from: board) && tv.string == original,
+                  "paste md: \(name) unstructured HTML is left to a plain paste")
+            doc.close()
+        }
+        // Plain ⌘V with the setting on: code from a monospaced editor (bold keyword, indented lines,
+        // as RTF) stays plain; a list from RTF still converts.
+        let mono = NSMutableAttributedString(string: "func f() {\n    let x = a * b\n}\n",
+                                             attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)])
+        mono.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold), range: NSRange(location: 0, length: 4))
+        func rtf(_ a: NSAttributedString) {
+            board.clearContents()
+            board.setData(try? a.data(from: NSRange(location: 0, length: a.length),
+                                      documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]), forType: .rtf)
+        }
+        rtf(mono)
+        check(EditorViewController.markdown(from: board, emphasisCounts: false) == nil,
+              "paste md: plain Paste leaves monospaced code with a bold keyword alone")
+        let listText = NSMutableAttributedString(string: "\tone\n\ttwo\n")
+        let list = NSTextList(markerFormat: .disc, options: 0)
+        listText.addAttribute(.paragraphStyle, value: { let p = NSMutableParagraphStyle(); p.textLists = [list]; return p }(),
+                              range: NSRange(location: 0, length: listText.length))
+        rtf(listText)
+        let fromRTF = EditorViewController.markdown(from: board, emphasisCounts: false)
+        check(fromRTF?.hasPrefix("- ") == true, "paste md: an RTF bullet list converts (got \(String(describing: fromRTF)))")
+        let key = EditorViewController.DefaultsKey.pasteRichAsMarkdown
+        let before = AppDefaults.store.bool(forKey: key)
+        let vc = EditorViewController()
+        vc.togglePasteRichTextAsMarkdown(nil)
+        check(AppDefaults.store.bool(forKey: key) == !before, "paste md: the setting toggles")
+        vc.togglePasteRichTextAsMarkdown(nil)
+        check(AppDefaults.store.bool(forKey: key) == before, "paste md: the setting toggles back")
     }
 
     /// M1-12: in a CRLF document, Return, list continuation and a paste of LF text all

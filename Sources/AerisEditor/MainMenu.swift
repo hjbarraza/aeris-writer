@@ -32,6 +32,8 @@ enum MainMenu {
             item("Cut", #selector(NSText.cut(_:)), "x"),
             item("Copy", #selector(NSText.copy(_:)), "c"),
             item("Paste", #selector(NSText.paste(_:)), "v"),
+            item("Paste as Markdown", #selector(EditorViewController.pasteAsMarkdown(_:)), "V"),
+            item("Paste Rich Text as Markdown", #selector(EditorViewController.togglePasteRichTextAsMarkdown(_:))),
             item("Select All", #selector(NSText.selectAll(_:)), "a"),
             .separator(),
             // Standard NSTextView spelling actions; the text view validates them.
