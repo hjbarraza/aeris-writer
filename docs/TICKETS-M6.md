@@ -111,3 +111,21 @@ each pass their own ticket.
   as expected, images copied and links rewritten, original document untouched; publish
   again → asks before replacing; build command output shown, failure shown as an error.
 
+- [ ] **M6-15 — Links between published notes.** Notes link to files locally; publishing
+  rewrites each link for the publication it goes to. Settings ▸ Publishing lists
+  publications (name, live domain, platform: Substack or Hugo). On publish, Aeris records
+  the note's live URL per publication in its front matter (`published: {<publication>:
+  <url>}`). When a note is published or copied for a publication, each link to another
+  local note becomes: its URL in the same publication if published there; else its URL
+  in another publication; else, if unpublished, the URL built from its slug on this
+  publication's domain (`https://<domain>/p/<slug>`; slug from front matter `slug:` or
+  derived from the title the way the platform does). Local files keep their local links.
+  Check Published Links (with M2-33) visits recorded URLs and outgoing web links in
+  published notes and lists dead ones with the post that contains each; a recorded URL
+  that differs from a slug-built link used earlier is flagged in every post that used it
+  (H, 2026-10-29).
+  *Verify:* two publications, notes A (published in pub 1), B (published in pub 2), C
+  (unpublished, slug "c-post"); publish D to pub 1 linking A, B, C → links are A's pub-1
+  URL, B's pub-2 URL, https://<pub1 domain>/p/c-post; D's file still has local links;
+  front matter of D gains its pub-1 URL; Check Published Links lists a 404 with its post.
+
