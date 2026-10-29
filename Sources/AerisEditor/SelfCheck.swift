@@ -179,6 +179,9 @@ enum SelfCheck {
         type("\n", in: d1)
         check(wait(timeout: 3) { d1.fileURL != nil } && disk("My Post.md") == "# My Post\n",
               "draft: Return after '# My Post' writes X/My Post.md with no dialog (files \(files()))")
+        let hidden = try? URL(fileURLWithPath: x.appending(path: "My Post.md").path)
+            .resourceValues(forKeys: [.hasHiddenExtensionKey]).hasHiddenExtension
+        check(hidden == false, "draft: the draft's file shows its .md in Finder (hasHiddenExtension \(hidden.debugDescription))")
 
         let d2 = dc.makeDraft(from: hostWC)!
         type("# My Post\n", in: d2)
@@ -307,7 +310,31 @@ enum SelfCheck {
         check(wait(timeout: 3) { autosaves == 2 } && a1.fileURL?.lastPathComponent == "Inflight.md"
                 && a1.autosavedContentsFileURL == nil,
               "draft: an autosave during the folder save writes nothing elsewhere (\(String(describing: a1.autosavedContentsFileURL)))")
-        for doc in [r1, r2, s1, a1] { doc.close() }
+        // Quit or close one main-queue hop after the Return: the folder save is under way (its
+        // placeholder is claimed, empty); closing waits for it instead of answering at once.
+        let q1 = dc.makeDraft(from: hostWC)!
+        type("Race words\n", in: q1)
+        let raceProbe = CloseProbe()
+        var raceStart = "", answeredUnsaved = false
+        DispatchQueue.main.async { MainActor.assumeIsolated {
+            raceStart = "placeholder \(fm.fileExists(atPath: x.appending(path: "Race words.md").path)), file \(q1.fileURL?.lastPathComponent ?? "nil")"
+            q1.canClose(withDelegate: raceProbe, shouldClose: #selector(CloseProbe.document(_:shouldClose:contextInfo:)),
+                        contextInfo: nil)
+            answeredUnsaved = raceProbe.answer != nil && q1.fileURL == nil
+        } }
+        check(wait(timeout: 3) { raceProbe.answer != nil } && raceProbe.answer == true && !answeredUnsaved
+                && q1.fileURL?.lastPathComponent == "Race words.md" && disk("Race words.md") == "Race words\n",
+              "draft: closing right after the Return waits for its save, no empty file (at close: \(raceStart); answered unsaved \(answeredUnsaved), disk \(disk("Race words.md").debugDescription))")
+
+        // The txt setting writes a plain-text document.
+        AppDefaults.store.set("txt", forKey: DraftSettings.extensionKey)
+        let t1 = dc.makeDraft(from: hostWC)!
+        type("Text only\n", in: t1)
+        check(wait(timeout: 3) { t1.fileURL != nil } && t1.fileURL?.lastPathComponent == "Text only.txt"
+                && t1.fileType == "public.plain-text",
+              "draft: with the txt setting the file is Text only.txt and its type plain text (got \(t1.fileURL?.lastPathComponent ?? "nil"), \(t1.fileType ?? "nil"))")
+        AppDefaults.store.removeObject(forKey: DraftSettings.extensionKey)
+        for doc in [r1, r2, s1, a1, q1, t1] { doc.close() }
 
         AppDefaults.store.set("untitled", forKey: DraftSettings.newDocumentKey)
         check(dc.makeDraft(from: hostWC) == nil, "draft: the setting can make ⌘N the classic untitled document")
@@ -2867,8 +2894,9 @@ enum SelfCheck {
         win.makeKeyAndOrderFront(nil)
         wc.newWindowForTab(nil)
         let fresh = dc.documents.first { $0.fileURL == nil && $0.windowControllers.first?.window?.tabbedWindows?.contains { $0 === win } == true }
-        check(wait(timeout: 3) { win.tabbedWindows?.count == base + 3 } && dc.documents.count == before + 1 && fresh != nil,
-              "tabs: the tab bar's + opens a new untitled tab in this window (\(win.tabbedWindows?.count ?? 0) tabs)")
+        check(wait(timeout: 3) { win.tabbedWindows?.count == base + 3 } && dc.documents.count == before + 1
+                && (fresh as? DraftDocument)?.folder?.standardizedFileURL.path == wc.fileList.folder?.url.standardizedFileURL.path,
+              "tabs: the tab bar's + opens a draft for this window's folder as a new tab (\(win.tabbedWindows?.count ?? 0) tabs, \(String(describing: fresh)))")
 
         // Menus.
         let menu = MainMenu.make()
