@@ -81,13 +81,13 @@ final class EditorWindowController: NSWindowController {
         super.init(window: window)
         preview.openDocument = { [weak self] url in self?.openLinked(url) }
         editor.onLink = { [weak self] url in self?.preview.handleLink(url) }
-        sidebar.onOpen = { [weak self] url in self?.open(url, focusEditor: false) }
         fileList.onOpen = { [weak self] url, focusEditor in self?.open(url, focusEditor: focusEditor) }
         sidebar.onFolderSelected = { [weak self] folder in
             guard let self else { return }
             fileList.showFolder(folder)
             fileList.reveal((document as? NSDocument)?.fileURL)
         }
+        fileList.onNavigate = { [weak self] in self?.fileList.reveal((self?.document as? NSDocument)?.fileURL) }
         presentLinkError = { [weak self] error in
             guard let window = self?.window else { return }
             window.presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)
@@ -100,7 +100,7 @@ final class EditorWindowController: NSWindowController {
         reveal((document as? NSDocument)?.fileURL, expandingAncestors: false)
     }
 
-    /// Opens a library row the user chose (sidebar or file list). A click in the list also moves
+    /// Opens a file row the user chose in the file list. A click in the list also moves
     /// the keyboard to the editor once the document is open.
     private func open(_ url: URL, focusEditor: Bool) {
         replaceDocument(with: url) { [weak self] result in
@@ -130,12 +130,15 @@ final class EditorWindowController: NSWindowController {
         open(url, focusEditor: false)
     }
 
-    /// Highlights `url` in the sidebar and the file list. A document change also brings the list
-    /// to the document's folder; a focus change leaves the list where the user put it.
+    /// Highlights `url` in the file list. A document change also selects the document's location
+    /// in the organizer and brings the list to the document's folder; a focus change leaves both
+    /// where the user put them.
     private func reveal(_ url: URL?, expandingAncestors: Bool = true) {
-        sidebar.reveal(url, expandingAncestors: expandingAncestors)
-        if expandingAncestors, let url, let parent = Library.shared.tree.node(atPath: LibraryListing.canonicalPath(url))?.parent {
-            fileList.showFolder(parent)
+        if expandingAncestors {
+            sidebar.reveal(url)
+            if let url, let parent = Library.shared.tree.node(atPath: LibraryListing.canonicalPath(url))?.parent {
+                fileList.showFolder(parent)
+            }
         }
         fileList.reveal(url)
     }
