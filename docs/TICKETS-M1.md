@@ -188,3 +188,12 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   Window → a second window; Copy Link → the pasteboard holds the absolute URL; no item is
   a no-op. On screen: right-click each link in `aeris-link-test/Start.md`.
 
+- [ ] **M1-19 — Rename everything to Aeris Writer.** Bundle id `com.aeris.writer`; on first
+  launch the app copies the old `com.aeris.editor` preferences and the old Application
+  Support folder (library locations) to the new names, once, never deleting the old ones.
+  Swift targets, source folders and scripts use `AerisWriter`; the repository becomes
+  `aeris-writer` (H, 2026-10-29). Done in one sweep with no other work in flight.
+  *Verify:* self-check with a fake old domain and folder → migrated once, second launch
+  doesn't migrate again, old data untouched; `grep -ri 'aeris-md-editor\|AerisEditor\|com.aeris.editor'`
+  finds only the migration code; build, tests, mdcheck, self-check green.
+
