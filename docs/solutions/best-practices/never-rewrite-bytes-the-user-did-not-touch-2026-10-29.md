@@ -6,12 +6,13 @@ module: Editor text handling, file opening, list editing, file operations
 problem_type: best_practice
 component: service_object
 severity: high
+last_updated: 2026-10-29
 applies_when:
   - An edit hook converts or normalizes text (line endings, numbering, markers, encodings)
   - Code decides whether a file is text and may later autosave it
   - A feature writes to files other than the one being edited, or renames/moves files
   - Input comes from outside the app (paste, open, drop) and may be hostile or huge
-tags: [data-safety, line-endings, multi-range-edit, binary-detection, atomic-create, paste]
+tags: [data-safety, line-endings, multi-range-edit, binary-detection, atomic-create, paste, symlinks, fuzzing]
 ---
 
 # Never rewrite bytes the user didn't just type or ask to change
@@ -39,6 +40,9 @@ outside the user's edit.
    before the edit.
 4. **Cap input, output and depth for anything parsed from outside.** Sniff the first 8 KB
    before reading a whole file; cap HTML depth (256) and both input and output size (2 MB).
+   A size cap must look at the real file: `fileSizeKey` on a symlink is the link's own
+   size (a link to a 3 MB file reported 6 bytes), so resolve symlinks first and require
+   `isRegularFileKey` (a FIFO named `x.md` would otherwise block the reading queue).
 5. **Claim names atomically.** `open(path, O_WRONLY|O_CREAT|O_EXCL)`, then save over your
    own placeholder; on failure remove only that placeholder.
 6. **Destructive file actions go to the Trash only**; never permanent delete.
@@ -65,6 +69,11 @@ looking at. Reviews found them only by asking "what existing bytes can this touc
   `1. a / 1. b / 1. c` + Return → only the new item is numbered.
 - Binary: a PNG renamed `x.text` → refused with "It isn't a plain text file."; `Note.md`
   containing a vertical tab → opens and saves byte-identical.
+- Parser spans: keep a swift-markdown span only if `text[openRange] == "**"` (or the
+  expected marker) and the close run matches; else use the text-based path. A 2,500-input
+  fuzz (toggle twice, assert only `*_~=` changed) now runs in mdcheck.
+- Size cap: `url.resolvingSymlinksInPath()` then check `.isRegularFileKey` and
+  `.fileSizeKey <= 2 MB` before `Data(contentsOf:)`.
 
 ## Related
 - `docs/solutions/runtime-errors/text-typed-after-autosave-lost-2026-10-29.md`
