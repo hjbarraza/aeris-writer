@@ -13,7 +13,7 @@ Order: the preview tickets (M3-9…M3-13) come first, because export reuses thei
 
 ## Preview
 
-- [ ] **M3-9 — Preview controls.** View ▸ Show/Hide Preview (persisted per window);
+- [x] **M3-9 — Preview controls.** View ▸ Show/Hide Preview (persisted per window);
   Split / Full size (Full hides the editor; Split restores it); View ▸ Reload Preview.
   The preview only renders while visible and renders at once when shown. An empty
   document shows a centred, quiet placeholder line. The page's `lang` follows the

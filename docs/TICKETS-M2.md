@@ -319,7 +319,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   still reaches B; trash C → skipped; select folder X, tag #draft, folder Y → Back in
   Library → #draft, Back → X; relaunch → Back still works.
 
-- [ ] **M2-26 — Tabs.** Native window tabs. Row context menu: Open in New Tab, Open in
+- [x] **M2-26 — Tabs.** Native window tabs. Row context menu: Open in New Tab, Open in
   New Window; ⌘-click a row opens in a new tab, ⌥⌘-click in a new window. Opening a
   document already open in another tab selects that tab. The tab bar's "+" makes a new
   draft in the current folder (M2-8). View ▸ Show Tab Bar, Show All Tabs (⇧⌘\). Library
