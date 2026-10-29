@@ -453,13 +453,16 @@ Finder change shows live.
   pinned group and inside the rest. Pins belong to the folder they were made in: each
   folder (and each library location's root) has its own set, and a file pinned in one
   folder isn't pinned anywhere else. In Tree view a subfolder's pins sit at the top of
-  that subfolder's rows. Pins are stored in app storage (never in the user's files),
-  follow a file that is renamed or moved within the folder (bookmark), and disappear when
-  the file is trashed or moved to another folder. Favorites (M2-19) stay separate: they
-  show in the sidebar, pins only in the file list (H, 2026-10-29).
+  that subfolder's rows. Pins travel with the files (git, sync, other Macs): pinning a
+  Markdown note writes `pinned: true` into its front matter (adding a front-matter block if
+  it has none; unpinning removes the key, and the block if it is then empty), touching no
+  other bytes — H's explicit exception to keeping app data out of documents. A note is
+  pinned in the folder it lives in; moving it keeps the pin. Plain-text files can't be
+  pinned (menu item disabled). Favorites (M2-19) stay separate: they show in the sidebar,
+  pins only in the file list (H, 2026-10-29).
   *Verify:* pin b.md in folder X → it's first in X with the pin mark, whatever the sort;
   pin c.md too → both on top, sorted among themselves; open subfolder Y → X's pins don't
   show there; pin in Y → only Y shows it; rename b.md → still pinned; relaunch → pins
-  kept; move b.md to Y → unpinned in X and not pinned in Y; the folder on disk has no new
-  files.
+  kept; move b.md to Y → pinned in Y; unpin → front matter back to exactly the original
+  bytes; a .txt file → Pin disabled; the folder on disk has no new files.
 

@@ -38,7 +38,7 @@ publishing Musts), then (H, 2026-10-29 evening) publishing moved to Could: an ex
 - M4-13 — Local snapshot history: store and thinning
 - M4-14 — Local history: browse and restore
 
-## Should (soon after) (57)
+## Should (soon after) (58)
 
 - M1-7 — Editor↔preview scroll sync
 - M1-11 — Preview links behave like a document, not a browser
@@ -97,6 +97,7 @@ publishing Musts), then (H, 2026-10-29 evening) publishing moved to Could: an ex
 - M5-5 — Content-block warnings
 - M5-6 — Paste as conversation
 - M6-12 — Publish from the library
+- M2-34 — Pinned documents per folder (front matter `pinned: true`)
 
 ## Could (later) (37)
 
