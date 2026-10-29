@@ -180,6 +180,15 @@ filter field at the bottom. Editor (right), with the preview beside it.
   *Verify:* drag a file onto a subfolder → moved; Option-drag → copied; drag a file
   from the Desktop onto the list → copied in, original stays.
 
+- [ ] **M2-13a — Add locations by dragging folders or with Open.** Folders dragged from
+  Finder onto the organizer are added as locations (the Locations section highlights);
+  files are refused; a folder already present → nothing. The new location becomes the
+  selected row and its contents show. File ▸ Open… accepts folders and adds them as
+  locations; files open as before. The folder on disk is never touched (H, 2026-10-29).
+  *Verify:* drop a folder → added once and selected, its files listed; drop it again →
+  nothing; drop a file → refused; Open… with a folder and a file → folder added, file
+  opened; the folder on disk is untouched.
+
 - [ ] **M2-13 — Locations: add, label, remove.** A newly added location becomes the
   selected organizer row and its contents show. A folder dragged from Finder onto the
   Locations section is added (already present → nothing, no error). Rename Location
