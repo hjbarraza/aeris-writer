@@ -190,7 +190,7 @@ public enum InlineEdit {
         let p = NSMaxRange(sel)
         var end = s.length
         while end > p, has(s, "\n", at: end - 1) || has(s, "\r", at: end - 1) { end -= 1 }
-        let replacement = label + s.substring(with: NSRange(location: p, length: end - p)) + "\n\n" + label + ": "
+        let replacement = label + s.substring(with: NSRange(location: p, length: end - p)) + String(repeating: LineEnding.of(s as String), count: 2) + label + ": "
         return TextEdit(range: NSRange(location: p, length: s.length - p), replacement: replacement,
                         selection: NSRange(location: p + replacement.utf16.count, length: 0))
     }

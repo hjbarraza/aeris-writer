@@ -38,6 +38,7 @@ func inlineEditCases() -> [(InlineMarker, String, String)] {
         (.image, "«cat»", "![cat](|)"),
         (.image, "«https://x.io/c.png»", "![|](https://x.io/c.png)"),
         (.footnote, "Hi|.\n", "Hi[^1].\n\n[^1]: |"),
+        (.footnote, "Hi|.\r\n", "Hi[^1].\r\n\r\n[^1]: |"),
         (.footnote, "A[^1] b|.\n\n[^1]: one\n", "A[^1] b[^2].\n\n[^1]: one\n\n[^2]: |"),
         (.footnote, "|", "[^1]\n\n[^1]: |"),
         (.strong, "👋 «héllo»", "👋 **«héllo»**"),

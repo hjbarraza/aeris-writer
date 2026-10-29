@@ -66,6 +66,7 @@ enum SelfCheck {
         shellChecks()
         layoutChecks()
         libraryChecks()
+        folderDropChecks()
         persistenceChecks()
         openChecks()
         sidebarChecks()
@@ -79,6 +80,7 @@ enum SelfCheck {
         navigationChecks()
         rowChecks()
         restorationChecks()
+        lineEndingChecks()
         try? FileManager.default.removeItem(at: scratch)
         cleanStandardDefaults()
         if failed { print("selfcheck FAILED"); exit(1) }
@@ -288,6 +290,85 @@ enum SelfCheck {
         check(locationRows(wc).count == 1, "sidebar: adding the same folder twice is a no-op")
         let add = MainMenu.make().item(withTitle: "File")?.submenu?.item(withTitle: "Add Location…")
         check(add?.action == #selector(AppDelegate.addLocation(_:)) && add?.keyEquivalent == "", "sidebar: File > Add Location… exists")
+        wc.close()
+    }
+
+    /// A dragging session that carries only a pasteboard, enough for the outline view's drop methods.
+    final class FakeDrag: NSObject, NSDraggingInfo {
+        let pb = NSPasteboard(name: NSPasteboard.Name(rawValue: "aeris.selfcheck.\(UUID().uuidString)"))
+        init(_ urls: [URL]) { super.init(); pb.clearContents(); pb.writeObjects(urls as [NSURL]) }
+        var draggingDestinationWindow: NSWindow? { nil }
+        var draggingSourceOperationMask: NSDragOperation { .every }
+        var draggingLocation: NSPoint { .zero }
+        var draggedImageLocation: NSPoint { .zero }
+        var draggedImage: NSImage? { nil }
+        var draggingPasteboard: NSPasteboard { pb }
+        var draggingSource: Any? { nil }
+        var draggingSequenceNumber: Int { 0 }
+        var draggingFormation: NSDraggingFormation = .default
+        var animatesToDestination = false
+        var numberOfValidItemsForDrop = 0
+        var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+        func slideDraggedImage(to screenPoint: NSPoint) {}
+        func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?,
+                                    classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+                                    using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+        func resetSpringLoading() {}
+    }
+
+    @MainActor static func folderDropChecks() {
+        let fm = FileManager.default
+        let dropA = scratch.appending(path: "DropA"), dropB = scratch.appending(path: "DropB")
+        let dropFile = scratch.appending(path: "Dropped.md")
+        for d in [dropA, dropB] { try? fm.createDirectory(at: d, withIntermediateDirectories: true) }
+        try? "x".write(to: dropFile, atomically: true, encoding: .utf8)
+        try? "n".write(to: dropA.appending(path: "n.md"), atomically: true, encoding: .utf8)
+        let wc = EditorWindowController()
+        wc.sidebar.loadViewIfNeeded()
+        let ov = wc.sidebar.outlineView
+        let tree = Library.shared.tree
+        func drop(_ urls: [URL]) -> (NSDragOperation, Bool) {
+            let info = FakeDrag(urls)
+            let op = wc.sidebar.outlineView(ov, validateDrop: info, proposedItem: nil, proposedChildIndex: -1)
+            return (op, op.isEmpty ? false : wc.sidebar.outlineView(ov, acceptDrop: info, item: OrganizerSection.all[0], childIndex: -1))
+        }
+        func canonical(_ url: URL?) -> String? { url.map(LibraryListing.canonicalPath) }
+        let base = tree.roots.count
+
+        let fileDrop = drop([dropFile])
+        check(fileDrop.0.isEmpty && !fileDrop.1 && tree.roots.count == base, "drop: a file dropped on the organizer is refused")
+        let mixed = drop([dropA, dropFile])
+        check(mixed.0.isEmpty && tree.roots.count == base, "drop: a mix of folder and file is refused")
+
+        let one = drop([dropA])
+        check(!one.0.isEmpty && one.1 && tree.roots.count == base + 1, "drop: a folder is added as a location")
+        check(canonical(wc.sidebar.selectedURL) == canonical(dropA), "drop: the new location is the selected organizer row")
+        check(locationRows(wc).contains { canonical($0.url) == canonical(dropA) }, "drop: the location shows under Locations")
+        check(listNames(wc) == ["n.md"], "drop: the new location's contents fill the file list")
+        check(fm.fileExists(atPath: dropA.appending(path: "n.md").path), "drop: the folder on disk is untouched")
+
+        _ = drop([dropA])
+        check(tree.roots.count == base + 1, "drop: the same folder again is a no-op")
+
+        let before = tree.roots.count
+        let two = drop([dropB, dropA])
+        check(two.1 && tree.roots.count == before + 1 && canonical(tree.roots.last?.url) == canonical(dropB)
+              && canonical(wc.sidebar.selectedURL) == canonical(dropB), "drop: several folders add the new ones in order")
+
+        check(NSDocumentController.shared is AerisDocumentController, "open: the document controller accepts folders")
+        let dropC = scratch.appending(path: "DropC")
+        try? fm.createDirectory(at: dropC, withIntermediateDirectories: true)
+        var done = 0
+        var opened: NSDocument?
+        let dc = NSDocumentController.shared
+        let rootsBefore = tree.roots.count
+        dc.openDocument(withContentsOf: dropC, display: false) { doc, _, _ in opened = doc; done += 1 }
+        dc.openDocument(withContentsOf: dropFile, display: false) { doc, _, _ in if let doc { opened = doc }; done += 1 }
+        check(wait(timeout: 5) { done == 2 }, "open: both chosen URLs were handled")
+        check(tree.roots.count == rootsBefore + 1 && canonical(tree.roots.last?.url) == canonical(dropC), "open: a chosen folder is added as a location")
+        check(canonical(opened?.fileURL) == canonical(dropFile) && !dc.documents.contains { canonical($0.fileURL) == canonical(dropC) },
+              "open: a chosen file opens as a document")
+        opened?.close()
         wc.close()
     }
 
@@ -661,6 +742,134 @@ enum SelfCheck {
                 unsafeBitCast(target.method(for: selector), to: ShouldClose.self)(target, selector, self, ok, contextInfo)
             }
         }
+    }
+
+    /// M1-12: in a CRLF document, Return, list continuation and a paste of LF text all
+    /// insert CRLF; an LF document stays LF. Existing endings are never converted.
+    @MainActor static func lineEndingChecks() {
+        let dir = scratch.appending(path: "LineEndings")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let board = NSPasteboard(name: NSPasteboard.Name("aeris-selfcheck-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        for (name, eol) in [("crlf.md", "\r\n"), ("lf.md", "\n")] {
+            let url = dir.appending(path: name)
+            try? Data("# Title\(eol)\(eol)- a".utf8).write(to: url)
+            let dc = NSDocumentController.shared
+            guard let doc = try? dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                    as? MarkdownDocument else { check(false, "line endings: \(name) opens"); continue }
+            dc.addDocument(doc); doc.makeWindowControllers()
+            let wc = doc.windowControllers[0] as! EditorWindowController
+            let tv = editorTextView(wc)
+            tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // list continuation: "- "
+            tv.insertText("b", replacementRange: tv.selectedRange())
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // continuation again
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // empty item: clears the line
+            tv.insertText("plain", replacementRange: tv.selectedRange())
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))   // plain Return
+            board.clearContents()
+            board.setString(eol == "\n" ? "p1\r\np2\rp3\n" : "p1\np2\rp3\n", forType: .string)
+            tv.readSelection(from: board, type: .string)                  // paste of foreign endings
+            var saved = false
+            doc.save(to: url, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+            _ = wait(timeout: 3) { saved }
+            let bytes = [UInt8]((try? Data(contentsOf: url)) ?? Data())
+            let text = String(decoding: bytes, as: UTF8.self)
+            let breaks = text.utf16.filter { $0 == 0x0A }.count
+            let crs = bytes.filter { $0 == 0x0D }.count
+            let consistent = eol == "\r\n"
+                ? crs == breaks && !text.replacingOccurrences(of: "\r\n", with: "").contains(where: { $0 == "\r" || $0 == "\n" })
+                : crs == 0
+            let expected = ["# Title", "", "- a", "- b", "plain", "p1", "p2", "p3", ""].joined(separator: eol)
+            check(saved && consistent && text == expected,
+                  "line endings: \(name) stays \(eol == "\n" ? "LF" : "CRLF") after Return, list continuation and paste"
+                  + (consistent && text == expected ? "" : " (got \(text.debugDescription))"))
+            doc.close()
+        }
+
+        // A mixed file keeps its existing endings; new lines follow its first one.
+        let mixed = dir.appending(path: "mixed.md")
+        try? Data("a\r\nb\nc".utf8).write(to: mixed)
+        if let doc = try? NSDocumentController.shared.makeDocument(withContentsOf: mixed, ofType: "net.daringfireball.markdown")
+            as? MarkdownDocument {
+            NSDocumentController.shared.addDocument(doc); doc.makeWindowControllers()
+            let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+            tv.setSelectedRange(NSRange(location: (tv.string as NSString).length, length: 0))
+            tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+            tv.insertText("d", replacementRange: tv.selectedRange())
+            var saved = false
+            doc.save(to: mixed, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+            _ = wait(timeout: 3) { saved }
+            check(saved && (try? Data(contentsOf: mixed)) == Data("a\r\nb\nc\r\nd".utf8),
+                  "line endings: a mixed file keeps its endings; Return inserts its first (CRLF)")
+            doc.close()
+        } else {
+            check(false, "line endings: mixed.md opens")
+        }
+
+        // A paste over two selections (Option-drag) is AppKit's multi-range change: the
+        // first range gets the text, the second is emptied. Converting the first part
+        // would shift the second range onto the wrong text, so it is left as AppKit does it.
+        let multi = dir.appending(path: "multi.md")
+        try? Data("foo\r\nmid\nfoo".utf8).write(to: multi)
+        if let doc = try? NSDocumentController.shared.makeDocument(withContentsOf: multi, ofType: "net.daringfireball.markdown")
+            as? MarkdownDocument {
+            NSDocumentController.shared.addDocument(doc); doc.makeWindowControllers()
+            let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+            tv.selectedRanges = [NSValue(range: NSRange(location: 0, length: 3)), NSValue(range: NSRange(location: 9, length: 3))]
+            board.clearContents()
+            board.setString("x\ny", forType: .string)
+            tv.readSelection(from: board, type: .string)
+            var saved = false
+            doc.save(to: multi, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+            _ = wait(timeout: 3) { saved }
+            let disk = (try? Data(contentsOf: multi)) ?? Data()
+            check(saved && disk == Data("x\ny\r\nmid\n".utf8),
+                  "line endings: a paste over two selections keeps the text between them"
+                  + (disk == Data("x\ny\r\nmid\n".utf8) ? "" : " (got \(String(decoding: disk, as: UTF8.self).debugDescription))"))
+            doc.close()
+        } else {
+            check(false, "line endings: multi.md opens")
+        }
+
+        // Changes AppKit makes itself (Replace All, Transformations) are never converted
+        // when they span several ranges or replace existing line breaks.
+        func edit(_ name: String, _ text: String, _ body: (NSTextView) -> Void) -> String? {
+            let url = dir.appending(path: name)
+            try? Data(text.utf8).write(to: url)
+            guard let doc = try? NSDocumentController.shared.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                    as? MarkdownDocument else { return nil }
+            NSDocumentController.shared.addDocument(doc); doc.makeWindowControllers()
+            let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+            body(tv)
+            let out = tv.string
+            doc.close()
+            return out
+        }
+        // Replace All: one multi-range change, applied as NSTextView applies it.
+        let replaced = edit("replace.md", "ab\r\nab") { tv in
+            let ranges = [NSRange(location: 0, length: 2), NSRange(location: 4, length: 2)]
+            guard tv.shouldChangeText(inRanges: ranges.map { NSValue(range: $0) },
+                                      replacementStrings: ["x\ny", "x\ny"]) else { return }
+            for r in ranges.reversed() { tv.textStorage?.replaceCharacters(in: r, with: "x\ny") }
+            tv.didChangeText()
+        }
+        func got(_ s: String?, _ want: String) -> String { s == want ? "" : " (got \(s.debugDescription))" }
+        check(replaced == "x\ny\r\nx\ny", "line endings: Replace All over two ranges replaces exactly those"
+              + got(replaced, "x\ny\r\nx\ny"))
+        let upper = edit("upper.md", "aa\r\nbb\ncc dd ee ff") { tv in
+            tv.selectedRanges = [NSRange(location: 0, length: 5), NSRange(location: 5, length: 3),
+                                 NSRange(location: 13, length: 5)].map { NSValue(range: $0) }
+            tv.uppercaseWord(nil)
+        }
+        check(upper == "AA\r\nBB\nCC dd EE FF", "line endings: Make Upper Case over three selections changes only letters"
+              + got(upper, "AA\r\nBB\nCC dd EE FF"))
+        let mixedUpper = edit("upper1.md", "aa\r\nbb\ncc") { tv in
+            tv.setSelectedRange(NSRange(location: 0, length: 9))
+            tv.uppercaseWord(nil)
+        }
+        check(mixedUpper == "AA\r\nBB\nCC", "line endings: Make Upper Case over a mixed range keeps its endings"
+              + got(mixedUpper, "AA\r\nBB\nCC"))
     }
 
     @MainActor static func editorTextView(_ wc: EditorWindowController) -> NSTextView { wc.editorForTesting.textViewForTesting }

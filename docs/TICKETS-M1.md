@@ -90,7 +90,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   *Verify:* update fixtures; mdcheck asserts curly quotes in prose and straight quotes
   inside `code`.
 
-- [ ] **M1-10 — External changes to the open document (H, 2026-10-29).** When another
+- [x] **M1-10 — External changes to the open document (H, 2026-10-29).** When another
   app or process changes, replaces, moves or deletes the file of an open document,
   Aeris detects it (NSFilePresenter via NSDocument: `presentedItemDidChange`,
   `presentedItemDidMove`, `accommodatePresentedItemDeletion`, comparing the file
@@ -125,7 +125,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   *Verify:* a document with a table of contents → click an entry → preview scrolls there, no
   Finder window opens; a link to `other.md` opens it in Aeris.
 
-- [ ] **M1-12 — Line endings stay consistent.** In a CRLF document, Return and every edit
+- [x] **M1-12 — Line endings stay consistent.** In a CRLF document, Return and every edit
   command insert CRLF, so a file never ends up with mixed endings.
   *Verify:* open a CRLF file, add lines with Return and list continuation, save → every line
   ends in CRLF (`od -c`).
@@ -149,7 +149,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   bytes unchanged by opening.
 
 
-- [ ] **M1-15 — The preview never navigates on its own.** The preview loads only the HTML
+- [x] **M1-15 — The preview never navigates on its own.** The preview loads only the HTML
   Aeris renders for it. Every other navigation is cancelled: forms, meta refresh, iframes or
   embeds pointing elsewhere, and any `file:` page. In-page `#anchor` moves are allowed.
   Link clicks keep M1-11's rules. A `file:` link with a host other than empty or `localhost`
@@ -173,4 +173,27 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   by default (not `.txt`); the format pop-up still allows `.markdown` and `.txt`.
   *Verify:* ⌘N, type, ⌘S → the save panel proposes `Untitled.md`; save → the file on disk
   ends in `.md`.
+  *Note (2026-10-29):* not reproduced. The default type is already Markdown and a new
+  document's extension is `md`; the two `.txt` drafts carry another editor's metadata and
+  predate this app's save path. Kept open until H tries ⌘N → ⌘S once.
+
+- [ ] **M1-18 — Our own link menu in the preview.** Right-clicking a link in the preview shows
+  Aeris's menu instead of WebKit's, so every item works. A link to a note: Open, Open in
+  New Tab, Open in New Window, Reveal in Finder, Copy Link. A web or mail link: Open in
+  Browser (or Mail), Copy Link. An `#anchor`: Jump to Section, Copy Link. WebKit's own
+  items that can't work in a locked-down preview (Open Link in New Window, Download Linked
+  File) never appear. Selected text keeps Copy and Look Up (H, 2026-10-29).
+  *Verify:* self-check builds the menu for each link kind and runs every item: Open → the
+  note opens in this window; Open in New Tab → same window, one more tab; Open in New
+  Window → a second window; Copy Link → the pasteboard holds the absolute URL; no item is
+  a no-op. On screen: right-click each link in `aeris-link-test/Start.md`.
+
+- [ ] **M1-19 — Rename everything to Aeris Writer.** Bundle id `com.aeris.writer`; on first
+  launch the app copies the old `com.aeris.editor` preferences and the old Application
+  Support folder (library locations) to the new names, once, never deleting the old ones.
+  Swift targets, source folders and scripts use `AerisWriter`; the repository becomes
+  `aeris-writer` (H, 2026-10-29). Done in one sweep with no other work in flight.
+  *Verify:* self-check with a fake old domain and folder → migrated once, second launch
+  doesn't migrate again, old data untouched; `grep -ri 'aeris-md-editor\|AerisEditor\|com.aeris.editor'`
+  finds only the migration code; build, tests, mdcheck, self-check green.
 

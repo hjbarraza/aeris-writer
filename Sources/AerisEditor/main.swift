@@ -2,6 +2,8 @@ import AppKit
 
 // Classic AppKit entry point (see ADR-001: AppKit-primary, no SwiftUI App lifecycle).
 let app = NSApplication.shared
+// First instance becomes NSDocumentController.shared: must precede any use of .shared.
+_ = AerisDocumentController()
 let delegate = AppDelegate()
 app.delegate = delegate
 // `--selfcheck` (debug builds) runs headless: never shown in the Dock, never activated.

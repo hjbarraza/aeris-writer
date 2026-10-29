@@ -126,6 +126,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
             textView.breakUndoCoalescing()
             undo?.beginUndoGrouping()
             registerSelection(undo, set: textView.selectedRange(), inverse: nil)
+            applyingEdit = true
+            defer { applyingEdit = false }
             if textView.shouldChangeText(in: edit.range, replacementString: edit.replacement) {
                 storage.beginEditing()
                 storage.replaceCharacters(in: edit.range, with: edit.replacement)
@@ -169,6 +171,37 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
                 editor.registerSelection(undo, set: inverse, inverse: set)
             }
         }
+    }
+
+    // MARK: Line endings
+
+    /// True while `apply` runs its edit: commands build their own line endings, and a
+    /// reload's text is the file's, so neither is converted.
+    private var applyingEdit = false
+
+    /// Typed, pasted and dropped text takes the document's line ending (its first one;
+    /// LF if none), so a CRLF file never gains a lone LF. Existing text is never touched.
+    /// Only a one-range change whose replaced text has no line break is converted. The
+    /// trade: a change over several ranges (multiple selections, Replace All) or one that
+    /// replaces existing breaks (Transformations, a paste over lines) goes in unconverted,
+    /// because converting it could shift the other ranges or rewrite existing endings.
+    /// Risking existing text is worse than an inserted lone LF.
+    /// The converted insert is its own undo step.
+    func textView(_ textView: NSTextView, shouldChangeTextInRanges ranges: [NSValue],
+                  replacementStrings strings: [String]?) -> Bool {
+        func hasBreak(_ s: String) -> Bool { s.utf16.contains { $0 == 0x0A || $0 == 0x0D } }
+        // A paste over several selections arrives one range at a time, hence both counts.
+        guard !applyingEdit, !textView.hasMarkedText(), ranges.count == 1, textView.selectedRanges.count == 1,
+              let strings, strings.count == 1,
+              hasBreak(strings[0]) else { return true }
+        let range = ranges[0].rangeValue
+        guard !hasBreak((textView.string as NSString).substring(with: range)) else { return true }
+        let converted = LineEnding.convert(strings[0], to: LineEnding.of(textView.string))
+        guard converted != strings[0] else { return true }
+        textView.breakUndoCoalescing()
+        textView.insertText(converted, replacementRange: range)
+        textView.breakUndoCoalescing()
+        return false
     }
 
     // MARK: Return / Tab / ⇧Tab in lists and tables

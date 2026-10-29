@@ -56,20 +56,6 @@ enum BlockLines {
         }
     }
 
-    /// The document's line ending (first one found), default LF.
-    static func eol(_ lines: [BlockLine]) -> String {
-        lines.first { !$0.terminator.isEmpty }?.terminator ?? "\n"
-    }
-
-    /// The text's line ending (first one found), default LF, without splitting it.
-    static func eol(_ text: String) -> String {
-        let ns = text as NSString
-        let r = ns.rangeOfCharacter(from: CharacterSet(charactersIn: "\r\n"))
-        guard r.location != NSNotFound else { return "\n" }
-        if ns.character(at: r.location) == 0x0A { return "\n" }
-        return r.location + 1 < ns.length && ns.character(at: r.location + 1) == 0x0A ? "\r\n" : "\r"
-    }
-
     static func isBlank(_ s: String) -> Bool {
         s.allSatisfy { $0 == " " || $0 == "\t" }
     }
@@ -210,7 +196,7 @@ public enum BlockEdit {
             return TextEdit(range: NSRange(location: first.start, length: first.length), replacement: header,
                                  selection: NSRange(location: first.start + header.utf16.count, length: 0))
         }
-        let eol = BlockLines.eol(lines)
+        let eol = LineEnding.of(text)
         let a = first.start
         let end = lines[t.last].start + lines[t.last].length
         let body = lines[t.first...t.last].map { (t.last > t.first && BlockLines.isBlank($0.content)) ? ">" : "> " + $0.content }
@@ -251,7 +237,7 @@ public enum BlockEdit {
             return TextEdit(range: NSRange(location: a, length: end - a), replacement: inner,
                                  selection: NSRange(location: a, length: inner.utf16.count))
         }
-        let eol = BlockLines.eol(lines)
+        let eol = LineEnding.of(text)
         let block = (text as NSString).substring(with: NSRange(location: a, length: end - a))
         let openLen = delim.utf16.count + eol.utf16.count
         let sel: NSRange
@@ -279,7 +265,7 @@ public enum BlockEdit {
     private static func insertBlock(_ block: String, text: String, selection: NSRange) -> TextEdit {
         let lines = BlockLines.split(text)
         let l = BlockLines.touched(lines, selection).last
-        let eol = BlockLines.eol(lines)
+        let eol = LineEnding.of(text)
         let line = lines[l]
         let p = line.start + line.length
         var prefix = ""
@@ -298,7 +284,8 @@ public enum BlockEdit {
     // MARK: Table of contents
 
     /// Nested `- [Heading](#slug)` list from every heading (ATX and setext).
-    /// GitHub-style slugs; duplicates get `-1`, `-2`. No trailing newline.
+    /// GitHub-style slugs; duplicates get `-1`, `-2`. Rows joined by the text's line
+    /// ending; no trailing newline.
     public static func tableOfContents(text: String) -> String {
         var headings: [(level: Int, title: String)] = []
         func walk(_ m: Markup) {
@@ -325,7 +312,7 @@ public enum BlockEdit {
             let title = h.title.replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
             out.append(String(repeating: "  ", count: depth) + "- [\(title)](#\(s))")
         }
-        return out.joined(separator: "\n")
+        return out.joined(separator: LineEnding.of(text))
     }
 
     /// Heading text without markup delimiters (code spans give their contents).

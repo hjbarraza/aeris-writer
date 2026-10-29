@@ -52,7 +52,7 @@ public enum TableEdit {
     /// The caret lands in the first header cell.
     public static func insertTable(rows: Int, cols: Int, in text: String, at caret: Int) -> TextEdit {
         let ns = text as NSString
-        let eol = lineEnding(text)
+        let eol = LineEnding.of(text)
         let cols = max(cols, 1)
         let t = MarkdownTable(header: Array(repeating: "", count: cols),
                               alignments: Array(repeating: nil, count: cols),
@@ -384,7 +384,7 @@ public enum TableEdit {
         guard var loc = locate(text, caret, parseFrom), !(columnOp && loc.extraCol != nil) else { return nil }
         let col = loc.cell.col
         guard transform(&loc.table, &loc.cell) else { return nil }
-        let eol = lineEnding((text as NSString).substring(with: loc.range))
+        let eol = LineEnding.of((text as NSString).substring(with: loc.range))
         let l = layout(loc.table, eol: eol)
         // A caret in an extra cell stays there unless the operation moved its column.
         if loc.cell.col == col, l.cells[loc.cell.row].indices.contains(loc.extraCol ?? -1) { loc.cell.col = loc.extraCol! }
@@ -456,13 +456,6 @@ public enum TableEdit {
              0xFFE0...0xFFE6, 0x20000...0x2FFFD, 0x30000...0x3FFFD: return true
         default: return false
         }
-    }
-
-    /// "\r\n" if the first line break in `s` is CRLF, else "\n".
-    private static func lineEnding(_ s: String) -> String {
-        let u = Array(s.utf16)
-        guard let i = u.firstIndex(of: 0x0A) else { return "\n" }
-        return i > 0 && u[i - 1] == 0x0D ? "\r\n" : "\n"
     }
 
     /// Line breaks (up to 2) at the end / start of `s`. A CRLF counts once.

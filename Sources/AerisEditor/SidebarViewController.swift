@@ -89,6 +89,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.outlineTableColumn = column
         outlineView.dataSource = self
         outlineView.delegate = self
+        outlineView.registerForDraggedTypes([.fileURL])
         outlineView.target = self
         outlineView.action = #selector(outlineClicked(_:))
         let menu = NSMenu()
@@ -253,6 +254,51 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
         item is OrganizerSection
+    }
+
+    // MARK: Folder drops (Finder -> Locations)
+
+    /// Adds each folder as a location, in order (a known one is a no-op), then selects the last new one
+    /// so its contents fill the file list. Nothing on disk is touched.
+    func addLocations(_ urls: [URL]) {
+        loadViewIfNeeded()
+        let tree = Library.shared.tree
+        var added: LibraryNode?
+        for url in urls {
+            let before = tree.roots.count
+            Library.shared.addLocation(url)
+            if tree.roots.count > before { added = tree.roots.last }
+        }
+        guard let added else { return }
+        restoring = true
+        outlineView.expandItem(OrganizerSection.all[0])
+        restoring = false
+        let row = outlineView.row(forItem: added)
+        guard row >= 0 else { return }
+        outlineView.selectRowIndexes([row], byExtendingSelection: false)
+        outlineView.scrollRowToVisible(row)
+    }
+
+    private func droppedFolders(_ info: NSDraggingInfo) -> [URL]? {
+        let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                       options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        let isFolder = { (u: URL) in (try? u.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+        return !urls.isEmpty && urls.allSatisfy(isFolder) ? urls : nil
+    }
+
+    /// Folders are accepted anywhere over the organizer, highlighting the Locations section; files are refused.
+    func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo,
+                     proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
+        guard droppedFolders(info) != nil else { return [] }
+        outlineView.setDropItem(OrganizerSection.all[0], dropChildIndex: NSOutlineViewDropOnItemIndex)
+        return .link
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo,
+                     item: Any?, childIndex index: Int) -> Bool {
+        guard let urls = droppedFolders(info) else { return false }
+        addLocations(urls)
+        return true
     }
 
     // MARK: NSOutlineViewDelegate

@@ -30,9 +30,9 @@ case ${1:-} in
     scripts/bundle.sh debug >/dev/null
     # AERIS_LIBRARY_FILE (when set) points the app at an isolated library file.
     if [ -n "${AERIS_LIBRARY_FILE:-}" ]; then
-      if [ -n "${2:-}" ]; then open --env "AERIS_LIBRARY_FILE=$AERIS_LIBRARY_FILE" -a "$PWD/build/Aeris.app" "$2"
-      else open --env "AERIS_LIBRARY_FILE=$AERIS_LIBRARY_FILE" build/Aeris.app; fi
-    elif [ -n "${2:-}" ]; then open -a "$PWD/build/Aeris.app" "$2"; else open build/Aeris.app; fi
+      if [ -n "${2:-}" ]; then open --env "AERIS_LIBRARY_FILE=$AERIS_LIBRARY_FILE" -a "$PWD/build/Aeris Writer.app" "$2"
+      else open --env "AERIS_LIBRARY_FILE=$AERIS_LIBRARY_FILE" "build/Aeris Writer.app"; fi
+    elif [ -n "${2:-}" ]; then open -a "$PWD/build/Aeris Writer.app" "$2"; else open "build/Aeris Writer.app"; fi
     sleep 3; pgrep -x AerisEditor >/dev/null || { echo "ui.sh: app not running" >&2; exit 1; } ;;
   keys) front; osascript -e "tell application \"System Events\" to keystroke \"$2\"" ;;
   key)

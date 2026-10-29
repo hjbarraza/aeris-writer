@@ -82,7 +82,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   collapsed; hide Smart Folders → section gone, back after re-enabling and relaunch;
   empty Favorites shows its hint.
 
-- [ ] **M2-6 — File list rows: excerpt, date, open marker.** Each file row shows the
+- [x] **M2-6 — File list rows: excerpt, date, open marker.** Each file row shows the
   name (extension per a "show extensions" setting), a date on the right (time for
   today, "Yesterday", otherwise a short date) and up to two lines of excerpt: the text
   with Markdown removed (`MarkdownCore`, tested). An empty file reads "No text". A
@@ -180,11 +180,21 @@ filter field at the bottom. Editor (right), with the preview beside it.
   *Verify:* drag a file onto a subfolder → moved; Option-drag → copied; drag a file
   from the Desktop onto the list → copied in, original stays.
 
+- [x] **M2-13a — Add locations by dragging folders or with Open.** Folders dragged from
+  Finder onto the organizer are added as locations (the Locations section highlights);
+  files are refused; a folder already present → nothing. The new location becomes the
+  selected row and its contents show. File ▸ Open… accepts folders and adds them as
+  locations; files open as before. The folder on disk is never touched (H, 2026-10-29).
+  *Verify:* drop a folder → added once and selected, its files listed; drop it again →
+  nothing; drop a file → refused; Open… with a folder and a file → folder added, file
+  opened; the folder on disk is untouched.
+
 - [ ] **M2-13 — Locations: add, label, remove.** A newly added location becomes the
   selected organizer row and its contents show. A folder dragged from Finder onto the
   Locations section is added (already present → nothing, no error). Rename Location
   sets a display name only (folder on disk untouched; clearing it restores the folder
-  name; persisted). Remove Location from the context menu or the Delete key. Locations
+  name; persisted). File ▸ Open… accepts folders too: choosing a folder adds it as a
+  location (H, 2026-10-29). Remove Location from the context menu or the Delete key. Locations
   are listed in the Go menu (M2-27).
   *Verify:* add a folder → selected and shown; drag a folder from Finder onto Locations
   → added once, drag again → nothing; rename the label → disk unchanged, survives
@@ -312,10 +322,20 @@ filter field at the bottom. Editor (right), with the preview beside it.
   New Window; ⌘-click a row opens in a new tab, ⌥⌘-click in a new window. Opening a
   document already open in another tab selects that tab. The tab bar's "+" makes a new
   draft in the current folder (M2-8). View ▸ Show Tab Bar, Show All Tabs (⇧⌘\). Library
-  and organizer widths stay in sync across the tabs of one window.
+  and organizer widths stay in sync across the tabs of one window. A linked note (a click in
+  the preview or ⌘-click in the editor) opens in a new tab of the same window, never a new
+  window; new documents and File ▸ Open also prefer a tab (H, 2026-10-29).
   *Verify:* Open in New Tab → same window, new tab, first tab unchanged; open a file that
   is in tab 2 from tab 1 → tab 2 selected; tab bar "+" → draft in the current folder;
   drag the library divider in tab 1 → tab 2 matches; Window ▸ Merge All Windows works.
+
+- [ ] **M2-26a — Notes side by side.** Show two notes next to each other in one window,
+  each with or without its preview: View ▸ Open in Split (or ⌥-click a link or row), drag a
+  tab onto the editor's edge to split; close a pane to go back to one. Each pane keeps its
+  own cursor, undo and preview toggle; the library columns are shared (H, 2026-10-29).
+  *Verify:* split with Other.md → two editors, typing in one leaves the other unchanged;
+  preview off in one pane only; close the right pane → one editor, no document closed
+  unsaved; relaunch restores the split.
 
 - [ ] **M2-27 — Go menu.** Lists locations, favorites (⌃1…⌃9), smart folders (⌃⌥1…⌃⌥9)
   and tags; choosing one selects it in the organizer. Updates live as the lists change.
