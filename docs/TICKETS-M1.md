@@ -132,7 +132,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
 
 ## Added 2026-10-29
 
-- [ ] **M1-13 — Open any text file.** A file with no extension or an unknown one (e.g.
+- [x] **M1-13 — Open any text file.** A file with no extension or an unknown one (e.g.
   `README`, `notes.text`) opens as text when its bytes decode cleanly with M1-8's
   detection (no lossy decoding). Empty files open. RTF and binary files are refused
   with a clear message and no half-open window.
