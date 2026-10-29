@@ -26,6 +26,8 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
     @MainActor static var splitAutosaveName: String { layoutKey + ".Columns" }
 
     func focusEditor() { editor.focusText() }
+    func selectInEditor(_ range: NSRange) { editor.select(range) }
+    func showFindAndReplace(query: String) { editor.showFindAndReplace(query: query) }
 
     var isSidebarCollapsed: Bool { splitViewController.splitViewItems[0].isCollapsed }
 
@@ -90,7 +92,7 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
                                                name: NSSplitView.didResizeSubviewsNotification, object: split.splitView)
         preview.openDocument = { [weak self] url in self?.openLinked(url) }
         editor.onLink = { [weak self] url in self?.preview.handleLink(url) }
-        fileList.onOpen = { [weak self] url, focusEditor in self?.open(url, focusEditor: focusEditor) }
+        fileList.onOpen = { [weak self] url, focusEditor in self?.openFile(url, focusEditor: focusEditor) }
         sidebar.onFolderSelected = { [weak self] folder in
             guard let self else { return }
             fileList.showFolder(folder)
@@ -271,7 +273,7 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
 
     /// Opens a file row the user chose in the file list. A click in the list also moves
     /// the keyboard to the editor once the document is open.
-    private func open(_ url: URL, focusEditor: Bool) {
+    func openFile(_ url: URL, focusEditor: Bool, then placed: (@MainActor () -> Void)? = nil) {
         replaceDocument(with: url) { [weak self] result in
             guard let self else { return }
             if case .failure(let error) = result {
@@ -282,6 +284,7 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
                 return reveal((document as? NSDocument)?.fileURL, expandingAncestors: false)
             }
             if focusEditor { editor.focusText() }
+            placed?()
         }
     }
 

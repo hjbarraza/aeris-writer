@@ -136,4 +136,140 @@ public enum QuickSearch {
         for root in roots where !isCancelled() { walk(root, trail: [root.lastPathComponent]) }
         flush()
     }
+
+    // MARK: Inside files
+
+    /// Files larger than this are not searched.
+    public static let maxFileBytes = 2_000_000
+
+    /// One place a query occurs inside a file.
+    public struct ContentMatch: Equatable, Sendable {
+        public enum Kind: Equatable, Sendable { case heading(level: Int), text }
+        public let kind: Kind
+        /// 1-based line number.
+        public let line: Int
+        /// The match in the file's text, in UTF-16 units (an `NSRange` into the text).
+        public let range: NSRange
+        /// The heading's title, or the line (trimmed; cut around the match when long).
+        public let snippet: String
+        /// Character offsets of the match inside `snippet`.
+        public let highlight: Range<Int>
+    }
+
+    /// The matches found in one file, headings first, then text, each in document order.
+    public struct FileHits: Equatable, Sendable {
+        public let candidate: Candidate
+        public let matches: [ContentMatch]
+    }
+
+    /// Occurrences of `query` (case and accents ignored, as one phrase) in `text`, one per line,
+    /// at most `maxFound`. A heading is an ATX `#` line outside a code fence; heading lines only
+    /// ever give heading results, every other line only text results. Headings come first.
+    public static func search(in text: String, query: String, headings wantHeadings: Bool, text wantText: Bool,
+                              maxFound: Int, isCancelled: () -> Bool = { false }) -> [ContentMatch] {
+        let q = Array(query.trimmingCharacters(in: .whitespaces).map(fold))
+        guard !q.isEmpty, wantHeadings || wantText, maxFound > 0 else { return [] }
+        var headings: [ContentMatch] = [], texts: [ContentMatch] = []
+        var fence: Character?
+        var lineNumber = 0
+        let ns = text as NSString
+        withoutActuallyEscaping(isCancelled) { cancelled in
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: .byLines) { sub, subRange, _, stop in
+            guard let line = sub else { return }
+            lineNumber += 1
+            if lineNumber % 1000 == 0, cancelled() { stop.pointee = true; return }
+            let chars = Array(line)
+            let lead = chars.prefix { $0 == " " }.count
+            if lead <= 3, let f = chars.dropFirst(lead).first, f == "`" || f == "~",
+               chars.dropFirst(lead).prefix(3).filter({ $0 == f }).count == 3 {
+                if fence == nil { fence = f } else if fence == f { fence = nil }
+            }
+            var kind = ContentMatch.Kind.text
+            var from = 0, to = chars.count     // the part of the line that is searched
+            if fence == nil, lead <= 3, let h = headingParts(chars, lead: lead) {
+                guard wantHeadings else { return }
+                kind = .heading(level: h.level); from = h.start; to = h.end
+            } else if !wantText { return }
+            guard let i = indexOf(q, in: chars[from..<to].map(fold)) else { return }
+            let start = from + i
+            let location = subRange.location + String(chars[..<start]).utf16.count
+            let length = String(chars[start..<start + q.count]).utf16.count
+            let snippet: String, highlight: Range<Int>
+            if case .heading = kind {
+                snippet = String(chars[from..<to]); highlight = i..<i + q.count
+            } else {
+                (snippet, highlight) = snippetAround(chars, start: start, length: q.count)
+            }
+            let m = ContentMatch(kind: kind, line: lineNumber, range: NSRange(location: location, length: length),
+                                 snippet: snippet, highlight: highlight)
+            if case .heading = kind { headings.append(m) } else { texts.append(m) }
+            if headings.count + texts.count >= maxFound { stop.pointee = true }
+        }
+        }
+        return headings + texts
+    }
+
+    /// An ATX heading line: its level and the title's span in `chars`.
+    private static func headingParts(_ chars: [Character], lead: Int) -> (level: Int, start: Int, end: Int)? {
+        let hashes = chars.dropFirst(lead).prefix { $0 == "#" }.count
+        guard (1...6).contains(hashes) else { return nil }
+        var start = lead + hashes
+        guard start == chars.count || chars[start] == " " || chars[start] == "\t" else { return nil }
+        var end = chars.count
+        while start < end, chars[start] == " " || chars[start] == "\t" { start += 1 }
+        while end > start, chars[end - 1] == " " || chars[end - 1] == "\t" { end -= 1 }
+        var closing = end
+        while closing > start, chars[closing - 1] == "#" { closing -= 1 }
+        if closing < end, closing == start || chars[closing - 1] == " " || chars[closing - 1] == "\t" {
+            end = closing
+            while end > start, chars[end - 1] == " " || chars[end - 1] == "\t" { end -= 1 }
+        }
+        return start < end ? (hashes, start, end) : nil
+    }
+
+    private static func indexOf(_ q: [Character], in text: [Character]) -> Int? {
+        guard q.count <= text.count else { return nil }
+        for i in 0...(text.count - q.count) where text[i..<i + q.count].elementsEqual(q) { return i }
+        return nil
+    }
+
+    /// The line trimmed, and cut to a window around the match when it is long.
+    private static func snippetAround(_ chars: [Character], start: Int, length: Int) -> (String, Range<Int>) {
+        var lo = 0, hi = chars.count
+        while lo < start, chars[lo] == " " || chars[lo] == "\t" { lo += 1 }
+        while hi > start + length, chars[hi - 1] == " " || chars[hi - 1] == "\t" { hi -= 1 }
+        var cutHead = false, cutTail = false
+        if hi - lo > 80 {
+            let want = max(lo, start - 30)
+            if want > lo { lo = want; cutHead = true }
+            if hi - lo > 80 { hi = lo + max(80, start - lo + length); cutTail = true }
+        }
+        let head = cutHead ? "\u{2026}" : ""
+        let offset = head.count + start - lo
+        return (head + String(chars[lo..<hi]) + (cutTail ? "\u{2026}" : ""), offset..<offset + length)
+    }
+
+    /// The file's bytes, or nil when it is unreadable or over `maxFileBytes`.
+    public static func readIfSmall(_ path: String) -> Data? {
+        // Through symlinks to the real file, which must be a regular one (a FIFO or device would block).
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]), values.isRegularFile == true,
+              let size = values.fileSize, size <= maxFileBytes else { return nil }
+        return try? Data(contentsOf: url)
+    }
+
+    /// Searches `candidates` in order, handing over each file that has matches, until `maxFiles`
+    /// files were delivered. `read` gives a file's text (nil skips it). `isCancelled` is asked
+    /// before each file.
+    public static func searchFiles(query: String, candidates: [Candidate], headings: Bool, text: Bool, maxFiles: Int,
+                                   maxPerFile: Int = 100, read: (Candidate) -> String?, isCancelled: () -> Bool,
+                                   deliver: (FileHits) -> Void) {
+        var delivered = 0
+        for cand in candidates {
+            if isCancelled() || delivered >= maxFiles { return }
+            guard let body = read(cand) else { continue }
+            let found = search(in: body, query: query, headings: headings, text: text, maxFound: maxPerFile, isCancelled: isCancelled)
+            if !found.isEmpty { deliver(FileHits(candidate: cand, matches: found)); delivered += 1 }
+        }
+    }
 }

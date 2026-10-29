@@ -47,6 +47,26 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
         view.window?.makeFirstResponder(textView)
     }
 
+    /// Puts the caret on `range` (clamped to the text) and scrolls it into view.
+    func select(_ range: NSRange) {
+        let length = (textView.string as NSString).length
+        let location = min(max(range.location, 0), length)
+        textView.setSelectedRange(NSRange(location: location, length: min(max(range.length, 0), length - location)))
+        textView.scrollRangeToVisible(textView.selectedRange())
+    }
+
+    /// Opens the find bar with its replace field, searching for `query` (the find pasteboard is
+    /// what the bar reads, as with the system's own Find).
+    func showFindAndReplace(query: String) {
+        let pasteboard = NSPasteboard(name: .find)
+        pasteboard.clearContents()
+        pasteboard.setString(query, forType: .string)
+        focusText()
+        let item = NSMenuItem()
+        item.tag = NSTextFinder.Action.showReplaceInterface.rawValue
+        textView.performTextFinderAction(item)
+    }
+
     override func loadView() {
         // What NSTextView.scrollableTextView() builds, with a text view that can take over Paste.
         let scroll = NSScrollView()
@@ -63,6 +83,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
         scroll.documentView = editorView
         editorView.richPaste = { [weak self] in self?.pasteRichTextIfSet() ?? false }
         textView = editorView
+        textView.usesFindBar = true
         textView.isRichText = false
         textView.importsGraphics = false
         textView.usesFontPanel = false
