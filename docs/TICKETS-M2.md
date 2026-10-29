@@ -274,7 +274,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
 
 ## Search and navigation
 
-- [ ] **M2-22 — Quick search: files.** ⇧⌘O (Go ▸ Quick Search, toolbar button) opens a
+- [x] **M2-22 — Quick search: files.** ⇧⌘O (Go ▸ Quick Search, toolbar button) opens a
   floating panel over the window. Typing ranks files across all locations by name
   (prefix, then word-start, then substring), each with its folder breadcrumb and the
   match highlighted. Arrows + Return open; Esc closes and returns focus to the editor.
