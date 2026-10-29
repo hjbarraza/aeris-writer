@@ -666,7 +666,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     static let fileActions: Set<Selector> = [
         #selector(newFile(_:)), #selector(newFolder(_:)), #selector(newFolderWithSelection(_:)),
         #selector(renameItem(_:)), #selector(duplicateItems(_:)), #selector(trashItems(_:)),
-        #selector(deleteItemsImmediately(_:)), #selector(showItemsInFinder(_:)),
+        #selector(showItemsInFinder(_:)),
     ]
 
     /// The row whose name is being edited, and its text field.
@@ -692,11 +692,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let nodes = clicked == nil ? [] : selection.contains(row) ? selection.compactMap(node(atRow:)) : [clicked!]
         let targets = Targets(nodes: nodes, clicked: clicked)
         let menu = NSMenu()
-        func add(_ title: String, _ action: Selector, alternate: Bool = false) {
+        func add(_ title: String, _ action: Selector) {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.representedObject = targets
-            if alternate { item.keyEquivalentModifierMask = .option; item.isAlternate = true }
             menu.addItem(item)
         }
         add("New File", #selector(newFile(_:)))
@@ -706,7 +705,6 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         add("Rename", #selector(renameItem(_:)))
         add("Duplicate", #selector(duplicateItems(_:)))
         add("Move to Trash", #selector(trashItems(_:)))
-        add("Delete Immediately…", #selector(deleteItemsImmediately(_:)), alternate: true)
         menu.addItem(.separator())
         add("Show in Finder", #selector(showItemsInFinder(_:)))
         if !nodes.isEmpty {
@@ -735,8 +733,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         case #selector(newFile(_:)), #selector(newFolder(_:)): return destination(t) != nil
         case #selector(newFolderWithSelection(_:)): return t.nodes.count > 1
         case #selector(renameItem(_:)): return t.nodes.count == 1
-        case #selector(duplicateItems(_:)), #selector(trashItems(_:)), #selector(deleteItemsImmediately(_:)),
-             #selector(showItemsInFinder(_:)): return !t.nodes.isEmpty
+        case #selector(duplicateItems(_:)), #selector(trashItems(_:)), #selector(showItemsInFinder(_:)): return !t.nodes.isEmpty
         default: return true
         }
     }
@@ -791,19 +788,6 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let nodes = targets(sender).nodes
         FileOperations.run({ [urls = nodes.map(\.url)] in FileOperations.each(urls, FileOperations.trash) }) { [weak self] outcome in
             self?.finish(outcome, failure: "Some items could not be moved to the Trash.", changed: nodes.compactMap(\.parent))
-        }
-    }
-
-    /// Option-Move to Trash: deletes for good, once the user confirms.
-    @objc func deleteItemsImmediately(_ sender: Any?) {
-        let nodes = targets(sender).nodes
-        guard !nodes.isEmpty else { return }
-        let what = nodes.count == 1 ? "“\(nodes[0].name)”" : "these \(nodes.count) items"
-        FileOperations.confirmDelete("Are you sure you want to delete \(what) immediately?", view.window) { [weak self] delete in
-            guard delete else { return }
-            FileOperations.run({ [urls = nodes.map(\.url)] in FileOperations.each(urls) { try FileOperations.delete($0); return nil } }) { outcome in
-                self?.finish(outcome, failure: "Some items could not be deleted.", changed: nodes.compactMap(\.parent))
-            }
         }
     }
 

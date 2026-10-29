@@ -1,6 +1,7 @@
 import AppKit
 
-/// The file list's file operations: create, duplicate, rename, move, trash and delete. Each runs
+/// The file list's file operations: create, duplicate, rename, move and trash. The app never deletes
+/// permanently: Move to Trash is the only way an item leaves (H, 2026-10-29). Each runs
 /// off the main thread through `FileManager` under file coordination, so an open document (a file
 /// presenter) follows a rename or a move. Nothing ever overwrites an existing item: `moveItem`,
 /// `copyItem`, `createDirectory` and a `.withoutOverwriting` write all fail if the name is taken.
@@ -32,21 +33,6 @@ enum FileOperations {
         alert.informativeText = failures.map { "“\($0.url.lastPathComponent)”: \($0.error.localizedDescription)" }
             .joined(separator: "\n")
         if let window { alert.beginSheetModal(for: window) } else { alert.runModal() }
-    }
-
-    /// Asks before Delete Immediately; `answer(true)` deletes. A seam so a headless check shows nothing.
-    @MainActor static var confirmDelete: (_ message: String, _ window: NSWindow?, _ answer: @escaping @MainActor (Bool) -> Void) -> Void = { message, window, answer in
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = message
-        alert.informativeText = "You can’t undo this action."
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        if let window {
-            alert.beginSheetModal(for: window) { answer($0 == .alertFirstButtonReturn) }
-        } else {
-            answer(alert.runModal() == .alertFirstButtonReturn)
-        }
     }
 
     private static let queue = DispatchQueue(label: "aeris.fileoperations", qos: .userInitiated)
@@ -150,13 +136,5 @@ enum FileOperations {
             if let trashed { c.item(at: url, didMoveTo: trashed) }
         }
         return trashed
-    }
-
-    /// Deletes `url` for good (Delete Immediately, after the user confirmed).
-    static func delete(_ url: URL) throws {
-        let c = NSFileCoordinator()
-        try coordinated({ error, body in c.coordinate(writingItemAt: url, options: .forDeleting, error: &error) { _ in body() } }) {
-            try FileManager.default.removeItem(at: url)
-        }
     }
 }

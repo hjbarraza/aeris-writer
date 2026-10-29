@@ -27,12 +27,6 @@ enum MainMenu {
             item("Rename", #selector(FileListViewController.renameItem(_:))),
             item("Duplicate", #selector(FileListViewController.duplicateItems(_:))),
             item("Move to Trash", #selector(FileListViewController.trashItems(_:))),
-            {
-                let i = item("Delete Immediately…", #selector(FileListViewController.deleteItemsImmediately(_:)))
-                i.keyEquivalentModifierMask = .option
-                i.isAlternate = true
-                return i
-            }(),
             item("Show in Finder", #selector(FileListViewController.showItemsInFinder(_:))),
             .separator(),
             item("Close", #selector(NSWindow.performClose(_:)), "w"),

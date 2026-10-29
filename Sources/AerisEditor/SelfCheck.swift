@@ -145,19 +145,18 @@ enum SelfCheck {
         defer { try? fm.setAttributes([.immutable: false], ofItemAtPath: loc.appending(path: "locked.md").path) }
 
         let previousTrash = FileOperations.trashItem, previousInTrash = MarkdownDocument.isInTrash
-        let previousFailures = FileOperations.presentFailures, previousConfirm = FileOperations.confirmDelete
+        let previousFailures = FileOperations.presentFailures
         FileOperations.trashItem = { url in
             let to = trash.appending(path: url.lastPathComponent)
             try FileManager.default.moveItem(at: url, to: to)
             return to
         }
         MarkdownDocument.isInTrash = { $0.path.contains("/FileOpsTrash/") }
-        var alerts: [(title: String, names: [String])] = [], confirms: [String] = []
+        var alerts: [(title: String, names: [String])] = []
         FileOperations.presentFailures = { title, failures, _ in alerts.append((title, failures.map(\.url.lastPathComponent))) }
-        FileOperations.confirmDelete = { message, _, answer in confirms.append(message); answer(true) }
         defer {
             FileOperations.trashItem = previousTrash; MarkdownDocument.isInTrash = previousInTrash
-            FileOperations.presentFailures = previousFailures; FileOperations.confirmDelete = previousConfirm
+            FileOperations.presentFailures = previousFailures
         }
         Library.shared.addLocation(loc)
         defer { Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1) }
@@ -233,16 +232,20 @@ enum SelfCheck {
 
         // Move to Trash: no prompt.
         choose("Move to Trash", on: ["b.md"])
-        check(wait(timeout: 3) { !exists("b.md") && fm.fileExists(atPath: trash.appending(path: "b.md").path) } && confirms.isEmpty,
+        check(wait(timeout: 3) { !exists("b.md") && fm.fileExists(atPath: trash.appending(path: "b.md").path) } && alerts.isEmpty,
               "file ops: Move to Trash moves the file to the Trash without asking")
-        // Delete Immediately (the Option alternate) asks, naming the item, then deletes.
-        choose("Delete Immediately…", on: ["c.md"])
-        check(wait(timeout: 3) { !exists("c.md") } && !fm.fileExists(atPath: trash.appending(path: "c.md").path)
-              && confirms.count == 1 && confirms[0].contains("“c.md”"),
-              "file ops: Delete Immediately asks, naming the item, then deletes (\(confirms))")
-        choose("Delete Immediately…", on: ["x.md", "y.md"])
-        check(confirms.count == 2 && confirms[1].contains("2 items") && wait(timeout: 3) { !exists("x.md") && !exists("y.md") },
-              "file ops: Delete Immediately on several rows names the count (\(confirms))")
+        // Trash only: no menu offers a permanent delete, Option-alternates included.
+        func allItems(_ menu: NSMenu?) -> [NSMenuItem] {
+            (menu?.items ?? []).flatMap { [$0] + allItems($0.submenu) }
+        }
+        table.selectRowIndexes(IndexSet([row("x.md"), row("y.md")].compactMap { $0 }), byExtendingSelection: false)
+        let menus = [list.contextMenu(forClickedRow: row("c.md") ?? -1), list.contextMenu(forClickedRow: row("x.md") ?? -1),
+                     list.contextMenu(forClickedRow: -1), MainMenu.make().item(withTitle: "File")?.submenu]
+        let deleting = menus.flatMap(allItems).filter { item in
+            item.title.lowercased().contains("delete") || item.action.map { NSStringFromSelector($0).lowercased().contains("delete") } == true
+        }
+        check(deleting.isEmpty && !list.responds(to: Selector(("deleteItemsImmediately:"))),
+              "file ops: no menu offers a permanent delete, with or without Option (\(deleting.map(\.title)))")
 
         // Trash three files, one locked: one alert lists it, the other two are trashed.
         choose("Move to Trash", on: ["d.md", "locked.md", "e.md"])
