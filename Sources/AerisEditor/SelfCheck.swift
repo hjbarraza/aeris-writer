@@ -21,7 +21,44 @@ enum SelfCheck {
         setenv("AERIS_LIBRARY_FILE", scratch.appending(path: "Locations.plist").path, 1)
     }
 
+    /// Every app preference goes to a private, emptied domain, and every split view autosave name
+    /// starts with `Aeris.SelfCheck`, so a run never changes the user's settings or layout.
+    @MainActor static func isolateDefaults() {
+        let store = UserDefaults(suiteName: AppDefaults.selfCheckSuite)!
+        store.removePersistentDomain(forName: AppDefaults.selfCheckSuite)
+        AppDefaults.store = store
+        AppDefaults.isolated = true
+        EditorWindowController.layoutKey = "Aeris.SelfCheck.MainSplit"
+    }
+
+    /// Removes what a run (or an earlier, interrupted one) left in the standard defaults: the split
+    /// view autosave records under `Aeris.SelfCheck` names.
+    static func cleanStandardDefaults() {
+        let defaults = UserDefaults.standard
+        for key in defaults.dictionaryRepresentation().keys
+        where key.hasPrefix("Aeris.SelfCheck") || key.hasPrefix("NSSplitView Subview Frames Aeris.SelfCheck") {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.synchronize()
+    }
+
+    /// The label of the last check printed, for the watchdog (written on main, read on its queue).
+    nonisolated(unsafe) private static var lastCheck = "start"
+    private static let lastCheckLock = NSLock()
+
     @MainActor static func run() -> Never {
+        // Watchdog: a run that hangs reports where and exits instead of waiting forever.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 240) {
+            let last = lastCheckLock.withLock { lastCheck }
+            print("FAIL - selfcheck timed out after \(last)")
+            cleanStandardDefaults()
+            try? FileManager.default.removeItem(at: scratch)
+            fflush(stdout)
+            _exit(1)
+        }
+        // A run that was killed may have left split view records behind.
+        cleanStandardDefaults()
+        let recentsBefore = NSDocumentController.shared.recentDocumentURLs
         let real = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "Aeris/Locations.plist").path
         guard LocationStore.defaultFileURL.path != real else {
@@ -40,6 +77,7 @@ enum SelfCheck {
         folderDropChecks()
         persistenceChecks()
         openChecks()
+        caretAtEndChecks()
         sidebarChecks()
         organizerChecks()
         columnChecks()
@@ -48,18 +86,47 @@ enum SelfCheck {
         encodingChecks()
         externalChangeChecks()
         linkChecks()
+        linkMenuChecks()
         navigationChecks()
         rowChecks()
         restorationChecks()
         lineEndingChecks()
+        hashtagMenuChecks()
+        check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
         try? FileManager.default.removeItem(at: scratch)
+        cleanStandardDefaults()
         if failed { print("selfcheck FAILED"); exit(1) }
         print("selfcheck passed")
         exit(0)
     }
 
+    /// Format > Add Hashtag mid-word: ` #` goes in at the caret and the tag list opens.
+    @MainActor static func hashtagMenuChecks() {
+        let dir = scratch.appending(path: "hashtag")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "Tags.md")
+        try? "#alpha #beta\n\nabcd\n".write(to: url, atomically: true, encoding: .utf8)
+        let dc = NSDocumentController.shared
+        let doc = try! dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        wc.window?.orderFront(nil)
+        let tv = editorTextView(wc)
+        tv.setSelectedRange(NSRange(location: 16, length: 0))  // ab|cd
+        let item = NSMenuItem(title: "Add Hashtag", action: nil, keyEquivalent: "")
+        item.representedObject = MarkdownElement.addHashtag
+        wc.editorForTesting.toggleBlock(item)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        check(tv.string == "#alpha #beta\n\nab #cd\n" && tv.selectedRange() == NSRange(location: 18, length: 0),
+              "add hashtag mid-word: ' #' at the caret (got \(tv.string.debugDescription))")
+        check(wc.editorForTesting.completion.isVisible, "add hashtag: the tag list opens")
+        wc.editorForTesting.completion.hide()
+        doc.close()
+    }
+
     static func check(_ ok: Bool, _ label: String) {
         print(ok ? "ok - \(label)" : "FAIL - \(label)")
+        lastCheckLock.withLock { lastCheck = label }
         if !ok { failed = true }
     }
 
@@ -394,6 +461,9 @@ enum SelfCheck {
 
     /// The organizer: its sections, hints and settings, and walking folders in the file list.
     @MainActor static func organizerChecks() {
+        // These checks drive folders that open in the list.
+        FileListSettings.shared.update { $0.navigation = .list }
+        defer { FileListSettings.shared.update { $0.navigation = .tree } }
         guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else { return }
         let fm = FileManager.default
         let dc = NSDocumentController.shared
@@ -401,7 +471,7 @@ enum SelfCheck {
         let layout = "Aeris.SelfCheck.Organizer"
         EditorWindowController.layoutKey = layout
         let defaultsKeys = ["\(layout).CollapsedSections", "\(layout).HiddenSections"]
-        func clean() { defaultsKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) } }
+        func clean() { defaultsKeys.forEach { AppDefaults.store.removeObject(forKey: $0) } }
         clean()
         defer { clean(); EditorWindowController.layoutKey = previousKey }
 
@@ -489,23 +559,23 @@ enum SelfCheck {
         // Collapsing a section is remembered, and sections start expanded in a fresh window.
         let tags = sections().first { $0.kind == .tags }!
         ov.collapseItem(tags)
-        check(UserDefaults.standard.stringArray(forKey: defaultsKeys[0]) == ["tags"] && hints().count == 2, "organizer: collapsing Tags is saved")
+        check(AppDefaults.store.stringArray(forKey: defaultsKeys[0]) == ["tags"] && hints().count == 2, "organizer: collapsing Tags is saved")
         let wc2 = EditorWindowController()
         wc2.sidebar.loadViewIfNeeded()
         let ov2 = wc2.sidebar.outlineView
         let sections2 = (0..<ov2.numberOfRows).compactMap { ov2.item(atRow: $0) as? OrganizerSection }
         check(sections2.map { ov2.isItemExpanded($0) } == [true, true, true, false], "organizer: a new window restores the collapsed Tags")
         ov.expandItem(tags)
-        check((UserDefaults.standard.stringArray(forKey: defaultsKeys[0]) ?? []).isEmpty, "organizer: expanding Tags again is saved")
+        check((AppDefaults.store.stringArray(forKey: defaultsKeys[0]) ?? []).isEmpty, "organizer: expanding Tags again is saved")
         wc2.close()
 
         // Revealing a document expands a collapsed Locations without forgetting the collapse.
         let locations = sections().first { $0.kind == .locations }!
         ov.collapseItem(locations)
         wc.sidebar.reveal(loc.appending(path: "top.md"))
-        check(UserDefaults.standard.stringArray(forKey: defaultsKeys[0]) == ["locations"],
+        check(AppDefaults.store.stringArray(forKey: defaultsKeys[0]) == ["locations"],
               "organizer: revealing into a collapsed Locations keeps the collapse saved")
-        UserDefaults.standard.removeObject(forKey: defaultsKeys[0])
+        AppDefaults.store.removeObject(forKey: defaultsKeys[0])
         ov.expandItem(locations)
 
         // Hiding sections: the View > Organizer submenu, live in open windows, kept for new ones.
@@ -516,7 +586,7 @@ enum SelfCheck {
         check(appDelegate.validateMenuItem(smart) && smart.state == .on, "organizer: a shown section is checked in the menu")
         check(NSApp.sendAction(smart.action!, to: nil, from: smart), "organizer: the menu item reaches the app")
         check(sections().map(\.title) == ["Locations", "Favorites", "Tags"] && hints().count == 2, "organizer: hiding Smart Folders removes the section")
-        check(UserDefaults.standard.stringArray(forKey: defaultsKeys[1]) == ["smartFolders"], "organizer: the hidden section is stored")
+        check(AppDefaults.store.stringArray(forKey: defaultsKeys[1]) == ["smartFolders"], "organizer: the hidden section is stored")
         _ = appDelegate.validateMenuItem(smart)
         check(smart.state == .off, "organizer: a hidden section is unchecked in the menu")
         let wc3 = EditorWindowController()
@@ -527,7 +597,7 @@ enum SelfCheck {
         wc3.close()
         _ = NSApp.sendAction(smart.action!, to: nil, from: smart)
         check(sections().map(\.title) == ["Locations", "Favorites", "Smart Folders", "Tags"]
-              && (UserDefaults.standard.stringArray(forKey: defaultsKeys[1]) ?? []).isEmpty, "organizer: enabling it again brings the section back")
+              && (AppDefaults.store.stringArray(forKey: defaultsKeys[1]) ?? []).isEmpty, "organizer: enabling it again brings the section back")
         let wc4 = EditorWindowController()
         wc4.sidebar.loadViewIfNeeded()
         check(wc4.sidebar.outlineView.numberOfRows == ov.numberOfRows, "organizer: and a new window shows it")
@@ -620,7 +690,8 @@ enum SelfCheck {
         list.reveal(urlB)
         try? "ab".write(to: urlAB, atomically: true, encoding: .utf8)
         refresh()
-        check(names().firstIndex(of: "AB.md").map { $0 < rowOf(urlB) } == true && canonical(highlighted(wc)) == canonical(urlB),
+        // (By date the new file is read in the background, then moves above B.)
+        check(wait(timeout: 3) { names().firstIndex(of: "AB.md").map { $0 < rowOf(urlB) } == true } && canonical(highlighted(wc)) == canonical(urlB),
               "columns: a file created above the highlighted row keeps the highlight on it")
         check(opensHighlighted(urlB), "columns: after a create above it, click and arrow open the highlighted file (\(opened))")
         try? fm.removeItem(at: urlAB)
@@ -1075,6 +1146,43 @@ enum SelfCheck {
             else { return false }
             return attempter.attemptRecovery(fromError: error, optionIndex: option)
         }
+    }
+
+    /// M1-14: no stored caret opens at the end; a caret stored at the end follows the file's growth.
+    @MainActor static func caretAtEndChecks() {
+        let fm = FileManager.default, dc = NSDocumentController.shared
+        let dir = scratch.appending(path: "CaretEnd")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "n.md")
+        try? "one\ntwo\n".write(to: url, atomically: true, encoding: .utf8)
+        let before = try? Data(contentsOf: url)
+        func open() -> (MarkdownDocument, NSTextView, EditorWindowController) {
+            let d = try! dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+            dc.addDocument(d); d.makeWindowControllers()
+            let wc = d.windowControllers[0] as! EditorWindowController
+            wc.editorForTesting.viewDidAppear()
+            return (d, editorTextView(wc), wc)
+        }
+        func append(_ text: String) {
+            let fh = try! FileHandle(forWritingTo: url)
+            try! fh.seekToEnd(); try! fh.write(contentsOf: Data(text.utf8)); try! fh.close()
+        }
+        var (d, tv, wc) = open()
+        check(tv.selectedRange() == NSRange(location: 8, length: 0), "caret-end: a never-opened file opens with the caret at the end")
+        check((try? Data(contentsOf: url)) == before, "caret-end: opening leaves the file bytes unchanged")
+        // Store the state as closing does, with the caret at the end.
+        try? ExtendedAttributes.set(try! JSONEncoder().encode(wc.editorForTesting.state), named: EditorState.attributeName, at: url)
+        d.close()
+        append("more\n")
+        (d, tv, wc) = open()
+        check(tv.selectedRange() == NSRange(location: 13, length: 0), "caret-end: a caret stored at the end follows the file's growth")
+        tv.setSelectedRange(NSRange(location: 2, length: 0))
+        try? ExtendedAttributes.set(try! JSONEncoder().encode(wc.editorForTesting.state), named: EditorState.attributeName, at: url)
+        d.close()
+        append("x\n")
+        (d, tv, wc) = open()
+        check(tv.selectedRange() == NSRange(location: 2, length: 0), "caret-end: a caret stored mid-text stays where it was")
+        d.close()
     }
 
     static func editorState(at url: URL) -> EditorState? {
@@ -1753,8 +1861,8 @@ enum SelfCheck {
             try? fm.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
         }
         try? fm.setAttributes([.posixPermissions: 0], ofItemAtPath: loc.appending(path: "locked.md").path)
-        UserDefaults.standard.removeObject(forKey: FileListViewController.showExtensionsKey)
-        defer { UserDefaults.standard.removeObject(forKey: FileListViewController.showExtensionsKey) }
+        AppDefaults.store.removeObject(forKey: FileListViewController.showExtensionsKey)
+        defer { AppDefaults.store.removeObject(forKey: FileListViewController.showExtensionsKey) }
         Library.shared.addLocation(loc)
 
         let doc = try! dc.makeDocument(withContentsOf: loc.appending(path: "old.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
@@ -1800,7 +1908,7 @@ enum SelfCheck {
         check(wait(timeout: 5) { !cell("locked.md").dateLabel.stringValue.isEmpty } && cell("locked.md").excerptLabel.stringValue.isEmpty,
               "rows: an unreadable file does not say \"No text\"")
 
-        UserDefaults.standard.set(true, forKey: FileListViewController.showExtensionsKey)
+        AppDefaults.store.set(true, forKey: FileListViewController.showExtensionsKey)
         table.reloadData()
         check(cell("today.md").nameLabel.stringValue == "today.md", "rows: the show-extensions setting keeps the extension")
 
@@ -1855,7 +1963,7 @@ enum SelfCheck {
               "restore: the open document is unchanged and not edited")
 
         // Fallbacks never fail: a missing folder shows its location's root; a missing location, the first.
-        wc2.restoreLibraryView(folderPath: canonical(loc) + "/gone/deeper", selectedPath: canonical(urlC), expandedPaths: [])
+        wc2.restoreLibraryView(folderPath: canonical(loc) + "/gone/deeper", selectedPath: canonical(loc) + "/gone/deeper/C.md", expandedPaths: [])
         check(wc2.fileList.folder === node(loc) && wc2.fileList.selectedPath == nil,
               "restore: a deleted folder falls back to its location's root, and a missing file is not selected")
         wc2.restoreLibraryView(folderPath: canonical(loc.appending(path: "sub")), selectedPath: nil, expandedPaths: [])
@@ -1863,6 +1971,47 @@ enum SelfCheck {
         check(wc2.fileList.folder === Library.shared.tree.roots.first, "restore: an unresolved location falls back to the first location")
         check(Library.shared.tree.roots.map(\.path) == rootsBefore, "restore: locations were not reordered")
         close(wc1, d1); close(wc2, d2)
+
+        // The app's own store, which a plain ⌘Q keeps: a launch with no window restored reopens the
+        // last document with its library view.
+        let store = AppDefaults.store, key = EditorWindowController.sessionKey
+        store.removeObject(forKey: key)
+        let d3 = try! dc.makeDocument(withContentsOf: urlC, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(d3); d3.makeWindowControllers()
+        let wc3 = d3.windowControllers[0] as! EditorWindowController
+        wc3.fileList.showFolder(node(loc))
+        wc3.fileList.restoreSelection(path: canonical(loc.appending(path: "sub")))
+        wc3.fileList.onStateChange?()  // as the selection change notification does for a folder row
+        let saved = store.dictionary(forKey: key) ?? [:]
+        check(saved["folder"] as? String == canonical(loc) && saved["selection"] as? String == canonical(loc.appending(path: "sub"))
+              && (saved["document"] as? String).map { canonical(URL(fileURLWithPath: $0)) } == canonical(urlC),
+              "restore: the folder, selection and document are stored by the app (\(saved))")
+        let expanded = wc3.sidebar.expandedFolderPaths
+        close(wc3, d3)
+        check(NSDictionary(dictionary: store.dictionary(forKey: key) ?? [:]).isEqual(to: saved),
+              "restore: closing the window keeps the stored session")
+        let opened = Set(dc.documents.map(ObjectIdentifier.init))
+        check(EditorWindowController.reopenLastSession(display: false), "restore: a launch reopens the stored session")
+        let d4 = dc.documents.first { !opened.contains(ObjectIdentifier($0)) }
+        let wc4 = d4?.windowControllers.first as? EditorWindowController
+        check(d4?.fileURL.map(canonical) == canonical(urlC) && d4?.isDocumentEdited == false && d4?.hasUnautosavedChanges == false,
+              "restore: the last document reopens, not edited")
+        check(wc4?.fileList.folder === node(loc) && wc4?.fileList.selectedPath == canonical(loc.appending(path: "sub"))
+              && wc4?.sidebar.expandedFolderPaths == expanded,
+              "restore: the reopened window shows the same folder, selection and organizer expansion")
+        if let wc4, let d4 { wc4.close(); d4.close() }
+
+        // A deleted document and folder: an untitled window at the location's root, no error.
+        store.set(["folder": canonical(loc) + "/gone", "document": canonical(loc) + "/gone/Deleted.md", "expanded": [String]()],
+                  forKey: key)
+        let opened2 = Set(dc.documents.map(ObjectIdentifier.init))
+        check(EditorWindowController.reopenLastSession(display: false), "restore: a missing document still opens a window")
+        let d5 = dc.documents.first { !opened2.contains(ObjectIdentifier($0)) }
+        let wc5 = d5?.windowControllers.first as? EditorWindowController
+        check(d5 != nil && d5?.fileURL == nil && d5?.isDocumentEdited == false && wc5?.fileList.folder === node(loc),
+              "restore: a missing document opens untitled, a deleted folder falls back to its location's root")
+        if let wc5, let d5 { wc5.close(); d5.close() }
+        store.removeObject(forKey: key)
         Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
 
@@ -2080,6 +2229,8 @@ enum SelfCheck {
         selectLocation(wc, root)
         let list = wc.fileList, table = list.tableView
         func names() -> [String] { listNames(wc) }
+        /// Date sorts wait for the background date read.
+        func settle(_ expected: [String]) -> Bool { wait(timeout: 5) { names() == expected } }
         /// Selects a top-level row without opening it (a file row would open a document and show a window).
         func select(_ name: String) { list.restoreSelection(path: canonicalLoc + "/" + name) }
         func cell(_ name: String) -> FileCellView {
@@ -2088,34 +2239,34 @@ enum SelfCheck {
                 ?? table.view(atColumn: 0, row: row, makeIfNecessary: true)) as! FileCellView
         }
 
-        check(names() == ["c.markdown", "zdir", "b.md", "adir", "A.txt"], "sort: default is Date Modified, Newest First (\(names()))")
+        check(settle(["c.markdown", "zdir", "b.md", "adir", "A.txt"]), "sort: default is Date Modified, Newest First (\(names()))")
         set { $0.reversed = true }
-        check(names() == ["A.txt", "adir", "b.md", "zdir", "c.markdown"], "sort: Oldest First reverses it (\(names()))")
+        check(settle(["A.txt", "adir", "b.md", "zdir", "c.markdown"]), "sort: Oldest First reverses it (\(names()))")
         set { $0.reversed = false; $0.sortKey = .dateCreated }
-        check(names() == ["A.txt", "adir", "zdir", "b.md", "c.markdown"], "sort: Date Created (\(names()))")
+        check(settle(["A.txt", "adir", "zdir", "b.md", "c.markdown"]), "sort: Date Created (\(names()))")
         set { $0.reversed = true }
-        check(names() == ["c.markdown", "b.md", "zdir", "adir", "A.txt"], "sort: Date Created, Oldest First (\(names()))")
+        check(settle(["c.markdown", "b.md", "zdir", "adir", "A.txt"]), "sort: Date Created, Oldest First (\(names()))")
         set { $0.reversed = false; $0.sortKey = .name }
-        check(names() == ["A.txt", "adir", "b.md", "c.markdown", "zdir"], "sort: Name A to Z (\(names()))")
+        check(settle(["A.txt", "adir", "b.md", "c.markdown", "zdir"]), "sort: Name A to Z (\(names()))")
         set { $0.reversed = true }
-        check(names() == ["zdir", "c.markdown", "b.md", "adir", "A.txt"], "sort: Name Z to A (\(names()))")
+        check(settle(["zdir", "c.markdown", "b.md", "adir", "A.txt"]), "sort: Name Z to A (\(names()))")
         set { $0.reversed = false; $0.sortKey = .fileExtension }
-        check(names() == ["adir", "zdir", "c.markdown", "b.md", "A.txt"], "sort: Extension A to Z (\(names()))")
+        check(settle(["adir", "zdir", "c.markdown", "b.md", "A.txt"]), "sort: Extension A to Z (\(names()))")
         set { $0.reversed = true }
-        check(names() == ["A.txt", "b.md", "c.markdown", "adir", "zdir"], "sort: Extension Z to A (\(names()))")
+        check(settle(["A.txt", "b.md", "c.markdown", "adir", "zdir"]), "sort: Extension Z to A (\(names()))")
 
         // Folders on Top, at every level (Tree: open zdir in place).
         set { $0.reversed = false; $0.sortKey = .dateModified; $0.foldersOnTop = true }
-        check(names() == ["zdir", "adir", "c.markdown", "b.md", "A.txt"], "sort: Folders on Top (\(names()))")
+        check(settle(["zdir", "adir", "c.markdown", "b.md", "A.txt"]), "sort: Folders on Top (\(names()))")
         select("zdir")
         check(table.onExpand?() == true, "tree: Right arrow opens the selected folder")
-        check(names() == ["zdir", "sub2", "z-last.md", "inner.md", "adir", "c.markdown", "b.md", "A.txt"],
+        check(settle(["zdir", "sub2", "z-last.md", "inner.md", "adir", "c.markdown", "b.md", "A.txt"]),
               "tree: the folder opens in place and its subfolder is on top inside it (\(names()))")
         let nested = names().firstIndex(of: "inner.md")!
         check(cell("inner.md").indent == 16 && cell("c.markdown").indent == 0 && nested > 0, "tree: opened rows are indented one level")
-        check(table.onCollapse?() == true && names() == ["zdir", "adir", "c.markdown", "b.md", "A.txt"], "tree: Left arrow closes it again (\(names()))")
+        check(table.onCollapse?() == true && settle(["zdir", "adir", "c.markdown", "b.md", "A.txt"]), "tree: Left arrow closes it again (\(names()))")
         set { $0.foldersOnTop = false }
-        check(names() == ["c.markdown", "zdir", "b.md", "adir", "A.txt"], "sort: Folders on Top off mixes them again")
+        check(settle(["c.markdown", "zdir", "b.md", "adir", "A.txt"]), "sort: Folders on Top off mixes them again")
 
         // List navigation: Return on a folder drills in, the up button comes back.
         set { $0.navigation = .list }
@@ -2153,7 +2304,7 @@ enum SelfCheck {
         check(barMenu?.item(withTitle: "Sort By") != nil, "menu: the sort bar's menu has the same options")
         let nameItem = sortBy!.item(withTitle: "Name")!
         FileListMenu.shared.choose(nameItem)
-        check(settings.options.sortKey == .name && names() == ["A.txt", "adir", "b.md", "c.markdown", "zdir"] && list.sortBar.title == "Name, A → Z",
+        check(settings.options.sortKey == .name && settle(["A.txt", "adir", "b.md", "c.markdown", "zdir"]) && list.sortBar.title == "Name, A → Z",
               "menu: choosing Name in Sort By reorders the list and the bar (\(list.sortBar.title))")
         _ = FileListMenu.shared.validateMenuItem(nameItem)
         let reverseItem = sortBy!.items.first { ($0.representedObject as? FileListMenu.Command).map { if case .reversed(true) = $0 { true } else { false } } ?? false }!
@@ -2170,14 +2321,14 @@ enum SelfCheck {
         set { $0 = FileListOptions(sortKey: .dateCreated, reversed: true, foldersOnTop: true, showDate: .created,
                                    showExcerpts: false, navigation: .list, showSortBar: false) }
         let saved = settings.options
-        check(FileListSettings(defaults: .standard).options == saved && FileListOptions.load(from: .standard) == saved,
+        check(FileListSettings(defaults: AppDefaults.store).options == saved && FileListOptions.load(from: AppDefaults.store) == saved,
               "persist: every option is read back by a new settings object")
         set { $0 = FileListOptions() }
 
         // Live re-sort: with Date Modified, a file edited elsewhere moves to the top.
         select("b.md")
         let selectedBefore = list.node(atRow: table.selectedRow)
-        check(names().first == "c.markdown", "live: c.markdown is on top before the edit")
+        check(settle(["c.markdown", "zdir", "b.md", "adir", "A.txt"]), "live: c.markdown is on top before the edit")
         let started = Date()
         try? "edited elsewhere".write(to: loc.appending(path: "A.txt"), atomically: true, encoding: .utf8)
         let moved = wait(timeout: 3) { names().first == "A.txt" }
@@ -2185,10 +2336,230 @@ enum SelfCheck {
         check(moved && took < 1.0, "live: an edited file moves to the top within 1 s (\(String(format: "%.2f", took)) s)")
         check(list.node(atRow: table.selectedRow) === selectedBefore && selectedBefore?.name == "b.md", "live: the selected row stays selected (\(list.node(atRow: table.selectedRow)?.name ?? "none"), was \(selectedBefore?.name ?? "none"))")
 
-        // The old behaviour for the checks that follow.
-        set { $0 = FileListOptions(sortKey: .name, reversed: false, foldersOnTop: false, showDate: .modified,
-                                   showExcerpts: true, navigation: .list, showSortBar: true) }
+        // Tree: revealing a document inside a closed folder opens the folders above it.
+        let innerPath = canonicalLoc + "/zdir/inner.md"
+        list.reveal(loc.appending(path: "zdir/inner.md"))
+        let innerRow = names().firstIndex(of: "inner.md")
+        check(innerRow != nil && list.selectedPath == innerPath, "reveal: a document in a closed folder is shown and selected (\(names()), \(list.selectedPath ?? "nil") vs \(innerPath))")
+        check(innerRow.map { (table.rowView(atRow: $0, makeIfNecessary: true) as? FileRowView)?.showsOpenMarker == true } ?? false,
+              "reveal: its row carries the open marker")
+        check(table.onCollapse?() == true && list.selectedPath == canonicalLoc + "/zdir", "tree: Left on a nested row selects its folder")
+        check(table.onCollapse?() == true && !names().contains("inner.md"), "tree: Left on an open folder closes it")
+        list.restoreSelection(path: innerPath)
+        check(list.selectedPath == innerPath, "restore: the selection inside a closed folder is restored")
+        // The shipped defaults stay in place for the checks that follow.
+        set { $0 = FileListOptions() }
         Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
+    }
+
+    /// M1-18: the preview's own link menu. Builds the menu for each link kind and runs every item.
+    @MainActor static func linkMenuChecks() {
+        let dir = scratch.appending(path: "linkmenu")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let main = dir.appending(path: "Main.md")
+        for name in ["Tab", "Win", "Same"] { try? "\(name) doc".write(to: dir.appending(path: "\(name).md"), atomically: true, encoding: .utf8) }
+        let filler = (0..<60).map { "Paragraph \($0)." }.joined(separator: "\n\n")
+        try? "[T](Tab.md) [W](Win.md) [S](Same.md) [A](#second) [Web](https://example.com/a) [M](mailto:a@b.c) [P](pic.png)\n\n# First\n\n\(filler)\n\n## Second\n\n\(filler)\n"
+            .write(to: main, atomically: true, encoding: .utf8)
+        let dc = NSDocumentController.shared
+        let doc = try! dc.makeDocument(withContentsOf: main, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        let preview = wc.previewForTesting, web = preview.webViewForTesting
+        wc.window?.setContentSize(NSSize(width: 1320, height: 400))
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+
+        var external: [URL] = [], opened: [URL] = [], revealed: [URL] = []
+        preview.openExternally = { external.append($0) }
+        preview.openDocument = { opened.append($0) }
+        preview.revealInFinder = { revealed.append($0) }
+        let pb = NSPasteboard(name: NSPasteboard.Name("aeris.selfcheck.\(UUID().uuidString)"))
+        preview.pasteboard = pb
+
+        func eval(_ js: String) -> Any? {
+            let out = Box<Any?>(nil), done = Box(false)
+            web.evaluateJavaScript(js) { value, _ in out.value = value; done.value = true }
+            _ = wait(timeout: 3) { done.value }
+            return out.value
+        }
+        func link(_ href: String) -> URL { LinkAction.resolve(href, documentURL: main)! }
+        func item(_ items: [NSMenuItem], _ title: String) -> NSMenuItem? { items.first { $0.title == title } }
+        func run(_ items: [NSMenuItem], _ title: String) {
+            guard let i = item(items, title), let target = i.target, let action = i.action else { return }
+            _ = target.perform(action, with: i)
+        }
+        check(wait(timeout: 10) { (eval("!!document.getElementById('second')") as? Bool) == true }, "linkmenu: page ready")
+
+        // Titles for each link kind.
+        let note = preview.menuItems(for: link("Same.md"))
+        check(note.map(\.title) == ["Open", "Open in New Tab", "Open in New Window", "Reveal in Finder", "Copy Link"],
+              "linkmenu: note link items \(note.map(\.title))")
+        check(preview.menuItems(for: URL(string: "https://example.com/a")!).map(\.title) == ["Open in Browser", "Copy Link"],
+              "linkmenu: web link items")
+        check(preview.menuItems(for: URL(string: "mailto:a@b.c")!).map(\.title) == ["Open in Mail", "Copy Link"],
+              "linkmenu: mail link items")
+        check(preview.menuItems(for: link("#second")).map(\.title) == ["Jump to Section", "Copy Link"],
+              "linkmenu: anchor link items")
+        check(preview.menuItems(for: link("pic.png")).map(\.title) == ["Copy Link"], "linkmenu: other link: Copy Link only")
+        check(note.allSatisfy { $0.action != nil && $0.target != nil }, "linkmenu: every item has a target and action")
+
+        // The hit test finds a link under a point and none elsewhere.
+        let spot = Box<URL?>(nil), spotDone = Box(false)
+        eval("(() => { const r = document.querySelector('a[href=\"Tab.md\"]').getBoundingClientRect(); window.__p = [r.x + r.width / 2, r.y + r.height / 2]; })()")
+        if let p = eval("window.__p") as? [Double], p.count == 2 {
+            web.link(at: NSPoint(x: p[0], y: p[1])) { spot.value = $0; spotDone.value = true }
+            _ = wait(timeout: 3) { spotDone.value }
+        }
+        check(spot.value == link("Tab.md"), "linkmenu: hit test returns the absolute URL of the link under the pointer (\(String(describing: spot.value)))")
+        let none = Box<URL?>(URL(string: "x:")), noneDone = Box(false)
+        web.link(at: NSPoint(x: 5, y: 395)) { none.value = $0; noneDone.value = true }
+        _ = wait(timeout: 3) { noneDone.value }
+        check(none.value == nil, "linkmenu: hit test on plain page returns nil")
+
+        // WebKit's items: link items go, Copy / Look Up stay for text, nothing else survives on a link.
+        func webkitMenu() -> NSMenu {
+            let m = NSMenu()
+            for n in ["OpenLink", "OpenLinkInNewWindow", "DownloadLinkedFile", "CopyLink", "Copy", "LookUp", "OpenImageInNewWindow",
+                      "DownloadImage", "CopyImage", "Reload", "SomethingNew"] {
+                let i = NSMenuItem(title: n, action: nil, keyEquivalent: ""); i.identifier = NSUserInterfaceItemIdentifier("WKMenuItemIdentifier" + n)
+                m.addItem(i)
+            }
+            m.addItem(NSMenuItem(title: "NoIdentifier", action: nil, keyEquivalent: ""))  // Services-like: nil identifier
+            return m
+        }
+        let m1 = webkitMenu()
+        web.reshape(m1, link: link("Same.md"))
+        let t1 = m1.items.filter { !$0.isSeparatorItem }.map(\.title)
+        check(t1 == ["Open", "Open in New Tab", "Open in New Window", "Reveal in Finder", "Copy Link", "Copy", "LookUp"],
+              "linkmenu: on a link, WebKit's link/download items are gone, Copy and Look Up kept \(t1)")
+        let m2 = webkitMenu()
+        web.reshape(m2, link: nil)
+        let t2 = m2.items.map(\.title)
+        check(t2 == ["Copy", "LookUp"], "linkmenu: off a link only Copy and Look Up stay \(t2)")
+
+        // The real menu path: willOpenMenu with an event at a point (right-click and Control-click both end there).
+        func event(at p: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: .rightMouseDown, location: web.convert(p, to: nil), modifierFlags: [], timestamp: 0,
+                               windowNumber: wc.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        let linkPoint = (eval("window.__p") as? [Double]).map { NSPoint(x: $0[0], y: $0[1]) } ?? .zero
+        let blank = NSPoint(x: 5, y: 395)
+        let mA = webkitMenu(), mB = webkitMenu()
+        web.willOpenMenu(mA, with: event(at: linkPoint))   // older click, on the link
+        web.willOpenMenu(mB, with: event(at: blank))        // newer click, elsewhere, before A's answer
+        _ = wait(timeout: 1) { false }
+        check(!mA.items.contains { $0.title == "Open in New Tab" } && !mB.items.contains { $0.title == "Open in New Tab" },
+              "linkmenu: a hit-test answer for an older menu opening is dropped, never put on another click's menu")
+        let mC = webkitMenu()
+        web.willOpenMenu(mC, with: event(at: linkPoint))
+        check(wait(timeout: 3) { mC.items.contains { $0.title == "Open in New Tab" } }, "linkmenu: willOpenMenu adds the link items for its own event")
+        let titlesC = mC.items.filter { !$0.isSeparatorItem }.map(\.title)
+        check(titlesC == ["Open", "Open in New Tab", "Open in New Window", "Reveal in Finder", "Copy Link", "Copy", "LookUp"],
+              "linkmenu: willOpenMenu menu is exactly our items plus allow-listed WebKit items \(titlesC)")
+
+        // A link with no selection: WebKit's menu is link items only, all dropped. Never empty on the way.
+        let mD = NSMenu()
+        for n in ["OpenLink", "OpenLinkInNewWindow", "DownloadLinkedFile", "CopyLink"] {
+            let i = NSMenuItem(title: n, action: nil, keyEquivalent: ""); i.identifier = NSUserInterfaceItemIdentifier("WKMenuItemIdentifier" + n)
+            mD.addItem(i)
+        }
+        web.willOpenMenu(mD, with: event(at: linkPoint))
+        var everEmpty = mD.items.isEmpty
+        let placeholderFirst = mD.items.map(\.title) == ["Link"] && mD.items[0].isEnabled == false
+        _ = wait(timeout: 3) { everEmpty = everEmpty || mD.items.isEmpty; return mD.items.contains { $0.title == "Open in New Tab" } }
+        check(placeholderFirst && !everEmpty, "linkmenu: a link-only menu holds a disabled placeholder, never empty, while the hit test runs")
+        check(mD.items.map(\.title) == ["Open", "Open in New Tab", "Open in New Window", "Reveal in Finder", "Copy Link"],
+              "linkmenu: the answer replaces the placeholder with our items \(mD.items.map(\.title))")
+        let mE = NSMenu()
+        web.willOpenMenu(mE, with: event(at: blank))
+        _ = wait(timeout: 0.5) { false }
+        check(mE.items.map(\.title) == ["Link"] && !mE.items[0].isEnabled, "linkmenu: no link and nothing to keep leaves a disabled placeholder, not an empty menu")
+
+        // What WebKit really builds: log its identifiers; nothing outside the allow-list may survive.
+        let realEvent = event(at: linkPoint)
+        let real = web.menu(for: realEvent)
+        let realIDs = real?.items.map { $0.identifier?.rawValue ?? "nil:\($0.title)" } ?? []
+        print("info - linkmenu: real WebKit menu(for:) items before willOpenMenu: \(realIDs)")
+        if let real {
+            web.willOpenMenu(real, with: realEvent)
+            check(wait(timeout: 3) { real.items.contains { $0.title == "Open in New Tab" } }, "linkmenu: real WebKit menu gets our link items")
+            let survivors = real.items.filter { $0.identifier != nil }.map { $0.identifier!.rawValue }
+            print("info - linkmenu: real WebKit menu identifiers after reshape: \(survivors)")
+            check(survivors.allSatisfy { PreviewWebView.keptIdentifiers.contains($0) }, "linkmenu: nothing outside the allow-list survives a real menu")
+        } else {
+            print("info - linkmenu: web.menu(for:) returned nil headlessly; real identifiers not obtainable")
+        }
+
+        // Run every item.
+        run(note, "Open")
+        check(opened == [dir.appending(path: "Same.md").standardizedFileURL] || opened.map(\.lastPathComponent) == ["Same.md"],
+              "linkmenu: Open asks this window to open the note")
+        run(note, "Reveal in Finder")
+        check(revealed.map(\.lastPathComponent) == ["Same.md"], "linkmenu: Reveal in Finder reveals the note")
+        run(note, "Copy Link")
+        check(pb.string(forType: .string) == link("Same.md").absoluteString && pb.string(forType: .string)?.hasPrefix("file:///") == true,
+              "linkmenu: Copy Link puts the absolute URL on the pasteboard")
+        let web2 = preview.menuItems(for: URL(string: "https://example.com/a")!)
+        run(web2, "Open in Browser"); run(web2, "Copy Link")
+        check(external == [URL(string: "https://example.com/a")!] && pb.string(forType: .string) == "https://example.com/a",
+              "linkmenu: Open in Browser hands to the system; Copy Link copies it")
+        let mail2 = preview.menuItems(for: URL(string: "mailto:a@b.c")!)
+        run(mail2, "Open in Mail")
+        check(external.last == URL(string: "mailto:a@b.c")!, "linkmenu: Open in Mail hands to the system")
+        let anchor = preview.menuItems(for: link("#second"))
+        run(anchor, "Jump to Section")
+        check(wait(timeout: 5) { (eval("window.scrollY") as? Double ?? 0) > 100 }, "linkmenu: Jump to Section scrolls the preview")
+        run(anchor, "Copy Link")
+        check(pb.string(forType: .string)?.hasSuffix("#second") == true, "linkmenu: anchor Copy Link copies the absolute URL")
+
+        // Open in New Tab: same window, one more tab. Open in New Window: a second window.
+        let windowsBefore = Set(NSApp.windows.map(ObjectIdentifier.init))
+        run(note, "Open in New Tab")
+        let tabbed = wait(timeout: 3) { wc.window?.tabbedWindows?.count == 2 }
+        let tabDoc = dc.document(for: dir.appending(path: "Same.md"))
+        check(tabbed && tabDoc != nil && wc.window?.tabbedWindows?.contains { $0 === tabDoc?.windowControllers.first?.window } == true,
+              "linkmenu: Open in New Tab adds one tab to this window (\(wc.window?.tabbedWindows?.count ?? 0) tabs)")
+        let winNote = preview.menuItems(for: link("Win.md"))
+        run(winNote, "Open in New Window")
+        _ = wait(timeout: 3) { dc.document(for: dir.appending(path: "Win.md"))?.windowControllers.first?.window != nil }
+        let winDoc = dc.document(for: dir.appending(path: "Win.md"))
+        let newWindow = winDoc?.windowControllers.first?.window
+        check(newWindow != nil && newWindow !== wc.window && newWindow?.tabbedWindows == nil && wc.window?.tabbedWindows?.count == 2
+              && !windowsBefore.contains(ObjectIdentifier(newWindow!)),
+              "linkmenu: Open in New Window makes a separate window, not a tab (\(String(describing: newWindow)) tabs \(String(describing: newWindow?.tabbedWindows?.count)) host \(String(describing: wc.window?.tabbedWindows?.count)) mode \(String(describing: newWindow?.tabbingMode.rawValue)))")
+        // Already open: no duplicate.
+        let docCount = dc.documents.count
+        run(winNote, "Open in New Window"); run(note, "Open in New Tab")
+        check(dc.documents.count == docCount && wc.window?.tabbedWindows?.count == 2,
+              "linkmenu: a document already open is brought forward, not opened twice")
+
+        // Failures are shown, not swallowed; a double click opens one window.
+        var shown: [Error] = []
+        preview.presentError = { shown.append($0) }
+        let missing = preview.menuItems(for: link("Gone.md"))
+        run(missing, "Open in New Tab"); run(missing, "Open in New Window"); run(missing, "Reveal in Finder")
+        check(shown.count == 3, "linkmenu: a missing note shows an error for New Tab, New Window and Reveal (\(shown.count))")
+        let locked = dir.appending(path: "Locked.md")
+        try? "x".write(to: locked, atomically: true, encoding: .utf8)
+        chmod(locked.path, 0o000)
+        run(preview.menuItems(for: link("Locked.md")), "Open in New Tab")
+        check(wait(timeout: 3) { shown.count == 4 }, "linkmenu: an unreadable note shows an error instead of doing nothing")
+        chmod(locked.path, 0o644)
+        try? "twice".write(to: dir.appending(path: "Twice.md"), atomically: true, encoding: .utf8)
+        let twice = preview.menuItems(for: link("Twice.md"))
+        let docsBefore = dc.documents.count
+        run(twice, "Open in New Window"); run(twice, "Open in New Window")
+        _ = wait(timeout: 3) { dc.document(for: dir.appending(path: "Twice.md")) != nil }
+        _ = wait(timeout: 0.5) { false }
+        check(dc.documents.count == docsBefore + 1
+              && dc.document(for: dir.appending(path: "Twice.md"))?.windowControllers.count == 1,
+              "linkmenu: a double click opens one window for the document")
+        dc.document(for: dir.appending(path: "Twice.md"))?.close()
+        check(preview.menuItems(for: URL(string: "about:blank")!).isEmpty,
+              "linkmenu: no Copy Link for a meaningless about: URL (relative link in an unsaved document)")
+
+        // Close the extras; the last window stays open, because closing it quits the app.
+        winDoc?.close(); tabDoc?.close()
     }
 }
 #endif

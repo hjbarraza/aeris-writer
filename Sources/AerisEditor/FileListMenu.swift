@@ -4,7 +4,7 @@ import LibraryCore
 /// The file list's options, shared by every window and saved as they change.
 @MainActor
 final class FileListSettings {
-    static let shared = FileListSettings(defaults: .standard)
+    static let shared = FileListSettings(defaults: AppDefaults.store)
     static let didChange = Notification.Name("AerisFileListOptionsDidChange")
 
     private let defaults: UserDefaults

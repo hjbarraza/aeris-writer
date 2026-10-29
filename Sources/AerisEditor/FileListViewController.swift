@@ -123,21 +123,19 @@ final class FolderCellView: NSTableCellView {
         return [v?.contentModificationDate, v?.creationDate]
     }
 
-    func dates(of node: LibraryNode) -> (modified: Date?, created: Date?) {
-        if cache.count > 50_000 { cache.removeAll() }
-        let d = cache[node.path] ?? { let r = Self.read(node.path); cache[node.path] = r; return r }()
-        return (d[0], d[1])
+    /// What is known so far; nil until `refresh` has looked at the file (never stats on the main thread).
+    func dates(of node: LibraryNode) -> (modified: Date?, created: Date?)? {
+        cache[node.path].map { ($0[0], $0[1]) }
     }
 
-    func clear() { cache.removeAll() }
-
-    /// Looks at `paths` again off the main thread; `done` runs on the main thread with whether any date moved.
+    /// Looks at `paths` off the main thread; `done` runs on the main thread with whether any date is new or moved.
     func refresh(paths: [String], done: @escaping @MainActor (Bool) -> Void) {
         queue.async {
             let fresh = paths.map { ($0, Self.read($0)) }
             DispatchQueue.main.async { MainActor.assumeIsolated {
                 var changed = false
-                for (path, dates) in fresh where self.cache[path] != nil && self.cache[path]! != dates {
+                if self.cache.count > 50_000 { self.cache.removeAll() }
+                for (path, dates) in fresh where self.cache[path] != dates {
                     self.cache[path] = dates
                     changed = true
                 }
@@ -230,6 +228,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     private let infos = RowInfoStore()
     private let dates = RowDateFormatter()
     private let sortDates = SortDateStore()
+    /// A sort by date met a file whose dates are not read yet; the background read re-sorts when it lands.
+    private var missingDates = false
     /// Tree navigation: the folders opened inline, by path.
     private var expanded: Set<String> = []
     private var options: FileListOptions { FileListSettings.shared.options }
@@ -347,6 +347,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Restoring a window's state: never opens anything.
     func restoreSelection(path: String?) {
         loadViewIfNeeded()
+        expandAncestors(of: path)
         revealing = true
         defer { revealing = false }
         guard let path, let row = rows.firstIndex(where: { $0.path == path }) else {
@@ -361,9 +362,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Never opens anything.
     func reveal(_ url: URL?) {
         loadViewIfNeeded()
+        let path = url.map(LibraryListing.canonicalPath)
+        expandAncestors(of: path)
         revealing = true
         defer { revealing = false }
-        let path = url.map(LibraryListing.canonicalPath)
         setOpenPath(path)
         guard let row = rows.firstIndex(where: { $0.path == path }) else {
             tableView.deselectAll(nil)
@@ -391,11 +393,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             infos.refresh(path: rows[row].path)
         }
         // A file whose date moved changes the order when the list is sorted by a date.
-        if options.sortKey.isDate {
-            sortDates.refresh(paths: rows.map(\.path)) { [weak self] changed in
-                if changed { self?.reloadRows(onlyIfOrderChanged: true) }
-            }
-        }
+        refreshSortDates()
     }
 
     // MARK: Order and options
@@ -403,8 +401,11 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     private func sorted(_ nodes: [LibraryNode]) -> [LibraryNode] {
         let o = options
         return FileListSort.sorted(nodes, options: o) { node in
-            let d = o.sortKey.isDate ? sortDates.dates(of: node) : (nil, nil)
-            return FileListSort.Item(name: node.name, isDirectory: node.isDirectory, modified: d.0, created: d.1)
+            var d: (modified: Date?, created: Date?) = (nil, nil)
+            if o.sortKey.isDate {
+                if let known = sortDates.dates(of: node) { d = known } else { missingDates = true }
+            }
+            return FileListSort.Item(name: node.name, isDirectory: node.isDirectory, modified: d.modified, created: d.created)
         }
     }
 
@@ -422,8 +423,17 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
                 }
             }
         }
+        missingDates = false
         add(folder)
         rows = result
+        if missingDates { refreshSortDates() }
+    }
+
+    private func refreshSortDates() {
+        guard options.sortKey.isDate else { return }
+        sortDates.refresh(paths: rows.map(\.path)) { [weak self] changed in
+            if changed { self?.reloadRows(onlyIfOrderChanged: true) }
+        }
     }
 
     /// Rebuilds and reloads the rows, putting the selection back on the same node; never scrolls or opens anything.
@@ -432,6 +442,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let old = rows
         rebuildRows()
         if onlyIfOrderChanged, old.count == rows.count, zip(old, rows).allSatisfy({ $0 === $1 }) { return }
+        let wasRevealing = revealing
         revealing = true
         tableView.reloadData()
         if let selected, let row = rows.firstIndex(where: { $0 === selected }) {
@@ -440,13 +451,13 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             // The highlighted file is gone: no neighbour inherits its row.
             tableView.deselectAll(nil)
         }
-        revealing = false
+        revealing = wasRevealing
     }
 
     @objc private func optionsChanged() {
-        sortDates.clear()
         updateSortBar()
         reloadRows()
+        refreshSortDates()
     }
 
     private func updateSortBar() {
@@ -469,10 +480,28 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     /// Right and Left arrows: true if the selected folder row took the key.
     private func expandSelectedFolder(_ on: Bool) -> Bool {
-        guard options.navigation == .tree, let node = node(atRow: tableView.selectedRow), node.isDirectory,
-              expanded.contains(node.path) != on else { return false }
-        setExpanded(node, on)
+        guard options.navigation == .tree, let node = node(atRow: tableView.selectedRow) else { return false }
+        if node.isDirectory, expanded.contains(node.path) != on {
+            setExpanded(node, on)
+            return true
+        }
+        // Left on a file, a closed folder or a nested row goes to the enclosing folder's row.
+        guard !on, let parent = node.parent, parent !== folder, let row = rows.firstIndex(where: { $0 === parent }) else { return false }
+        tableView.selectRowIndexes([row], byExtendingSelection: false)
+        tableView.scrollRowToVisible(row)
         return true
+    }
+
+    /// Tree navigation: opens the folders between the folder on screen and `path`, so its row is there.
+    private func expandAncestors(of path: String?) {
+        guard options.navigation == .tree, let folder, let path, path.hasPrefix(folder.path + "/") else { return }
+        var changed = false
+        var up = Library.shared.tree.node(atPath: path)?.parent
+        while let p = up, p !== folder {
+            changed = expanded.insert(p.path).inserted || changed
+            up = p.parent
+        }
+        if changed { reloadRows() }
     }
 
     @objc private func disclosureClicked(_ sender: NSButton) {
@@ -602,7 +631,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let id = NSUserInterfaceItemIdentifier("fileCell")
         let cell = tableView.makeView(withIdentifier: id, owner: nil) as? FileCellView ?? FileCellView()
         cell.identifier = id
-        let showExtension = UserDefaults.standard.bool(forKey: Self.showExtensionsKey)
+        let showExtension = AppDefaults.store.bool(forKey: Self.showExtensionsKey)
         cell.indent = options.navigation == .tree ? CGFloat(depth(of: node)) * 16 : 0
         cell.nameLabel.stringValue = showExtension ? node.name : (node.name as NSString).deletingPathExtension
         show(infos.info(path: node.path), in: cell)

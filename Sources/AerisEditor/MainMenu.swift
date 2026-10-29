@@ -45,6 +45,13 @@ enum MainMenu {
             ]),
         ]))
         main.addItem(formatMenu())
+        main.addItem(submenu("Insert", [
+            {
+                let i = NSMenuItem(title: "Date", action: #selector(EditorViewController.toggleBlock(_:)), keyEquivalent: "")
+                i.representedObject = MarkdownElement.insertDate
+                return i
+            }(),
+        ]))
         main.addItem(viewMenu())
         let window = submenu("Window", [
             item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
@@ -80,6 +87,8 @@ enum MainMenu {
             f("Footnote", .inline(.footnote)),
             f("Wikilink", .inline(.wikilink)),
             f("Comment", .inline(.comment), "/"),
+            f("Inline Math", .inline(.math)),
+            f("Add Hashtag", .addHashtag),
             f("Clear Formatting", .clearFormatting),
             .separator(),
         ] + headings + [

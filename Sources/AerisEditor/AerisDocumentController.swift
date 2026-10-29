@@ -3,6 +3,12 @@ import AppKit
 /// File > Open… also takes folders: a chosen folder becomes a library location (like Add Location…),
 /// chosen files open as documents.
 final class AerisDocumentController: NSDocumentController {
+    /// The self-check never adds its temp files to the user's Open Recent.
+    override func noteNewRecentDocumentURL(_ url: URL) {
+        if AppDefaults.isolated { return }
+        super.noteNewRecentDocumentURL(url)
+    }
+
     override func runModalOpenPanel(_ openPanel: NSOpenPanel, forTypes types: [String]?) -> Int {
         openPanel.canChooseDirectories = true
         return super.runModalOpenPanel(openPanel, forTypes: types)

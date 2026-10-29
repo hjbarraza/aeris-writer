@@ -22,7 +22,7 @@ public struct TextEdit: Equatable, Sendable {
 }
 
 public enum InlineMarker: Sendable {
-    case strong, emphasis, code, strikethrough, highlight, link, image, footnote, wikilink, comment
+    case strong, emphasis, code, strikethrough, highlight, link, image, footnote, wikilink, comment, math
 }
 
 /// Pure range maths for the inline Format commands. Toggles wrap or unwrap the
@@ -51,6 +51,7 @@ public enum InlineEdit {
         case .highlight: return [("==", "==")]
         case .wikilink: return [("[[", "]]")]
         case .comment: return [("<!-- ", " -->"), ("<!--", "-->")]
+        case .math: return [("$", "$")]
         case .link, .image, .footnote: return []
         }
     }
@@ -317,5 +318,37 @@ extension SpanCollector {
         guard let r else { return nil }
         let a = utf16Offset(r.lowerBound)
         return NSRange(location: a, length: utf16Offset(r.upperBound) - a)
+    }
+}
+
+// MARK: Insert Date, Add Hashtag
+
+extension InlineEdit {
+    /// `date` as ISO `yyyy-MM-dd` in `timeZone`, replacing the selection; caret after it.
+    public static func insertDate(_ date: Date, in text: String, selection: NSRange, timeZone: TimeZone = .current) -> TextEdit {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
+        f.timeZone = timeZone
+        f.dateFormat = "yyyy-MM-dd"
+        let iso = f.string(from: date)
+        let sel = clamp(selection, in: text as NSString)
+        return TextEdit(range: sel, replacement: iso, selection: NSRange(location: sel.location + iso.utf16.count, length: 0))
+    }
+
+    /// `#` replacing the selection, with a space before it unless it starts the text
+    /// or follows whitespace; caret after the `#`.
+    public static func addHashtag(in text: String, selection: NSRange) -> TextEdit {
+        let s = text as NSString
+        let sel = clamp(selection, in: s)
+        let prev = sel.location > 0 ? s.character(at: sel.location - 1) : 0x20
+        let needsSpace = !(Character(UnicodeScalar(prev) ?? " ").isWhitespace)
+        let out = (needsSpace ? " #" : "#")
+        return TextEdit(range: sel, replacement: out, selection: NSRange(location: sel.location + out.utf16.count, length: 0))
+    }
+
+    private static func clamp(_ r: NSRange, in s: NSString) -> NSRange {
+        let loc = min(max(r.location, 0), s.length)
+        return NSRange(location: loc, length: min(max(r.length, 0), s.length - loc))
     }
 }
