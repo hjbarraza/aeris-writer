@@ -167,8 +167,8 @@ func runBlockEditChecks() {
         best = min(best, Date().timeIntervalSince(t0) * 1000)
     }
     print(String(format: "info - renumber: Return in item 1 of 2,000 items: %.1f ms", best))
-    check(bigEdit.map { ap(big, $0).hasSuffix("\n2001. item") } == true && best < 30,
-          "renumber: Return in item 1 of a 2,000-item list renumbers all, under 30 ms")
+    check(bigEdit.map { ap(big, $0).hasSuffix("\n2001. item") } == true && best < 150,   // ~13 ms idle; headroom for a loaded machine, still catches the old 625 ms
+          "renumber: Return in item 1 of a 2,000-item list renumbers all, under 150 ms")
 
     // Lists: indent / outdent
     e = ListEdit.indent(text: "- a", selection: r(3))

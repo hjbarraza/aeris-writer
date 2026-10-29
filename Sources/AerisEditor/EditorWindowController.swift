@@ -157,7 +157,7 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
     // MARK: Window restoration
 
     private enum StateKey {
-        static let folder = "Aeris.list.folder", selection = "Aeris.list.selection", expanded = "Aeris.organizer.expanded"
+        static let folder = "Aeris.list.folder", selection = "Aeris.list.selection", expanded = "Aeris.organizer.expanded", listExpanded = "Aeris.list.expanded"
     }
 
     /// The folder in the file list, its selected row and the expanded organizer folders, as paths.
@@ -166,6 +166,7 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
         if let path = fileList.folder?.path { coder.encode(path as NSString, forKey: StateKey.folder) }
         if let path = fileList.selectedPath { coder.encode(path as NSString, forKey: StateKey.selection) }
         coder.encode(sidebar.expandedFolderPaths as NSArray, forKey: StateKey.expanded)
+        coder.encode(fileList.expandedPaths as NSArray, forKey: StateKey.listExpanded)
     }
 
     override func restoreState(with coder: NSCoder) {
@@ -173,12 +174,13 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
         restoreLibraryView(
             folderPath: coder.decodeObject(of: NSString.self, forKey: StateKey.folder) as String?,
             selectedPath: coder.decodeObject(of: NSString.self, forKey: StateKey.selection) as String?,
-            expandedPaths: coder.decodeObject(of: [NSArray.self, NSString.self], forKey: StateKey.expanded) as? [String] ?? [])
+            expandedPaths: coder.decodeObject(of: [NSArray.self, NSString.self], forKey: StateKey.expanded) as? [String] ?? [],
+            listExpandedPaths: coder.decodeObject(of: [NSArray.self, NSString.self], forKey: StateKey.listExpanded) as? [String] ?? [])
     }
 
     /// Puts the library columns back: a folder that no longer exists falls back to its location's
     /// root, a location that no longer resolves to the first location; a missing selection is none.
-    func restoreLibraryView(folderPath: String?, selectedPath: String?, expandedPaths: [String]) {
+    func restoreLibraryView(folderPath: String?, selectedPath: String?, expandedPaths: [String], listExpandedPaths: [String] = []) {
         guard let folderPath else { return }
         let tree = Library.shared.tree
         let target: LibraryNode?
@@ -193,6 +195,7 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
         sidebar.reveal(target.url)
         // After anything above that expands rows: the saved expansion is the final word.
         sidebar.expandFolders(atPaths: expandedPaths)
+        fileList.restoreExpanded(paths: listExpandedPaths)
         fileList.restoreSelection(path: selectedPath)
         saveSession()
     }
@@ -218,7 +221,7 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
     /// window losing its document (closing) or showing nothing yet leaves the stored session alone.
     private func saveSession() {
         guard let document = document as? NSDocument, document.fileURL != nil || fileList.folder != nil else { return }
-        var session: [String: Any] = ["expanded": sidebar.expandedFolderPaths]
+        var session: [String: Any] = ["expanded": sidebar.expandedFolderPaths, "listExpanded": fileList.expandedPaths]
         if let path = fileList.folder?.path { session["folder"] = path }
         if let path = fileList.selectedPath { session["selection"] = path }
         if let path = document.fileURL?.path { session["document"] = path }
@@ -243,7 +246,7 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
         document.makeWindowControllers()
         (document.windowControllers.first as? EditorWindowController)?.restoreLibraryView(
             folderPath: session["folder"] as? String, selectedPath: session["selection"] as? String,
-            expandedPaths: session["expanded"] as? [String] ?? [])
+            expandedPaths: session["expanded"] as? [String] ?? [], listExpandedPaths: session["listExpanded"] as? [String] ?? [])
         if display { document.showWindows() }
         return true
     }

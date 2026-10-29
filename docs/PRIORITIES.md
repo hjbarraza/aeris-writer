@@ -5,7 +5,7 @@ what H asked for, then the rest. First pass by the decision model over every ope
 corrected by H's anchors (themes, PDF and authorship are Could; Substack and Hugo are the
 publishing Musts). Done tickets are not listed.
 
-## Must (daily driver) (33)
+## Must (daily driver) (34)
 
 - M1-4 — Per-document metadata in xattrs
 - M1-5 — Full HTML rendering in `MarkdownCore`
@@ -32,6 +32,7 @@ publishing Musts). Done tickets are not listed.
 - M2-22 — Quick search: files
 - M2-23 — Quick search: inside files
 - M2-26 — Tabs
+- M3-4 — Copy matrix (H: copy before export)
 - M3-9 — Preview controls
 - M4-7 — macOS Versions
 - M4-13 — Local snapshot history: store and thinning
@@ -41,7 +42,7 @@ publishing Musts). Done tickets are not listed.
 - M6-13 — Publish to Substack
 - M6-14 — Publish to a Hugo site
 
-## Should (soon after) (58)
+## Should (soon after) (57)
 
 - M1-7 — Editor↔preview scroll sync
 - M1-11 — Preview links behave like a document, not a browser
@@ -80,7 +81,6 @@ publishing Musts). Done tickets are not listed.
 - M3-0 — Export menu + save panel
 - M3-1 — Markdown export
 - M3-2 — HTML export
-- M3-4 — Copy matrix
 - M3-6 — Pre-export warnings
 - M3-10 — Two-way scroll sync, with a setting
 - M3-11 — Extended syntax: highlight, footnotes, callouts, comments, page break, TOC

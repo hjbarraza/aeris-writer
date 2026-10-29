@@ -207,7 +207,7 @@ dimming and centring together. Then start M2.
   removes the underscores and ⌘I again writes the marker chosen in M4-9; a selection
   half in bold applies bold to the rest; `mdcheck` cases for each.
 
-- [ ] **M1.5-25 — Paste as Markdown from rich text.** Edit ▸ Paste as Markdown (and a
+- [x] **M1.5-25 — Paste as Markdown from rich text.** Edit ▸ Paste as Markdown (and a
   setting to make plain Paste do it for rich-text sources) converts rich text on the
   pasteboard to Markdown: paragraphs, bullet and numbered lists (nesting kept), tables
   (as pipe tables with a header row), links, bold and italic. Plain-text pastes are never
