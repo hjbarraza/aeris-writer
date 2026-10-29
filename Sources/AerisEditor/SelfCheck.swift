@@ -51,6 +51,7 @@ enum SelfCheck {
         rowChecks()
         restorationChecks()
         lineEndingChecks()
+        anyTextFileChecks()
         try? FileManager.default.removeItem(at: scratch)
         if failed { print("selfcheck FAILED"); exit(1) }
         print("selfcheck passed")
@@ -714,6 +715,45 @@ enum SelfCheck {
 
     /// M1-12: in a CRLF document, Return, list continuation and a paste of LF text all
     /// insert CRLF; an LF document stays LF. Existing endings are never converted.
+    /// M1-13: any file whose bytes are text opens; RTF and binary files are refused with a
+    /// message and leave no document or window behind; opening never writes to the file.
+    @MainActor static func anyTextFileChecks() {
+        let dir = scratch.appending(path: "AnyText")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52])
+        let cases: [(name: String, bytes: Data, text: String?)] = [
+            ("README", Data("# Read me\nhéllo\n".utf8), "# Read me\nhéllo\n"),
+            ("notes.text", Data("plain".utf8), "plain"),
+            ("empty", Data(), ""),
+            ("x.text", png, nil),
+            ("letter.rtf", Data("{\\rtf1\\ansi hello}".utf8), nil),
+            ("letter.text", Data("{\\rtf1\\ansi hello}".utf8), nil),
+        ]
+        let dc = NSDocumentController.shared
+        for c in cases {
+            let url = dir.appending(path: c.name)
+            try? c.bytes.write(to: url)
+            let windowsBefore = NSApp.windows.filter(\.isVisible).count
+            var done = false, opened: NSDocument?, failure: Error?
+            // Displayed only when refused: closing the last window would quit the self-check.
+            dc.openDocument(withContentsOf: url, display: c.text == nil) { doc, _, error in opened = doc; failure = error; done = true }
+            _ = wait(timeout: 5) { done }
+            let unchanged = (try? Data(contentsOf: url)) == c.bytes
+            if let text = c.text {
+                let doc = opened as? MarkdownDocument
+                check(done && doc?.textStorage.string == text && unchanged,
+                      "any text: \(c.name) opens as text, file untouched" + (failure.map { " (\($0.localizedDescription))" } ?? ""))
+                doc?.close()
+            } else {
+                let message = failure.map { ($0 as NSError).localizedDescription } ?? ""
+                check(done && opened == nil && message.contains("isn’t a plain text file")
+                      && !dc.documents.contains { $0.fileURL?.lastPathComponent == c.name }
+                      && NSApp.windows.filter(\.isVisible).count == windowsBefore && unchanged,
+                      "any text: \(c.name) is refused with a message, no window left behind (got “\(message)”)")
+            }
+        }
+    }
+
     @MainActor static func lineEndingChecks() {
         let dir = scratch.appending(path: "LineEndings")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

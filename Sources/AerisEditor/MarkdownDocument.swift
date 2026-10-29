@@ -327,7 +327,8 @@ class MarkdownDocument: NSDocument {
     }
 
     override func read(from data: Data, ofType typeName: String) throws {
-        guard let (s, detected) = TextEncoding.decode(data) else {
+        // RTF is text-encoded markup, not plain text: refused like binary, never shown as code.
+        guard !data.starts(with: Data("{\\rtf".utf8)), let (s, detected) = TextEncoding.decode(data) else {
             throw CocoaError(.fileReadInapplicableStringEncoding)
         }
         // Safe only because canConcurrentlyReadDocuments returns false (main-thread reads).
@@ -352,7 +353,18 @@ class MarkdownDocument: NSDocument {
     // MARK: Editor state in an extended attribute (never in the file's content)
 
     override func read(from url: URL, ofType typeName: String) throws {
-        try super.read(from: url, ofType: typeName)
+        do {
+            try super.read(from: url, ofType: typeName)
+        } catch CocoaError.fileReadInapplicableStringEncoding {
+            throw NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileReadInapplicableStringEncoding.rawValue,
+                          userInfo: [
+                              // Opening shows "The document “x” could not be opened." followed by the reason.
+                              NSLocalizedDescriptionKey: "“\(url.lastPathComponent)” can’t be opened because it isn’t a plain text file.",
+                              NSLocalizedFailureReasonErrorKey: "It isn’t a plain text file.",
+                              NSLocalizedRecoverySuggestionErrorKey: "Aeris Writer opens text in UTF-8, UTF-16 with a byte order mark, "
+                                  + "or Western (Windows Latin 1). Rich text and binary files can’t be opened.",
+                          ])
+        }
         let state = ExtendedAttributes.data(named: EditorState.attributeName, at: url)
             .flatMap { try? JSONDecoder().decode(EditorState.self, from: $0) }
         // Main thread: canConcurrentlyReadDocuments returns false.
