@@ -41,6 +41,7 @@ Order: the preview tickets (M3-9…M3-13) come first, because export reuses thei
   *Verify:* a fixture with each syntax → `mdcheck` asserts the HTML; the preview shows a
   highlight, a clickable footnote, a coloured callout and a working TOC; PDF export
   breaks the page at the page-break marker.
+  *Rules:* `{{TOC}}` makes a table of contents only when it is alone in its paragraph; a line of `===` on its own is a page break (print/PDF), invisible in the preview.
 
 - [ ] **M3-12 — Math.** Inline `$…$` and display `$$…$$` render as typeset maths in
   the preview and every export, fully offline: a bundled maths renderer (open-source,
@@ -57,6 +58,7 @@ Order: the preview tickets (M3-9…M3-13) come first, because export reuses thei
   (span / plain text) and autolinks (link / plain text). Pane in M4-0.
   *Verify:* `mdcheck` cases for each setting; click `[[Other]]` in the preview → opens
   it in Aeris; exported HTML with "wikilinks as plain text" has no `<a>` for them.
+  *Rules:* `[[Name|Label]]` shows Label, `[[Name]]` shows the file name without extension; a hashtag links to a library search for that tag.
 
 ## Export, copy, print
 

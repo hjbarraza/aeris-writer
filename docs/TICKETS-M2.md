@@ -207,6 +207,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   (M2-25) and listed in the Go menu (M2-27). A tag disappears when no file uses it.
   *Verify:* add `#draft` to a file → tag appears within 2 s → click → only matching files;
   `# Heading`, `` `#code` ``, `http://x/#frag` → no tag; remove the last `#draft` → tag gone.
+  *Tag rules:* a tag is `#` followed by letters, digits, `_` and joiners; `-` and `/` end it; a `#` right after a letter, digit or `&` is not a tag; headings (`# `) are never tags.
 
 - [ ] **M2-19 — Favorites.** Add files or folders by dragging onto Favorites (inserted
   at the drop point) or with Favorite in the row context menu; reorder by drag. Stored
@@ -249,6 +250,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   Extensions follow the "show extensions" setting.
   *Verify:* ⇧⌘O opens the panel, ⌘K still inserts a link; type part of a filename → that
   file first → Return opens it; Esc → focus back in the editor.
+  *Ranking:* fuzzy on name and path, best match first, and drop the weakest tail of results instead of listing everything.
 
 - [ ] **M2-23 — Quick search: inside files.** Results gain two groups. **This file**:
   matches in the open document with a snippet, "N more", and a Find and Replace action
