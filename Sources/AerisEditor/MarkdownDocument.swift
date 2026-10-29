@@ -39,6 +39,213 @@ class MarkdownDocument: NSDocument {
             alert.beginSheetModal(for: window) { answer($0 == .alertFirstButtonReturn) }
         }
 
+    /// What another app or process did to the document's file.
+    enum DiskChange { case modified, deleted, unreadable }
+
+    /// Asks what to do about a change to the file on disk. `answer(true)` follows the disk
+    /// (Reload, or Close for a deletion); `answer(false)` keeps the window's text (Ignore, or
+    /// Keep). A seam so the self-check can answer without a sheet.
+    @MainActor static var askAboutDiskChange: (MarkdownDocument, DiskChange, _ answer: @escaping (Bool) -> Void) -> Void
+        = { doc, change, answer in
+            // No window to ask in: the question stays open, so nothing is reloaded or closed.
+            guard let window = doc.windowForSheet else { return }
+            diskChangeAlert(for: doc, change).beginSheetModal(for: window) {
+                answer($0 == (change == .modified ? .alertFirstButtonReturn : .alertSecondButtonReturn))
+            }
+        }
+
+    /// The sheet that asks about `change`. The first button is Reload for a modification and
+    /// keeps the window's text otherwise.
+    static func diskChangeAlert(for doc: MarkdownDocument, _ change: DiskChange) -> NSAlert {
+        let name = doc.displayName ?? "This document"
+        let edited = doc.isDocumentEdited
+        let alert = NSAlert()
+        switch change {
+        case .unreadable:
+            alert.messageText = "“\(name)” was changed by another application, and its contents can’t be read as text."
+            alert.informativeText = "Ignore keeps this version; saving it replaces the one on disk."
+                + (edited ? " Closing discards your unsaved changes." : "")
+            alert.addButton(withTitle: "Ignore")
+            alert.addButton(withTitle: edited ? "Close Without Saving" : "Close").hasDestructiveAction = edited
+        case .modified:
+            alert.messageText = "“\(name)” was changed by another application."
+            alert.informativeText = edited
+                ? "Reload shows the version on disk, and your unsaved changes will be lost "
+                    + "(Undo brings them back). Ignore keeps your version; saving it replaces the one on disk."
+                : "Reload shows the version on disk. Ignore keeps this version; saving it replaces the one on disk."
+            alert.addButton(withTitle: "Reload").hasDestructiveAction = edited
+            alert.addButton(withTitle: "Ignore")
+        case .deleted:
+            alert.messageText = "“\(name)” was deleted by another application."
+            alert.informativeText = (edited ? "It has unsaved changes. " : "")
+                + "Keep it open to save it again in the same place, or close it."
+                + (edited ? " Closing discards your unsaved changes." : "")
+            alert.addButton(withTitle: "Keep")
+            alert.addButton(withTitle: edited ? "Close Without Saving" : "Close").hasDestructiveAction = edited
+        }
+        return alert
+    }
+
+    /// Whether a file moved to `url` went to the Trash. A seam so the self-check never
+    /// touches the real Trash.
+    nonisolated(unsafe) static var isInTrash: (URL) -> Bool = { url in
+        guard let trash = try? FileManager.default.url(for: .trashDirectory, in: .userDomainMask,
+                                                       appropriateFor: url, create: false) else { return false }
+        return url.resolvingSymlinksInPath().path.hasPrefix(trash.resolvingSymlinksInPath().path + "/")
+    }
+
+    /// The file's bytes as this document last read, wrote or accepted them. A change notice
+    /// while the file still holds them (our own save, a caret xattr write) asks nothing.
+    private var diskData: Data?
+    private var askingAboutDisk = false
+    /// The user chose Keep after the file was deleted: the next save may create it again.
+    private var keepsDeletedFile = false
+    /// Where the file was before it was moved to the Trash, for Keep to save it back there.
+    private var trashedFrom: URL?
+
+    // Called on NSDocument's file presenter queue.
+    nonisolated override func presentedItemDidChange() {
+        // Not super: it reloads a document without unsaved edits without asking.
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.checkDisk() } }
+    }
+
+    nonisolated override func presentedItemDidMove(to newURL: URL) {
+        let old = presentedItemURL
+        // Follows the file (the title updates). Moved to the Trash, it was deleted.
+        super.presentedItemDidMove(to: newURL)
+        guard Self.isInTrash(newURL) else { return }
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                // While another question is open, this one is asked once that is answered.
+                self.trashedFrom = old
+                if !self.askingAboutDisk { self.ask(.deleted) }
+            }
+        }
+    }
+
+    /// A coordinated delete (Finder, another app) asks at once; the document stays open.
+    nonisolated override func accommodatePresentedItemDeletion(completionHandler: @escaping @Sendable (Error?) -> Void) {
+        // Not super: the question decides what happens to the document.
+        completionHandler(nil)
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                if !self.askingAboutDisk, !self.windowControllers.isEmpty { self.ask(.deleted) }
+            }
+        }
+    }
+
+    /// Another app deleting the file sends no change notice; coming back to Aeris checks.
+    @objc private func appDidBecomeActive(_ note: Notification) { checkDisk() }
+
+    private static func modificationDate(_ url: URL) -> Date? {
+        // A fresh URL: a URL caches its resource values.
+        try? URL(fileURLWithPath: url.path).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
+    /// Asks once if another app changed or deleted the file since this document last read,
+    /// wrote or accepted it. Only with a window to ask in (a library switch reads its target first).
+    private func checkDisk() {
+        guard !askingAboutDisk, !windowControllers.isEmpty, let url = fileURL else { return }
+        let date = Self.modificationDate(url)
+        guard date == nil || date != fileModificationDate else { return }
+        guard let data = try? Data(contentsOf: url) else {
+            if !keepsDeletedFile, !FileManager.default.fileExists(atPath: url.path) { ask(.deleted) }
+            return
+        }
+        if data == diskData { accept(data, of: url) } else { ask(.modified) }
+    }
+
+    /// From now on `data` counts as the file's contents, also for NSDocument's "changed by
+    /// another application" check on save, which compares the modification date.
+    private func accept(_ data: Data, of url: URL) {
+        diskData = data
+        fileModificationDate = Self.modificationDate(url)
+    }
+
+    private func ask(_ change: DiskChange) {
+        askingAboutDisk = true
+        Self.askAboutDiskChange(self, change) { followDisk in
+            self.askingAboutDisk = false
+            switch (change, followDisk) {
+            case (.modified, true):
+                self.reloadFromDisk()
+            case (.modified, false), (.unreadable, false):
+                // Ignore: whatever the file holds now (later writes included) is overwritten on save.
+                if let url = self.fileURL, let data = try? Data(contentsOf: url) { self.accept(data, of: url) }
+            case (.deleted, true), (.unreadable, true):
+                self.trashedFrom = nil
+                self.close()
+                return
+            case (.deleted, false):
+                self.keepsDeletedFile = true
+                if let original = self.trashedFrom { self.fileURL = original }
+                self.trashedFrom = nil
+                // Saved back now: NSDocument's ⌘S won't save to a file that no longer exists.
+                self.updateChangeCount(.changeDone)
+                self.autosave(withImplicitCancellability: false) { error in
+                    guard let error, let window = self.windowForSheet else { return }
+                    self.presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)
+                }
+                return
+            }
+            // A move to the Trash during the question is asked now; otherwise the file may have
+            // changed or gone since, which asks anew.
+            guard !self.askingAboutDisk else { return }
+            if self.trashedFrom != nil { self.ask(.deleted) } else { self.checkDisk() }
+        }
+    }
+
+    /// Reload: the file's text replaces the window's as one undoable edit (text and encoding),
+    /// in the encoding detected afresh. Not `read(from:)`, which clears the undo history.
+    private func reloadFromDisk() {
+        guard let url = fileURL, let editor, let data = try? Data(contentsOf: url) else { return }
+        guard let (text, detected) = TextEncoding.decode(data) else {
+            // Nothing is accepted, so autosave keeps off the file until the user picks Ignore.
+            ask(.unreadable)
+            return
+        }
+        let old = (encoding, keepsUnstorableEncoding)
+        undoManager?.beginUndoGrouping()
+        // Set before the text changes, so the new text is checked against its own encoding.
+        encoding = detected
+        keepsUnstorableEncoding = false
+        let replaced = editor.replaceAllText(with: text, undoName: "Reload")
+        // Registered after the text: undo restores the encoding first, then the old text.
+        if replaced { registerEncodingUndo(old.0) }
+        undoManager?.setActionName("Reload")
+        undoManager?.endUndoGrouping()
+        guard replaced else {
+            (encoding, keepsUnstorableEncoding) = old
+            return
+        }
+        accept(data, of: url)
+        // Matches the disk. After NSDocument has counted the closed undo group as a change,
+        // so the reload leaves it unedited and undoing the reload makes it edited again.
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.updateChangeCount(.changeCleared) } }
+    }
+
+    private func registerEncodingUndo(_ previous: TextEncoding) {
+        let current = encoding
+        undoManager?.registerUndo(withTarget: self) { doc in
+            MainActor.assumeIsolated {
+                doc.encoding = previous
+                doc.registerEncodingUndo(current)
+            }
+        }
+    }
+
+    /// While a disk change question is open the document stays: a close or a switch to
+    /// another file could otherwise discard text the answer would keep.
+    override func canClose(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?,
+                           contextInfo: UnsafeMutableRawPointer?) {
+        guard askingAboutDisk else {
+            return super.canClose(withDelegate: delegate, shouldClose: shouldCloseSelector, contextInfo: contextInfo)
+        }
+        guard let target = delegate as? NSObject, let selector = shouldCloseSelector else { return }
+        typealias ShouldClose = @convention(c) (NSObject, Selector, NSDocument, Bool, UnsafeMutableRawPointer?) -> Void
+        unsafeBitCast(target.method(for: selector), to: ShouldClose.self)(target, selector, self, false, contextInfo)
+    }
+
     /// From now on the document saves as UTF-8 without a BOM.
     func convertToUTF8() {
         encoding = .utf8
@@ -67,6 +274,10 @@ class MarkdownDocument: NSDocument {
         // Main thread: canAsynchronouslyWrite is not overridden (false).
         let data = try MainActor.assumeIsolated { try data(in: newFile ? .utf8 : encoding) }
         try data.write(to: url)
+        // What the document's own file now holds, so this save's change notice asks nothing.
+        if saveOperation != .saveToOperation, saveOperation != .autosaveElsewhereOperation {
+            MainActor.assumeIsolated { diskData = data }
+        }
     }
 
     private func data(in target: TextEncoding) throws -> Data {
@@ -123,6 +334,7 @@ class MarkdownDocument: NSDocument {
         MainActor.assumeIsolated {
             // Saves write back in the encoding the file was read in.
             encoding = detected
+            diskData = data
             // Plain text, no copied attributes: the editor's styler styles the new text.
             textStorage.beginEditing()
             textStorage.replaceCharacters(
@@ -153,11 +365,20 @@ class MarkdownDocument: NSDocument {
         to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType,
         completionHandler: @escaping (Error?) -> Void
     ) {
+        // An autosave never writes while a disk change question is open, nor over a file
+        // changed or deleted elsewhere that this document hasn't noticed yet (it asks first),
+        // so a deleted file is only re-created after Keep.
+        if saveOperation == .autosaveInPlaceOperation, let own = fileURL,
+           askingAboutDisk || Self.modificationDate(own).map({ $0 != fileModificationDate }) ?? !keepsDeletedFile {
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.checkDisk() } }
+            return completionHandler(CocoaError(.userCancelled))
+        }
         super.save(to: url, ofType: typeName, for: saveOperation) { error in
             // After Save As the document is the new UTF-8 file.
             if error == nil, saveOperation == .saveAsOperation { self.convertToUTF8() }
             // Only saves to the document's own file (not Export, not autosave-elsewhere).
             if error == nil, url.standardizedFileURL == self.fileURL?.standardizedFileURL {
+                self.keepsDeletedFile = false
                 self.writeEditorState()
             }
             completionHandler(error)
@@ -183,6 +404,9 @@ class MarkdownDocument: NSDocument {
         NotificationCenter.default.addObserver(
             self, selector: #selector(checkEncodingAfterEdit(_:)),
             name: NSTextStorage.didProcessEditingNotification, object: textStorage)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appDidBecomeActive(_:)),
+            name: NSApplication.didBecomeActiveNotification, object: nil)
     }
 
     override func close() {
