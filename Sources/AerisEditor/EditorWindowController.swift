@@ -12,6 +12,7 @@ final class EditorWindowController: NSWindowController {
     private var scrollSync: ScrollSync?
 #if DEBUG
     var editorForTesting: EditorViewController { editor }
+    var previewForTesting: PreviewViewController { preview }
 #endif
     let stats: StatsController
     let statusBar: StatusBarView
@@ -78,12 +79,18 @@ final class EditorWindowController: NSWindowController {
         // Ctrl-Tab moves the keyboard between the editor and the sidebar.
         window.autorecalculatesKeyViewLoop = true
         super.init(window: window)
+        preview.openDocument = { [weak self] url in self?.openLinked(url) }
+        editor.onLink = { [weak self] url in self?.preview.handleLink(url) }
         sidebar.onOpen = { [weak self] url in self?.open(url, focusEditor: false) }
         fileList.onOpen = { [weak self] url, focusEditor in self?.open(url, focusEditor: focusEditor) }
         sidebar.onFolderSelected = { [weak self] folder in
             guard let self else { return }
             fileList.showFolder(folder)
             fileList.reveal((document as? NSDocument)?.fileURL)
+        }
+        presentLinkError = { [weak self] error in
+            guard let window = self?.window else { return }
+            window.presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(windowDidBecomeKey(_:)),
                                                name: NSWindow.didBecomeKeyNotification, object: window)
@@ -107,6 +114,20 @@ final class EditorWindowController: NSWindowController {
             }
             if focusEditor { editor.focusText() }
         }
+    }
+
+    /// Shows a link's failure. Replaceable so a headless check shows nothing.
+    var presentLinkError: (Error) -> Void = { _ in }
+
+    /// Opens a Markdown file linked from the document (preview click or editor ⌘-click) in this
+    /// window, the way a library row opens. A missing file is reported without touching the
+    /// current document.
+    private func openLinked(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            let error = CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
+            return presentLinkError(error)
+        }
+        open(url, focusEditor: false)
     }
 
     /// Highlights `url` in the sidebar and the file list. A document change also brings the list

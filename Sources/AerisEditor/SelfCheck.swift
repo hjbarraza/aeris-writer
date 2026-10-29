@@ -1,5 +1,7 @@
 #if DEBUG
 import AppKit
+import WebKit
+import MarkdownCore
 import LibraryCore
 
 /// Headless UI checks, run as `Aeris.app/Contents/MacOS/AerisEditor --selfcheck`.
@@ -41,6 +43,7 @@ enum SelfCheck {
         liveRefreshEdgeChecks()
         encodingChecks()
         externalChangeChecks()
+        linkChecks()
         try? FileManager.default.removeItem(at: scratch)
         if failed { print("selfcheck FAILED"); exit(1) }
         print("selfcheck passed")
@@ -1343,6 +1346,82 @@ enum SelfCheck {
         t.close()
 
         check(NSApp.windows.allSatisfy { !$0.isVisible }, "external: no window was ordered in")
+    }
+
+    /// A navigation as WebKit reports a click, without a click.
+    private final class FakeNavigationAction: WKNavigationAction {
+        let fakeRequest: URLRequest
+        init(_ url: URL) { fakeRequest = URLRequest(url: url); super.init() }
+        override var request: URLRequest { fakeRequest }
+        override var navigationType: WKNavigationType { .linkActivated }
+    }
+    private final class Box<T>: @unchecked Sendable { var value: T; init(_ v: T) { value = v } }
+
+    /// Preview links act like links in a document: scroll, open in Aeris, or hand web/mail to
+    /// the system. Nothing here opens anything outside the process.
+    @MainActor static func linkChecks() {
+        let dir = scratch.appending(path: "links")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let main = dir.appending(path: "Main.md"), other = dir.appending(path: "Other.md")
+        let filler = (0..<60).map { "Paragraph \($0)." }.joined(separator: "\n\n")
+        try? "[Jump](#second) and [Other](Other.md)\n\n# First\n\n\(filler)\n\n## Second\n\n\(filler)\n".write(to: main, atomically: true, encoding: .utf8)
+        try? "other doc".write(to: other, atomically: true, encoding: .utf8)
+        let dc = NSDocumentController.shared
+        let doc = try! dc.makeDocument(withContentsOf: main, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        let preview = wc.previewForTesting, web = preview.webViewForTesting
+        wc.window?.setContentSize(NSSize(width: 1320, height: 400))
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+
+        var external: [URL] = [], opened: [URL] = [], errors: [Error] = []
+        preview.openExternally = { external.append($0) }
+        wc.presentLinkError = { errors.append($0) }
+        let openLinked = preview.openDocument
+        preview.openDocument = { opened.append($0) }
+
+        func policy(_ url: URL) -> WKNavigationActionPolicy? {
+            let out = Box<WKNavigationActionPolicy?>(nil)
+            preview.webView(web, decidePolicyFor: FakeNavigationAction(url)) { out.value = $0 }
+            return out.value
+        }
+        func eval(_ js: String) -> Any? {
+            let out = Box<Any?>(nil), done = Box(false)
+            web.evaluateJavaScript(js) { value, _ in out.value = value; done.value = true }
+            _ = wait(timeout: 3) { done.value }
+            return out.value
+        }
+        let ready = wait(timeout: 10) { (eval("!!document.getElementById('second')") as? Bool) == true }
+        check(ready, "links: headings carry ids in the rendered page")
+        check(ready && (eval("window.scrollY") as? Double ?? -1) == 0, "links: preview starts at the top")
+
+        // The page's own base: relative links arrive resolved against the document's folder.
+        func link(_ href: String) -> URL { LinkAction.resolve(href, documentURL: main)! }
+        check(policy(link("#second")) == .cancel && external.isEmpty && opened.isEmpty,
+              "links: #second is handled in the page, not sent to the system or opened")
+        check(wait(timeout: 5) { (eval("window.scrollY") as? Double ?? 0) > 100 }, "links: #second scrolls the preview")
+        let before = eval("window.scrollY") as? Double
+        check(policy(link("#nope")) == .cancel && (eval("window.scrollY") as? Double) == before && external.isEmpty,
+              "links: an unknown #anchor does nothing")
+        check(policy(link("Other.md")) == .cancel && opened == [URL(fileURLWithPath: other.path)] && external.isEmpty,
+              "links: Other.md asks to open the resolved file")
+        let https = URL(string: "https://example.com/a")!
+        check(policy(https) == .cancel && external == [https] && opened.count == 1, "links: https goes to the system")
+        let mail = URL(string: "mailto:a@b.c")!
+        _ = policy(mail)
+        check(external == [https, mail], "links: mailto goes to the system")
+        _ = policy(URL(string: "ftp://example.com/x")!)
+        _ = policy(link("pic.png"))
+        check(external.count == 2 && opened.count == 1, "links: other schemes and file types are ignored")
+
+        openLinked(dir.appending(path: "Missing.md"))
+        check(errors.count == 1 && (errors[0] as? CocoaError)?.code == .fileNoSuchFile && wc.document === doc,
+              "links: a missing .md shows an error and leaves the document alone")
+        openLinked(other)
+        check(wait(timeout: 3) { (wc.document as? MarkdownDocument)?.textStorage.string == "other doc" }
+              && errors.count == 1, "links: an existing .md opens in the same window")
+
+        wc.close()
     }
 }
 #endif

@@ -242,6 +242,7 @@ private struct HTMLWalker: MarkupWalker {
     private var inHead = false
     // One entry per list being walked: true if tight (no <p> in direct items).
     private var tightLists: [Bool] = []
+    private var slugger = HeadingSlugger()
 
     mutating func visitParagraph(_ paragraph: Paragraph) {
         if paragraph.parent is ListItem, tightLists.last == true {
@@ -254,7 +255,9 @@ private struct HTMLWalker: MarkupWalker {
     }
     mutating func visitHeading(_ heading: Heading) {
         let l = heading.level
-        html += "<h\(l)\(line(heading))>"; descendInto(heading); html += "</h\(l)>\n"
+        let id = slugger.next(heading.plainText)
+        let idAttr = id.isEmpty ? "" : " id=\"\(escape(id, attribute: true))\""
+        html += "<h\(l)\(idAttr)\(line(heading))>"; descendInto(heading); html += "</h\(l)>\n"
     }
     mutating func visitText(_ text: Text) { html += escape(text.string) }
     mutating func visitEmphasis(_ emphasis: Emphasis) {

@@ -1,4 +1,4 @@
 <li data-line="1"><p data-line="1">one</p>
 <p data-line="3">para</p>
 <li data-line="4"><p data-line="4">two</p>
-<h1 data-line="6">Setext</h1>
+<h1 id="setext" data-line="6">Setext</h1>

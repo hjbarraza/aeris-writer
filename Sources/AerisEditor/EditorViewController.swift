@@ -319,16 +319,34 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
 
     // MARK: Task checkbox click in the source
 
-    /// The recognizer only takes clicks that land on a task's `[ ]` / `[x]`; every other
-    /// click goes straight to the text view (selection, drags, double-clicks untouched).
-    /// A checkbox click is consumed, so the text view never starts its own tracking.
+    /// The recognizer only takes clicks that land on a task's `[ ]` / `[x]`, or ⌘-clicks on a
+    /// link; every other click goes straight to the text view (selection, drags,
+    /// double-clicks untouched). A taken click is consumed, so the text view never starts
+    /// its own tracking.
     func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer, shouldAttemptToRecognizeWith event: NSEvent) -> Bool {
-        textView.isEditable && checkboxEdit(at: textView.convert(event.locationInWindow, from: nil)) != nil
+        let point = textView.convert(event.locationInWindow, from: nil)
+        if event.modifierFlags.contains(.command), linkURL(at: point) != nil { return true }
+        return textView.isEditable && checkboxEdit(at: point) != nil
     }
 
     @objc func checkboxClicked(_ sender: NSClickGestureRecognizer) {
-        guard sender.state == .ended, let edit = checkboxEdit(at: sender.location(in: textView)) else { return }
+        guard sender.state == .ended else { return }
+        let point = sender.location(in: textView)
+        if NSApp.currentEvent?.modifierFlags.contains(.command) == true, let url = linkURL(at: point) {
+            onLink?(url)
+            return
+        }
+        guard let edit = checkboxEdit(at: point) else { return }
         apply(edit, undoName: "Toggle Task")
+    }
+
+    /// Opens a link ⌘-clicked in the source; set by the window controller.
+    var onLink: ((URL) -> Void)?
+
+    /// The link under `point` (text view coordinates), resolved against the document.
+    func linkURL(at point: NSPoint) -> URL? {
+        MarkdownCore.linkDestination(in: textView.string, at: textView.characterIndexForInsertion(at: point))
+            .flatMap { LinkAction.resolve($0, documentURL: document?.fileURL) }
     }
 
     /// The checkbox toggle for a click at `point` (text view coordinates), if it hits one.
