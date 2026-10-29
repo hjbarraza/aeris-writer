@@ -189,7 +189,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   nothing; drop a file → refused; Open… with a folder and a file → folder added, file
   opened; the folder on disk is untouched.
 
-- [ ] **M2-13 — Locations: add, label, remove.** A newly added location becomes the
+- [x] **M2-13 — Locations: add, label, remove.** A newly added location becomes the
   selected organizer row and its contents show. A folder dragged from Finder onto the
   Locations section is added (already present → nothing, no error). Rename Location
   sets a display name only (folder on disk untouched; clearing it restores the folder
