@@ -94,6 +94,7 @@ enum SelfCheck {
         anyTextFileChecks()
         hashtagMenuChecks()
         renumberChecks()
+        previewControlChecks()
         check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
         try? FileManager.default.removeItem(at: scratch)
         cleanStandardDefaults()
@@ -2697,6 +2698,95 @@ enum SelfCheck {
 
         // Close the extras; the last window stays open, because closing it quits the app.
         winDoc?.close(); tabDoc?.close()
+    }
+
+    /// M3-9: preview show/hide, split/full, reload, placeholder, page language, context menu.
+    @MainActor static func previewControlChecks() {
+        let dir = scratch.appending(path: "previewctl")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "Fr.md")
+        try? "# Bonjour\n\nCeci est un document écrit en français, avec plusieurs phrases pour que la détection soit sûre.\n"
+            .write(to: url, atomically: true, encoding: .utf8)
+        let store = AppDefaults.store, key = EditorWindowController.previewModeKey
+        store.removeObject(forKey: key)
+        let dc = NSDocumentController.shared
+        let doc = try! dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        wc.window?.orderFront(nil)
+        let web = wc.previewForTesting.webViewForTesting
+        func eval(_ js: String) -> Any? {
+            let out = Box<Any?>(nil), done = Box(false)
+            web.evaluateJavaScript(js) { value, _ in out.value = value; done.value = true }
+            _ = wait(timeout: 3) { done.value }
+            return out.value
+        }
+        let items = wc.splitViewController.splitViewItems
+        check(wc.previewMode == .split && !items[2].isCollapsed && !items[3].isCollapsed, "preview: starts in Split")
+        check(wait(timeout: 10) { (eval("document.documentElement.lang") as? String) == "fr" },
+              "preview: a French document renders <html lang=\"fr\">")
+
+        // Hidden: nothing renders; showing renders at once.
+        wc.togglePreview(nil)
+        check(wc.previewMode == .hidden && items[3].isCollapsed && !items[2].isCollapsed && store.string(forKey: key) == "hidden",
+              "preview: Hide collapses the preview and is stored")
+        doc.textStorage.replaceCharacters(in: NSRange(location: 0, length: doc.textStorage.length), with: "# Changed while hidden\n")
+        _ = wait(timeout: 0.6) { false }
+        check((eval("document.body.innerText") as? String)?.contains("Changed while hidden") == false,
+              "preview: nothing renders while hidden")
+        let toggle = NSMenuItem(title: "", action: #selector(EditorWindowController.togglePreview(_:)), keyEquivalent: "")
+        _ = wc.validateMenuItem(toggle)
+        check(toggle.title == "Show Preview", "preview: the menu item reads Show Preview while hidden")
+        let reload = NSMenuItem(title: "", action: #selector(EditorWindowController.reloadPreview(_:)), keyEquivalent: "")
+        check(!wc.validateMenuItem(reload), "preview: Reload Preview is off while hidden")
+        wc.togglePreview(nil)
+        check(wait(timeout: 3) { (eval("document.body.innerText") as? String)?.contains("Changed while hidden") == true },
+              "preview: showing it renders the changed text at once")
+
+        // A relaunch (a new window reads the store) keeps it hidden.
+        wc.previewMode = .hidden
+        let doc2 = try! dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc2); doc2.makeWindowControllers()
+        let wc2 = doc2.windowControllers[0] as! EditorWindowController
+        check(wc2.previewMode == .hidden && wc2.splitViewController.splitViewItems[3].isCollapsed,
+              "preview: a new window starts hidden after it was hidden")
+        doc2.close()
+
+        // Full / Split.
+        wc.showPreviewFull(nil)
+        check(items[2].isCollapsed && !items[3].isCollapsed, "preview: Full hides the editor")
+        let full = NSMenuItem(title: "", action: #selector(EditorWindowController.showPreviewFull(_:)), keyEquivalent: "")
+        _ = wc.validateMenuItem(full)
+        check(full.state == .on, "preview: Full is checked in the menu")
+        wc.showPreviewSplit(nil)
+        check(!items[2].isCollapsed && !items[3].isCollapsed, "preview: Split brings the editor back")
+
+        // Empty document: placeholder, no language.
+        doc.textStorage.replaceCharacters(in: NSRange(location: 0, length: doc.textStorage.length), with: "")
+        check(wait(timeout: 3) { (eval("!!document.querySelector('p.empty')") as? Bool) == true },
+              "preview: an empty document shows the placeholder line")
+        doc.textStorage.replaceCharacters(in: NSRange(location: 0, length: 0), with: "Bonjour, ceci est un texte en français avec assez de mots pour la détection.")
+        check(wait(timeout: 3) { (eval("document.documentElement.lang") as? String) == "fr" },
+              "preview: the language follows the text after a body swap")
+
+        // Reload: a marker set on the page is gone after the page loads again.
+        _ = eval("window.__marker = 1")
+        wc.reloadPreview(nil)
+        check(wait(timeout: 5) { (eval("window.__marker === undefined && !!document.body") as? Bool) == true },
+              "preview: Reload Preview loads the page again")
+
+        // Context menu: no browser navigation or reload items survive.
+        let menu = NSMenu()
+        for id in ["WKMenuItemIdentifierGoBack", "WKMenuItemIdentifierGoForward", "WKMenuItemIdentifierReload", "WKMenuItemIdentifierCopy"] {
+            let i = NSMenuItem(title: id, action: nil, keyEquivalent: "")
+            i.identifier = NSUserInterfaceItemIdentifier(id)
+            menu.addItem(i)
+        }
+        web.reshape(menu, link: nil)
+        check(menu.items.map(\.title) == ["WKMenuItemIdentifierCopy"], "preview: the context menu has no Back, Forward or Reload")
+
+        store.removeObject(forKey: key)
+        doc.close()
     }
 }
 #endif

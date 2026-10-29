@@ -152,6 +152,8 @@ enum MainMenu {
         bigger2.allowsKeyEquivalentWhenHidden = true
         let sidebarToggle = item("Hide Library", #selector(NSSplitViewController.toggleSidebar(_:)), "s")
         sidebarToggle.keyEquivalentModifierMask = [.command, .option]
+        let previewToggle = item("Hide Preview", #selector(EditorWindowController.togglePreview(_:)), "p")
+        previewToggle.keyEquivalentModifierMask = [.command, .option]
         return submenu("View", [
             item("Typewriter Mode", #selector(E.toggleTypewriterMode(_:))),
             item("Focus Mode", #selector(E.toggleFocusMode(_:))),
@@ -169,6 +171,11 @@ enum MainMenu {
                 i.representedObject = kind
                 return i
             }),
+            .separator(),
+            previewToggle,
+            item("Split", #selector(EditorWindowController.showPreviewSplit(_:))),
+            item("Full Size", #selector(EditorWindowController.showPreviewFull(_:))),
+            item("Reload Preview", #selector(EditorWindowController.reloadPreview(_:)), "r"),
             .separator(),
         ] + FileListMenu.shared.makeItems())
     }

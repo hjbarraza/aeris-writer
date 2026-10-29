@@ -3,7 +3,7 @@ import LibraryCore
 
 /// The window for one `MarkdownDocument`. Its content is an `EditorViewController`;
 /// the window controller only hands it the document.
-final class EditorWindowController: NSWindowController {
+final class EditorWindowController: NSWindowController, NSMenuItemValidation {
     private let editor = EditorViewController()
     private let preview = PreviewViewController()
     let sidebar = SidebarViewController()
@@ -80,6 +80,7 @@ final class EditorWindowController: NSWindowController {
         // Ctrl-Tab moves the keyboard between the editor and the sidebar.
         window.autorecalculatesKeyViewLoop = true
         super.init(window: window)
+        applyPreviewMode()
         preview.openDocument = { [weak self] url in self?.openLinked(url) }
         editor.onLink = { [weak self] url in self?.preview.handleLink(url) }
         fileList.onOpen = { [weak self] url, focusEditor in self?.open(url, focusEditor: focusEditor) }
@@ -330,6 +331,49 @@ final class EditorWindowController: NSWindowController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    // MARK: Preview controls (M3-9)
+
+    static let previewModeKey = "Aeris.Preview.mode"
+
+    /// Split shows editor and preview, Full only the preview, Hidden only the editor. Kept in the
+    /// app defaults, so a new window and the next launch start the way the last change left it.
+    var previewMode = PreviewMode(rawValue: AppDefaults.store.string(forKey: previewModeKey) ?? "") ?? .split {
+        didSet {
+            AppDefaults.store.set(previewMode.rawValue, forKey: Self.previewModeKey)
+            applyPreviewMode()
+        }
+    }
+
+    private func applyPreviewMode() {
+        let items = splitViewController.splitViewItems
+        items[2].isCollapsed = previewMode == .full
+        items[3].isCollapsed = previewMode == .hidden
+        preview.isActive = previewMode != .hidden
+    }
+
+    @objc func togglePreview(_ sender: Any?) { previewMode = previewMode == .hidden ? .split : .hidden }
+    @objc func showPreviewSplit(_ sender: Any?) { previewMode = .split }
+    @objc func showPreviewFull(_ sender: Any?) { previewMode = .full }
+    @objc func reloadPreview(_ sender: Any?) { preview.reload() }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(togglePreview(_:)):
+            menuItem.title = previewMode == .hidden ? "Show Preview" : "Hide Preview"
+            return true
+        case #selector(showPreviewSplit(_:)):
+            menuItem.state = previewMode == .split ? .on : .off
+            return true
+        case #selector(showPreviewFull(_:)):
+            menuItem.state = previewMode == .full ? .on : .off
+            return true
+        case #selector(reloadPreview(_:)):
+            return previewMode != .hidden
+        default:
+            return menuItem.action.map { responds(to: $0) } ?? false
+        }
+    }
+
     /// Format and View commands reach the editor even when the preview has focus
     /// (the editor is not in the preview's responder chain; this window controller is).
     override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
@@ -348,6 +392,8 @@ final class EditorWindowController: NSWindowController {
         }
     }
 }
+
+enum PreviewMode: String { case split, full, hidden }
 
 /// Holding priorities alone keep the editor and preview in proportion on window resizes and
 /// on collapse, but on expand AppKit takes the width of the columns that open from the editor
@@ -407,7 +453,8 @@ final class LibrarySplitViewController: NSSplitViewController {
     private func toggle(_ change: @escaping () -> Void) {
         let left = splitViewItems[0..<2].map(\.viewController.view)
         let editor = splitViewItems[2].viewController.view, preview = splitViewItems[3].viewController.view
-        if togglesRunning == 0 {
+        let both = !splitViewItems[2].isCollapsed && !splitViewItems[3].isCollapsed
+        if togglesRunning == 0, both {
             share = editor.frame.width / (editor.frame.width + preview.frame.width)
             for i in 0..<2 where !splitViewItems[i].isCollapsed { leftWidths[i] = left[i].frame.width }
         }
@@ -420,7 +467,7 @@ final class LibrarySplitViewController: NSSplitViewController {
                 guard self.togglesRunning == 0 else { return }
                 let didOverlap = self.overlapped
                 self.overlapped = false
-                guard self.libraryShown else { return }
+                guard self.libraryShown, !self.splitViewItems[2].isCollapsed, !self.splitViewItems[3].isCollapsed else { return }
                 // Only after overlapping presses: a single toggle leaves the widths to AppKit
                 // (the user may have dragged them since).
                 if didOverlap {

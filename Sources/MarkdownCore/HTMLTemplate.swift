@@ -1,16 +1,36 @@
 import Foundation
+import NaturalLanguage
 
 extension MarkdownCore {
+    /// The page's body for an empty document: one quiet, centred line.
+    public static let emptyPreviewBody = "<p class=\"empty\">Nothing to preview</p>"
+
+    /// The body to show for `text`: its rendering, or the placeholder when it is only whitespace.
+    public static func previewBody(_ text: String, sourceLines: Bool = false) -> String {
+        text.allSatisfy(\.isWhitespace) ? emptyPreviewBody : html(text, sourceLines: sourceLines)
+    }
+
+    /// The document's dominant language as a BCP 47 code ("fr", "en"), or nil when the text is
+    /// empty or too short or mixed to tell.
+    public static func language(of text: String) -> String? {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        guard let best = recognizer.languageHypotheses(withMaximum: 1).first, best.value >= 0.5 else { return nil }
+        return best.key.rawValue
+    }
+
     /// Wrap rendered body HTML in a full, themeable page. Light/dark follow the
     /// system via `prefers-color-scheme`. Pure; reused by the preview and (later) export.
-    public static func htmlDocument(body: String, title: String) -> String {
+    /// `lang` becomes the `<html lang>` so hyphenation and quotes match the text.
+    public static func htmlDocument(body: String, title: String, lang: String? = nil) -> String {
+        let langAttr = lang.map { " lang=\"\($0.filter { $0.isLetter || $0 == "-" })\"" } ?? ""
         let safeTitle = title
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
         return """
         <!DOCTYPE html>
-        <html>
+        <html\(langAttr)>
         <head>
         <meta charset="utf-8">
         <meta name="color-scheme" content="light dark">
@@ -39,8 +59,9 @@ extension MarkdownCore {
       color: var(--fg); background: var(--bg);
       font: 17px/1.65 "New York", Charter, Georgia, serif;
       max-width: 40em; margin: 0 auto; padding: 2em 1.5em 4em;
-      overflow-wrap: break-word;
+      overflow-wrap: break-word; hyphens: auto;
     }
+    p.empty { text-align: center; color: var(--muted); margin-top: 30vh; font-size: 0.95em; }
     h1, h2, h3, h4, h5, h6 {
       font-family: -apple-system, "SF Pro Text", system-ui, sans-serif;
       line-height: 1.25; margin: 1.6em 0 0.5em;
