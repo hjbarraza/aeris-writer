@@ -52,10 +52,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.allowsMultipleSelection = true
         panel.prompt = "Add"
         guard panel.runModal() == .OK else { return }
-        panel.urls.forEach { Library.shared.addLocation($0) }
-        if let wc = NSApp.keyWindow?.windowController as? EditorWindowController, wc.isSidebarCollapsed {
-            wc.splitViewController.showLibrary()
+        guard let wc = NSApp.keyWindow?.windowController as? EditorWindowController else {
+            panel.urls.forEach { Library.shared.addLocation($0) }
+            return
         }
+        if wc.isSidebarCollapsed { wc.splitViewController.showLibrary() }
+        wc.sidebar.addLocations(panel.urls)
     }
 
     /// View > Organizer > (section): hides or shows Favorites, Smart Folders or Tags in every window.
