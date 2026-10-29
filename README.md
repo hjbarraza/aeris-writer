@@ -1,4 +1,4 @@
-# aeris-md-editor
+# Aeris Writer
 
 A free, native macOS Markdown editor. Plain `.md` files on disk, local-first, no
 accounts.
@@ -11,7 +11,7 @@ architecture in `docs/ADR-001-appkit-primary.md`.
 
 ```
 swift build            # build
-scripts/bundle.sh debug && open build/Aeris.app   # build and run the app bundle
+scripts/bundle.sh debug && open "build/Aeris Writer.app"  # build and run the app bundle
 swift run mdcheck      # verify the Markdown pipeline (works on Command Line Tools)
 swift test             # full XCTest suite (needs full Xcode)
 ```
