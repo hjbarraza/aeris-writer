@@ -1,9 +1,9 @@
-import XCTest
+import Testing
 import Foundation
 @testable import MarkdownCore
 
 /// Mirrors Sources/mdcheck/AutocompleteChecks.swift (same cases). Text marks the caret as `|`.
-final class AutocompleteTests: XCTestCase {
+struct AutocompleteTests {
     private func hashtagCases() -> [(String, [String])] {
         [
             ("Hello #world and #foo-bar, #a/b.", ["world", "foo-bar", "a/b"]),
@@ -68,33 +68,33 @@ final class AutocompleteTests: XCTestCase {
         return (s.replacingCharacters(in: caret, with: ""), caret.location)
     }
 
-    func testHashtags() {
-        for (text, want) in hashtagCases() { XCTAssertEqual(Hashtags.extract(text), want, text) }
+    @Test func hashtags() {
+        for (text, want) in hashtagCases() { #expect(Hashtags.extract(text) == want, Comment(rawValue: text)) }
     }
 
-    func testTriggers() {
+    @Test func triggers() {
         for (marked, kind, prefix) in triggerCases() {
             let (text, caret) = unmark(marked)
             let t = Completion.trigger(in: text, caret: caret)
-            XCTAssertEqual(t?.kind, kind, marked)
-            if let t { XCTAssertEqual((text as NSString).substring(with: t.prefix), prefix, marked) }
+            #expect(t?.kind == kind, Comment(rawValue: marked))
+            if let t { #expect((text as NSString).substring(with: t.prefix) == prefix, Comment(rawValue: marked)) }
         }
     }
 
-    func testAccept() {
+    @Test func accept() {
         for (marked, value, want) in acceptCases() {
             let (text, caret) = unmark(marked)
-            guard let t = Completion.trigger(in: text, caret: caret) else { XCTFail("no trigger in \(marked)"); continue }
+            guard let t = Completion.trigger(in: text, caret: caret) else { Issue.record("no trigger in \(marked)"); continue }
             let e = Completion.accept(value, for: t, in: text)
-            XCTAssertEqual(e.applied(to: text), want.replacingOccurrences(of: "|", with: ""), marked)
-            XCTAssertEqual(e.selection, NSRange(location: (want as NSString).range(of: "|").location, length: 0), marked)
+            #expect(e.applied(to: text) == want.replacingOccurrences(of: "|", with: ""), Comment(rawValue: marked))
+            #expect(e.selection == NSRange(location: (want as NSString).range(of: "|").location, length: 0), Comment(rawValue: marked))
         }
     }
 
-    func testRank() {
+    @Test func rank() {
         let pool = ["Beta", "alpha", "alphabet", "gamma", "Alpaca", "zalph", "alpha"]
-        XCTAssertEqual(Completion.rank(pool, prefix: "ALP"), ["Alpaca", "alpha", "alphabet", "zalph"])
-        XCTAssertEqual(Completion.rank(pool, prefix: ""), ["Alpaca", "alpha", "alphabet", "Beta", "gamma", "zalph"])
-        XCTAssertTrue(Completion.rank(pool, prefix: "xyz").isEmpty)
+        #expect(Completion.rank(pool, prefix: "ALP") == ["Alpaca", "alpha", "alphabet", "zalph"])
+        #expect(Completion.rank(pool, prefix: "") == ["Alpaca", "alpha", "alphabet", "Beta", "gamma", "zalph"])
+        #expect(Completion.rank(pool, prefix: "xyz").isEmpty)
     }
 }
