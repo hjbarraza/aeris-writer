@@ -168,9 +168,26 @@ enum SelfCheck {
         UserDefaults.standard.removeObject(forKey: "\(EditorWindowController.layoutKey).ExpandedPaths")
     }
 
+    /// `docs/demo-library`, found by walking up from the executable, then from this source file,
+    /// so the self-check runs from any working directory.
+    static func demoLibrary() -> URL? {
+        for start in [Bundle.main.executableURL, URL(fileURLWithPath: #filePath)].compactMap({ $0 }) {
+            var dir = start.deletingLastPathComponent()
+            while dir.path != "/" {
+                let candidate = dir.appending(path: "docs/demo-library")
+                if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+                dir = dir.deletingLastPathComponent()
+            }
+        }
+        return nil
+    }
+
     @MainActor static func libraryChecks() {
         resetExpandedFolders()
-        let demo = URL(fileURLWithPath: "docs/demo-library", relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        guard let demo = demoLibrary() else {
+            print("FAIL - library: docs/demo-library not found above the executable or the source file")
+            exit(1)
+        }
         let wc = EditorWindowController()
         wc.sidebar.loadViewIfNeeded()
         let ov = wc.sidebar.outlineView
@@ -223,6 +240,30 @@ enum SelfCheck {
         _ = items[0].target?.perform(items[0].action, with: items[0])
         check(Library.shared.tree.roots.count == before - 1 && ov.numberOfChildren(ofItem: nil) == before - 1,
               "menu: Remove from Library removes the row")
+
+        // Saved expansion under a root that is missing right now survives; under an existing root, a gone folder is pruned.
+        let expandedKey = "\(EditorWindowController.layoutKey).ExpandedPaths"
+        let folderC = scratch.appending(path: "PersistC")
+        try? fm.createDirectory(at: folderC, withIntermediateDirectories: true)
+        Library.shared.addLocation(folderC)
+        let folderD = scratch.appending(path: "PersistD")
+        try? fm.createDirectory(at: folderD, withIntermediateDirectories: true)
+        Library.shared.addLocation(folderD)
+        let pathD = LibraryListing.canonicalPath(folderD)
+        try? fm.removeItem(at: folderD)
+        Library.shared.reload()
+        let pathB = pathD, pathC = LibraryListing.canonicalPath(folderC)
+        UserDefaults.standard.set([pathB + "/sub", pathC + "/gone"], forKey: expandedKey)
+        wc.sidebar.libraryRootsDidChange()
+        check(UserDefaults.standard.stringArray(forKey: expandedKey) == [pathB + "/sub"],
+              "persist: expansion under a missing root is kept; a gone folder under a live root is pruned")
+        resetExpandedFolders()
+
+        // A root-changed event rebuilds the watcher on the next turn, never inside the stream's callback.
+        let watcherBefore = Library.shared.watcherForTesting
+        Library.shared.folderChanged([FolderChange(path: pathC, mustScanSubDirs: false, rootChanged: true)])
+        check(Library.shared.watcherForTesting === watcherBefore, "watch: root-changed does not rebuild the watcher synchronously")
+        check(wait(timeout: 2) { Library.shared.watcherForTesting !== watcherBefore }, "watch: root-changed rebuilds the watcher afterwards")
         wc.close()
     }
 
@@ -242,7 +283,7 @@ enum SelfCheck {
         }
     }
 
-    @MainActor static func editorTextView(_ wc: EditorWindowController) -> NSTextView { wc.editor.textViewForTesting }
+    @MainActor static func editorTextView(_ wc: EditorWindowController) -> NSTextView { wc.editorForTesting.textViewForTesting }
 
     static func editorState(at url: URL) -> EditorState? {
         ExtendedAttributes.data(named: EditorState.attributeName, at: url)
@@ -291,7 +332,7 @@ enum SelfCheck {
         check(canonical(wc.sidebar.selectedURL) == canonical(urlA), "open: sidebar highlights the document the window opened with")
         // As if the window had appeared (it never does headless; this shows nothing), so the
         // editor takes its swap-in-a-live-window path.
-        wc.editor.viewDidAppear()
+        wc.editorForTesting.viewDidAppear()
         editorTextView(wc).setSelectedRange(NSRange(location: 2, length: 0))
         // B has a caret stored from an earlier session.
         try? ExtendedAttributes.set(try! JSONEncoder().encode(EditorState(sel: [3, 0], scroll: 0)),
@@ -308,12 +349,12 @@ enum SelfCheck {
         check(!dc.documents.contains(a) && current()?.windowControllers.first === wc,
               "open: A closed, same window controller now shows B")
         check(canonical(wc.sidebar.selectedURL) == canonical(urlB), "open: sidebar highlights B")
-        check(editorTextView(wc).textStorage === current()?.textStorage && current()?.editor === wc.editor,
+        check(editorTextView(wc).textStorage === current()?.textStorage && current()?.editor === wc.editorForTesting,
               "open: the editor edits B's own text storage")
         check(a.editor == nil && editorState(at: urlA)?.sel == [2, 0], "open: A keeps its own caret in its xattr")
         let b = current()!
         check(editorTextView(wc).selectedRange() == NSRange(location: 3, length: 0), "open: B's stored caret is restored, not A's")
-        check(!wc.editor.completion.isVisible, "open: no completion list after the swap")
+        check(!wc.editorForTesting.completion.isVisible, "open: no completion list after the swap")
 
         // (a) Dirty file-backed B: its edit is on disk after switching away.
         type("edit ", in: wc)
@@ -362,13 +403,13 @@ enum SelfCheck {
             wc.replaceDocument(with: target) { result = $0 }
             check(wait(timeout: 3) { if case .failure = result { true } else { false } }
                   && current() === c && c.textStorage.string == "yxgamma" && dc.documents.contains(c)
-                  && c.windowControllers.first === wc && c.editor === wc.editor
+                  && c.windowControllers.first === wc && c.editor === wc.editorForTesting
                   && editorTextView(wc).textStorage === c.textStorage,
                   "open (c): \(label) file leaves the current document attached, text unchanged")
         }
         check(disk(urlC) == "xgamma", "open (c): the target is read first, so the current document was not autosaved")
 
-        // Ruling 9: a user selection of a file row opens it; a folder row opens nothing.
+        // A user selection of a file row opens it; a folder row opens nothing.
         let ov = wc.sidebar.outlineView
         ov.selectRowIndexes(row(ov, urlA), byExtendingSelection: false)
         check(wait(timeout: 3) { current()?.fileURL?.lastPathComponent == "A.md" }, "open: selecting a file row opens it")
@@ -654,7 +695,7 @@ enum SelfCheck {
             FolderChange(path: LibraryListing.canonicalPath(A2), mustScanSubDirs: false, rootChanged: true),
             FolderChange(path: LibraryListing.canonicalPath(B), mustScanSubDirs: false, rootChanged: false),
         ])
-        check(rowNames(ov).contains("b3.md"), "edge: a batch holding a root change still applies its other changes")
+        check(wait(timeout: 2) { rowNames(ov).contains("b3.md") }, "edge: a batch holding a root change still applies its other changes")
 
         // A location recreated at the same path lists its new contents.
         try! fm.removeItem(at: C)

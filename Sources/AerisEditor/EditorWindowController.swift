@@ -4,11 +4,14 @@ import LibraryCore
 /// The window for one `MarkdownDocument`. Its content is an `EditorViewController`;
 /// the window controller only hands it the document.
 final class EditorWindowController: NSWindowController {
-    let editor = EditorViewController()
+    private let editor = EditorViewController()
     private let preview = PreviewViewController()
     let sidebar = SidebarViewController()
     let splitViewController = LibrarySplitViewController()
     private var scrollSync: ScrollSync?
+#if DEBUG
+    var editorForTesting: EditorViewController { editor }
+#endif
     let stats: StatsController
     let statusBar: StatusBarView
 
@@ -87,7 +90,7 @@ final class EditorWindowController: NSWindowController {
     /// the target, already read, and who to tell.
     private var pendingSwitch: (new: NSDocument, completion: @MainActor (Result<Void, Error>) -> Void)?
 
-    /// Opens `url` in this window in place of the current document (plan Ruling 1, amended).
+    /// Opens `url` in this window in place of the current document ; reads the target before asking the current document to close.
     /// The same file does nothing; a file open in another window brings that window forward.
     /// Otherwise the target is read first: if it can't be read, the current document is never
     /// touched (no autosave, no sheet). Then the current document's close check runs (a

@@ -29,7 +29,7 @@ Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` gre
 
 - [x] **M1-3 — Live Markdown styling.** *(revision 1 verified headlessly; in-app recheck of fence typing pending.)* On text change, parse with `MarkdownCore` and
   apply `NSAttributedString` attributes for headings, bold, italic, inline code, links,
-  lists — styling the *source* text in place (iA-style), not replacing it. Debounce /
+  lists — styling the *source* text in place (in-place styling), not replacing it. Debounce /
   incremental: re-style only affected paragraphs (see architecture map §3).
   *Verify:* typing `# H` enlarges the line; `**x**` bolds; stays responsive on a long doc.
 
