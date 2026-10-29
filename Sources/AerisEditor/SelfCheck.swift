@@ -1057,6 +1057,26 @@ enum SelfCheck {
                   "paste md: \(name) unstructured HTML is left to a plain paste")
             doc.close()
         }
+        // Plain ⌘V with the setting on: code from a monospaced editor (bold keyword, indented lines,
+        // as RTF) stays plain; a list from RTF still converts.
+        let mono = NSMutableAttributedString(string: "func f() {\n    let x = a * b\n}\n",
+                                             attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)])
+        mono.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold), range: NSRange(location: 0, length: 4))
+        func rtf(_ a: NSAttributedString) {
+            board.clearContents()
+            board.setData(try? a.data(from: NSRange(location: 0, length: a.length),
+                                      documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]), forType: .rtf)
+        }
+        rtf(mono)
+        check(EditorViewController.markdown(from: board, emphasisCounts: false) == nil,
+              "paste md: plain Paste leaves monospaced code with a bold keyword alone")
+        let listText = NSMutableAttributedString(string: "\tone\n\ttwo\n")
+        let list = NSTextList(markerFormat: .disc, options: 0)
+        listText.addAttribute(.paragraphStyle, value: { let p = NSMutableParagraphStyle(); p.textLists = [list]; return p }(),
+                              range: NSRange(location: 0, length: listText.length))
+        rtf(listText)
+        let fromRTF = EditorViewController.markdown(from: board, emphasisCounts: false)
+        check(fromRTF?.hasPrefix("- ") == true, "paste md: an RTF bullet list converts (got \(String(describing: fromRTF)))")
         let key = EditorViewController.DefaultsKey.pasteRichAsMarkdown
         let before = AppDefaults.store.bool(forKey: key)
         let vc = EditorViewController()

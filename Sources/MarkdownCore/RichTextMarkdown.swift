@@ -7,14 +7,24 @@ import Foundation
 public enum RichTextMarkdown {
     /// The Markdown for `html`, or nil when it holds nothing worth converting (no list,
     /// table, link, heading, emphasis, code or quote): such a paste stays a plain paste.
-    public static func convert(html: String) -> String? {
+    /// `emphasisCounts` false (the plain-Paste path): bold, italic and inline code alone are not
+    /// structure, so code or prose from an editor that only colours and bolds pastes unchanged.
+    /// HTML over `maxHTMLBytes` is not converted (nil).
+    public static func convert(html: String, emphasisCounts: Bool = true) -> String? {
+        guard html.utf8.count <= maxHTMLBytes else { return nil }
         var writer = Writer()
+        writer.emphasisCounts = emphasisCounts
         let root = Parser.parse(html)
         let blocks = writer.blocks(root.children)
         guard writer.sawStructure else { return nil }
         let out = blocks.joined(separator: "\n\n")
         return out.isEmpty ? nil : out
     }
+
+    public static let maxHTMLBytes = 2_000_000
+    /// Elements nested deeper than this are not kept (their text joins the nearest kept ancestor),
+    /// so every walk of the tree, and freeing it, has bounded depth.
+    static let maxDepth = 256
 
     // MARK: Tree
 
@@ -49,12 +59,14 @@ public enum RichTextMarkdown {
             let s = Array(html.unicodeScalars)
             var i = 0
             var skipUntil: String?
+            var overflow: [String: Int] = [:]      // opened past maxDepth, not kept: their closes are ignored
 
             func addText(_ t: String) {
                 guard !t.isEmpty else { return }
                 stack.last!.children.append(Node(tag: "", text: decode(t)))
             }
             func close(_ name: String) {
+                if let n = overflow[name], n > 0 { overflow[name] = n - 1; return }
                 guard let at = stack.lastIndex(where: { $0.tag == name }), at > 0 else { return }
                 stack.removeSubrange(at...)
             }
@@ -102,9 +114,11 @@ public enum RichTextMarkdown {
                         k -= 1
                     }
                 }
+                let isVoid = void.contains(name) || body.hasSuffix("/")
+                if !isVoid, stack.count > maxDepth { overflow[name, default: 0] += 1; continue }
                 let node = Node(tag: name, attrs: attrs)
                 stack.last!.children.append(node)
-                if !void.contains(name), !body.hasSuffix("/") { stack.append(node) }
+                if !isVoid { stack.append(node) }
             }
             return root
         }
@@ -183,6 +197,7 @@ public enum RichTextMarkdown {
 
     struct Writer {
         var sawStructure = false
+        var emphasisCounts = true
 
         static let blockTags: Set<String> = [
             "p", "div", "section", "article", "header", "footer", "main", "nav", "aside", "figure", "figcaption",
@@ -195,7 +210,7 @@ public enum RichTextMarkdown {
             var out: [String] = []
             var run = ""
             func flush() {
-                let t = Writer.tidy(run)
+                let t = Writer.escapeLineStarts(Writer.tidy(run))
                 if !t.isEmpty { out.append(t) }
                 run = ""
             }
@@ -227,7 +242,10 @@ public enum RichTextMarkdown {
                     while code.hasSuffix("\n") { code.removeLast() }
                     if !code.isEmpty {
                         sawStructure = true
-                        out.append("```\n" + code + "\n```")
+                        var longest = 0, current = 0
+                        for c in code { current = c == "`" ? current + 1 : 0; longest = max(longest, current) }
+                        let fence = String(repeating: "`", count: max(3, longest + 1))
+                        out.append(fence + "\n" + code + "\n" + fence)
                     }
                 case "hr":
                     sawStructure = true
@@ -326,13 +344,15 @@ public enum RichTextMarkdown {
             case "code", "kbd", "samp", "tt":
                 let t = text(of: n).replacingOccurrences(of: "\n", with: " ")
                 guard !t.trimmingCharacters(in: .whitespaces).isEmpty else { return t }
-                sawStructure = true
+                if emphasisCounts { sawStructure = true }
                 let fence = t.contains("`") ? "``" : "`"
                 return fence + t.trimmingCharacters(in: .whitespaces) + fence
             case "a":
                 let inner = inlineChildren(n, st)
                 guard let href = n.attrs["href"], !href.isEmpty,
                       !inner.trimmingCharacters(in: .whitespaces).isEmpty else { return inner }
+                let scheme = href.trimmingCharacters(in: .whitespaces).lowercased().prefix { $0 != ":" && $0 != "/" }
+                if ["javascript", "vbscript", "data"].contains(String(scheme)) { return inner }
                 sawStructure = true
                 let url = href.replacingOccurrences(of: " ", with: "%20")
                     .replacingOccurrences(of: "(", with: "%28").replacingOccurrences(of: ")", with: "%29")
@@ -361,7 +381,7 @@ public enum RichTextMarkdown {
         mutating func wrap(_ s: String, _ open: String, _ close: String) -> String {
             let core = s.trimmingCharacters(in: .whitespaces)
             guard !core.isEmpty else { return s }
-            if open != "[" { sawStructure = true }
+            if open != "[", emphasisCounts { sawStructure = true }
             let lead = s.prefix { $0 == " " }, trail = String(s.reversed().prefix { $0 == " " })
             return lead + open + core + close + trail
         }
@@ -379,7 +399,11 @@ public enum RichTextMarkdown {
             let chars = Array(s)
             for (i, c) in chars.enumerated() {
                 switch c {
-                case "\\", "*", "`", "[", "]": out += "\\" + String(c)
+                case "\\", "*", "`", "[", "]", "<", ">": out += "\\" + String(c)
+                case "&":
+                    // "&lt;" typed as text must not become "<" when rendered.
+                    let next = i + 1 < chars.count ? chars[i + 1] : " "
+                    out += next.isLetter || next == "#" ? "\\&" : "&"
                 case "_":
                     // Inside a word (snake_case) an underscore is plain text.
                     let inWord = i > 0 && i + 1 < chars.count && (chars[i - 1].isLetter || chars[i - 1].isNumber)
@@ -389,6 +413,12 @@ public enum RichTextMarkdown {
                 }
             }
             return out
+        }
+
+        /// A paragraph line that starts like a heading, list item or quote gets a backslash.
+        static func escapeLineStarts(_ s: String) -> String {
+            s.replacingOccurrences(of: "(?m)^( {0,3})(#{1,6}(?=\\s|$)|[-+](?=\\s))", with: "$1\\\\$2", options: .regularExpression)
+                .replacingOccurrences(of: "(?m)^( {0,3}\\d+)([.)])(?=\\s)", with: "$1\\\\$2", options: .regularExpression)
         }
 
         /// Collapses space runs (text nodes meet at edges), trims spaces around each line and the whole.

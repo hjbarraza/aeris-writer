@@ -52,14 +52,14 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
-        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
         let editorView = EditorTextView(usingTextLayoutManager: true)
         editorView.minSize = NSSize(width: 0, height: scroll.contentSize.height)
-        editorView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        editorView.maxSize = NSSize(width: 10_000_000, height: 10_000_000)
         editorView.isVerticallyResizable = true
-        editorView.autoresizingMask = .width
-        editorView.textContainer?.containerSize = NSSize(width: scroll.contentSize.width,
-                                                         height: CGFloat.greatestFiniteMagnitude)
+        editorView.autoresizingMask = [.width, .height]
+        editorView.usesRuler = false
+        editorView.textContainer?.containerSize = NSSize(width: scroll.contentSize.width, height: 10_000_000)
         scroll.documentView = editorView
         editorView.richPaste = { [weak self] in self?.pasteRichTextIfSet() ?? false }
         textView = editorView
@@ -111,7 +111,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
     /// Edit > Paste as Markdown: the pasteboard's rich text as Markdown; a pasteboard without
     /// convertible rich text pastes as plain text, exactly as Paste does.
     @objc func pasteAsMarkdown(_ sender: Any?) {
-        if !pasteMarkdown(from: .general) { textView.paste(sender) }
+        if !pasteMarkdown(from: .general) { (textView as? EditorTextView)?.pasteWithoutRichText(sender) }
     }
 
     /// Edit > Paste Rich Text as Markdown: makes plain Paste (⌘V) do the same for rich sources.
@@ -122,16 +122,16 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
 
     /// Called by Paste; true when it handled the paste.
     fileprivate func pasteRichTextIfSet() -> Bool {
-        Self.defaults.bool(forKey: DefaultsKey.pasteRichAsMarkdown) && pasteMarkdown(from: .general)
+        Self.defaults.bool(forKey: DefaultsKey.pasteRichAsMarkdown) && pasteMarkdown(from: .general, emphasisCounts: false)
     }
 
     /// Replaces the selection with the pasteboard's rich text as Markdown, in the document's
     /// line ending, as one undo step. False (nothing changed) when there is no rich text
     /// with structure to convert, or the text view is not editable or is composing.
     @discardableResult
-    func pasteMarkdown(from board: NSPasteboard) -> Bool {
+    func pasteMarkdown(from board: NSPasteboard, emphasisCounts: Bool = true) -> Bool {
         guard textView.isEditable, !textView.hasMarkedText(),
-              let markdown = Self.markdown(from: board) else { return false }
+              let markdown = Self.markdown(from: board, emphasisCounts: emphasisCounts) else { return false }
         let text = LineEnding.convert(markdown, to: LineEnding.of(textView.string))
         let range = textView.selectedRange()
         return apply(TextEdit(range: range, replacement: text,
@@ -140,18 +140,19 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
     }
 
     /// The pasteboard's HTML (or RTF, via Cocoa's HTML export) as Markdown; nil if none.
-    static func markdown(from board: NSPasteboard) -> String? {
+    static func markdown(from board: NSPasteboard, emphasisCounts: Bool = true) -> String? {
         var html: String?
         if let data = board.data(forType: .html) {
+            guard data.count <= RichTextMarkdown.maxHTMLBytes else { return nil }
             html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16)
                 ?? String(data: data, encoding: .isoLatin1)
-        } else if let data = board.data(forType: .rtf),
+        } else if let data = board.data(forType: .rtf), data.count <= RichTextMarkdown.maxHTMLBytes,
                   let attributed = NSAttributedString(rtf: data, documentAttributes: nil),
                   let out = try? attributed.data(from: NSRange(location: 0, length: attributed.length),
                                                  documentAttributes: [.documentType: NSAttributedString.DocumentType.html]) {
             html = String(data: out, encoding: .utf8)
         }
-        return html.flatMap { RichTextMarkdown.convert(html: $0) }
+        return html.flatMap { RichTextMarkdown.convert(html: $0, emphasisCounts: emphasisCounts) }
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -784,4 +785,6 @@ final class EditorTextView: NSTextView {
         if richPaste?() == true { return }
         super.paste(sender)
     }
+    /// Paste as the stock text view does, without offering the pasteboard to `richPaste` again.
+    func pasteWithoutRichText(_ sender: Any?) { super.paste(sender) }
 }

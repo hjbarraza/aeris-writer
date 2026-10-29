@@ -23,7 +23,7 @@ func runRichTextMarkdownChecks() {
           "richtext: style-based emphasis; font-weight:normal wrapper is not bold")
     check(md("<p>one</p><p>two</p><h2>Head</h2><ul><li>x</li></ul>") == "one\n\ntwo\n\n## Head\n\n- x",
           "richtext: paragraphs, heading, list separated by blank lines")
-    check(md("<p>a&nbsp;&amp;&lt;b&gt;&#65;&#x42; <code>x</code></p>") == "a &<b>AB `x`", "richtext: entities, inline code")
+    check(md("<p>a&nbsp;&amp;&lt;b&gt;&#65;&#x42; <code>x</code></p>") == "a &\\<b\\>AB `x`", "richtext: entities, inline code")
     check(md("<p>2 * 3 [x] snake_case _em_</p><a href=\"u\">l</a>") == "2 \\* 3 \\[x\\] snake_case \\_em\\_\n\n[l](u)",
           "richtext: markdown characters in text are escaped")
     check(md("<blockquote><p>q</p></blockquote>") == "> q", "richtext: blockquote")
@@ -41,4 +41,28 @@ func runRichTextMarkdownChecks() {
     check(nested.contains("<ul>") && nested.components(separatedBy: "<ul>").count == 3
           && nested.components(separatedBy: "<ol>").count == 3, "richtext: nested lists render nested")
     check(LineEnding.convert(md("<ul><li>a</li><li>b</li></ul>")!, to: "\r\n") == "- a\r\n- b", "richtext: result converts to CRLF")
+    // Fix round 1: hostile and large input, escaping, plain-Paste mode.
+    func timed(_ f: () -> String?) -> (String?, Double) {
+        let t = Date(); let r = f(); return (r, Date().timeIntervalSince(t) * 1000)
+    }
+    let (spans, spanMs) = timed { md(String(repeating: "<span>", count: 5000) + "<b>x</b>") }
+    check(spans == nil || spans!.count < 100_000, "richtext: 5000 nested spans -> no crash, bounded (\(Int(spanMs)) ms)")
+    check(spanMs < 200, "richtext: 5000 nested spans in under 200 ms (\(Int(spanMs)) ms)")
+    let (lists, listMs) = timed { md(String(repeating: "<ul><li>a", count: 10_000)) }
+    check(lists != nil && lists!.utf8.count < 4_000_000, "richtext: 10k nested lists -> output bounded (\(lists?.utf8.count ?? 0) bytes)")
+    check(listMs < 200, "richtext: 10k nested lists in under 200 ms (\(Int(listMs)) ms)")
+    check(md("<ul><li>a</li></ul>" + String(repeating: "x", count: RichTextMarkdown.maxHTMLBytes)) == nil,
+          "richtext: HTML over 2 MB is not converted")
+    check(md("<p>&lt;script&gt;alert(1)&lt;/script&gt; &amp;lt; <a href=u>l</a></p>")
+          == "\\<script\\>alert(1)\\</script\\> \\&lt; [l](u)", "richtext: decoded < > and entity-looking & are escaped")
+    check(md("<p># not a heading</p><p>1. not a list</p><p>- nor this</p><p>&gt; nor quote</p><a href=u>l</a>")
+          == "\\# not a heading\n\n1\\. not a list\n\n\\- nor this\n\n\\> nor quote\n\n[l](u)",
+          "richtext: line-start markers in paragraphs are escaped")
+    check(md("<pre>a ``` b\n````x</pre>") == "`````\na ``` b\n````x\n`````", "richtext: fence longer than any backtick run")
+    check(md("<a href=\"javascript:alert(1)\">click</a> <a href=\"https://e.com\">ok</a>") == "click [ok](https://e.com)",
+          "richtext: javascript: links keep their text only")
+    check(RichTextMarkdown.convert(html: "<p>a <b>bold</b> <i>it</i> <code>c</code></p>", emphasisCounts: false) == nil,
+          "richtext: plain-Paste mode: emphasis and inline code alone are not structure")
+    check(RichTextMarkdown.convert(html: "<p>a <b>bold</b> <a href=u>l</a></p>", emphasisCounts: false) == "a **bold** [l](u)",
+          "richtext: plain-Paste mode: a link still converts")
 }
