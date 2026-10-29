@@ -210,9 +210,11 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
                 guard board.setString(PlainText.make(source), forType: .string) else { return false }
                 let count = board.changeCount
                 nonisolated(unsafe) let target = board, finish = done
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let built = Self.richTextData(source)
-                    DispatchQueue.main.async {
+                // NSAttributedString(html:) is main-thread only: build it on the next main-queue turn,
+                // after the menu has closed and the plain text is already on the pasteboard.
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        let built = Self.richTextData(source)
                         if let built, target.changeCount == count { target.setData(built.rtf, forType: .rtf) }
                         finish?()
                     }
