@@ -54,6 +54,22 @@ final class Library {
         reload()
     }
 
+    /// The user's display name for the location at `index`, nil if none is set.
+    func label(at index: Int) -> String? {
+        store.locations.indices.contains(index) ? store.locations[index].label : nil
+    }
+
+    /// Sets (or, when blank, clears) the display name of the location at `index`; the folder is untouched.
+    func setLabel(_ label: String?, at index: Int) {
+        do {
+            try store.setLabel(label, at: index)
+        } catch {
+            NSLog("Aeris: could not save location label %d: %@", index, "\(error)")
+            return
+        }
+        for sidebar in sidebars.allObjects { sidebar.libraryRootsDidChange() }
+    }
+
     /// Re-resolves every bookmark (an unresolvable one keeps its stored path) and updates the roots.
     func reload() {
         let urls = store.locations.indices.map { store.resolve(at: $0) ?? URL(fileURLWithPath: store.locations[$0].path) }

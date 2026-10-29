@@ -5,6 +5,8 @@ import Foundation
 public struct Location: Codable, Equatable, Sendable {
     public var bookmark: Data
     public var path: String
+    /// Display name set by the user; nil shows the folder's own name. The folder on disk is never renamed.
+    public var label: String?
 }
 
 /// The persisted list of library locations (binary plist, no sandbox, plain bookmarks).
@@ -56,6 +58,14 @@ public final class LocationStore {
     public func remove(at index: Int) throws {
         guard locations.indices.contains(index) else { return }
         locations.remove(at: index)
+        try save()
+    }
+
+    /// Sets the display name of the location at `index`. Blank (after trimming) clears it.
+    public func setLabel(_ label: String?, at index: Int) throws {
+        guard locations.indices.contains(index) else { return }
+        let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        locations[index].label = (trimmed?.isEmpty ?? true) ? nil : trimmed
         try save()
     }
 
