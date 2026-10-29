@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
     }
 
-    /// File > Add Location…: pick folders to list in the library sidebar.
+    /// File > Add Location…: pick folders to list in the organizer.
     @MainActor @objc func addLocation(_ sender: Any?) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -38,6 +38,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let wc = NSApp.keyWindow?.windowController as? EditorWindowController, wc.isSidebarCollapsed {
             wc.splitViewController.showLibrary()
         }
+    }
+
+    /// View > Organizer > (section): hides or shows Favorites, Smart Folders or Tags in every window.
+    @MainActor @objc func toggleOrganizerSection(_ sender: NSMenuItem) {
+        guard let kind = OrganizerSection.Kind(rawValue: sender.representedObject as? String ?? "") else { return }
+        OrganizerSettings.setHidden(kind, !OrganizerSettings.isHidden(kind))
+    }
+
+    @MainActor @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleOrganizerSection(_:)),
+           let kind = OrganizerSection.Kind(rawValue: item.representedObject as? String ?? "") {
+            item.state = OrganizerSettings.isHidden(kind) ? .off : .on
+        }
+        return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -1,21 +1,43 @@
 import AppKit
 import LibraryCore
 
-/// The file list: the files and subfolders of the folder selected in the sidebar, under a
-/// title that names the folder. Rows are the folder's own `LibraryNode` children, so the live
-/// refresh that edits the tree updates this list too.
+/// The table of the file list. Return opens the selected folder and ⌘↑ goes up to the enclosing one.
+final class FileListTableView: NSTableView {
+    var onReturn: (@MainActor () -> Void)?
+    var onEnclosingFolder: (@MainActor () -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        switch (event.keyCode, event.modifierFlags.intersection(.deviceIndependentFlagsMask)) {
+        case (36, []), (76, []): onReturn?()
+        case (126, .command): onEnclosingFolder?()
+        default: super.keyDown(with: event)
+        }
+    }
+}
+
+/// The file list: the files and subfolders of the location selected in the organizer, under a
+/// title that names the folder. Double-click or Return on a folder row opens it here; the
+/// button left of the title and ⌘↑ go back up. Rows are the folder's own `LibraryNode`
+/// children, so the live refresh that edits the tree updates this list too.
 final class FileListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
-    let tableView = NSTableView()
+    let tableView = FileListTableView()
     let titleLabel = NSTextField(labelWithString: "")
+    let upButton = NSButton(image: NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Enclosing Folder")!,
+                            target: nil, action: nil)
     private let emptyLabel = NSTextField(labelWithString: "Select a folder to see its files.")
     private(set) var folder: LibraryNode?
     /// Set by the window controller: opens a file row. `focusEditor` is true for a click and
     /// false for the arrow keys, which keep the keyboard in the list.
     var onOpen: (@MainActor (URL, _ focusEditor: Bool) -> Void)?
+    /// Set by the window controller: the list moved to another folder by itself (not because
+    /// the organizer asked), so the open document's row can be highlighted if it is here.
+    var onNavigate: (@MainActor () -> Void)?
     /// A programmatic selection is in progress; it never opens anything.
     private var revealing = false
 
-    private var rows: [LibraryNode] { folder?.children ?? [] }
+    /// What the table shows: the folder's children as of the last reload. A disk refresh edits the
+    /// folder's children before the list hears of it; row numbers must keep meaning the old rows until then.
+    private var rows: [LibraryNode] = []
 
     func node(atRow row: Int) -> LibraryNode? {
         rows.indices.contains(row) ? rows[row] : nil
@@ -29,6 +51,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.delegate = self
         tableView.target = self
         tableView.action = #selector(rowClicked(_:))
+        tableView.doubleAction = #selector(rowDoubleClicked(_:))
+        tableView.onReturn = { [weak self] in self?.openSelectedFolder() }
+        tableView.onEnclosingFolder = { [weak self] in self?.goUp() }
+        upButton.target = self
+        upButton.action = #selector(upClicked(_:))
+        upButton.isBordered = false
+        upButton.toolTip = "Enclosing Folder (⌘↑)"
+        upButton.isEnabled = false
 
         let scroll = NSScrollView()
         scroll.documentView = tableView
@@ -41,13 +71,15 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         emptyLabel.alignment = .center
 
         let root = NSView()
-        for sub in [titleLabel, scroll, emptyLabel] as [NSView] {
+        for sub in [upButton, titleLabel, scroll, emptyLabel] as [NSView] {
             sub.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(sub)
         }
         NSLayoutConstraint.activate([
             titleLabel.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
-            titleLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            upButton.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
+            upButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: upButton.trailingAnchor, constant: 6),
             titleLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
             scroll.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -70,7 +102,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         if node != nil, node === folder { return }
         folder = node
         node?.loadChildren()
+        rows = node?.children ?? []
         titleLabel.stringValue = node?.name ?? ""
+        upButton.isEnabled = node?.parent != nil
         emptyLabel.isHidden = node != nil
         revealing = true
         tableView.reloadData()
@@ -101,10 +135,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         }
         guard changes.contains(where: { $0.parent === folder }) else { return }
         let selected = node(atRow: tableView.selectedRow)
+        rows = folder.children ?? []
         revealing = true
         tableView.reloadData()
         if let selected, let row = rows.firstIndex(where: { $0 === selected }) {
             tableView.selectRowIndexes([row], byExtendingSelection: false)
+        } else {
+            // The highlighted file is gone: no neighbour inherits its row.
+            tableView.deselectAll(nil)
         }
         revealing = false
     }
@@ -116,6 +154,32 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         self.folder = nil  // force a reload even if the node is the same
         showFolder(current)
     }
+
+    // MARK: Walking folders
+
+    /// Shows `folder`'s parent (a location has none), then highlights the open document if it is
+    /// there, otherwise the folder it came from.
+    func goUp() {
+        guard let came = folder, let parent = came.parent else { return }
+        showFolder(parent)
+        onNavigate?()
+        if tableView.selectedRow < 0, let row = rows.firstIndex(where: { $0 === came }) {
+            revealing = true
+            tableView.selectRowIndexes([row], byExtendingSelection: false)
+            tableView.scrollRowToVisible(row)
+            revealing = false
+        }
+    }
+
+    /// Shows the selected folder row's contents; a file row does nothing here.
+    private func openSelectedFolder() {
+        guard let node = node(atRow: tableView.selectedRow), node.isDirectory else { return }
+        showFolder(node)
+        onNavigate?()
+    }
+
+    @objc private func rowDoubleClicked(_ sender: Any?) { openSelectedFolder() }
+    @objc private func upClicked(_ sender: Any?) { goUp() }
 
     // MARK: Opening
 

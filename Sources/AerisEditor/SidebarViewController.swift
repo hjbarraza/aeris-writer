@@ -1,27 +1,82 @@
 import AppKit
 import LibraryCore
 
-/// The library sidebar: a source-list outline of the folders added to the library,
-/// with a "+" bar at the bottom.
+/// A section header row of the organizer.
+@MainActor
+final class OrganizerSection: NSObject {
+    enum Kind: String, CaseIterable { case locations, favorites, smartFolders, tags }
+
+    let kind: Kind
+    let title: String
+    /// The one-line row shown while the section has nothing in it (nil for Locations, which has the empty label).
+    let hint: OrganizerHint?
+
+    private init(_ kind: Kind, _ title: String, hint: String?) {
+        self.kind = kind
+        self.title = title
+        self.hint = hint.map(OrganizerHint.init)
+    }
+
+    static let all: [OrganizerSection] = [
+        OrganizerSection(.locations, "Locations", hint: nil),
+        OrganizerSection(.favorites, "Favorites", hint: "Drop files or folders here"),
+        OrganizerSection(.smartFolders, "Smart Folders", hint: "Save a search to find it again here"),
+        OrganizerSection(.tags, "Tags", hint: "Type #tag in any file"),
+    ]
+}
+
+/// The row that explains an empty organizer section.
+@MainActor
+final class OrganizerHint: NSObject {
+    let text: String
+    init(_ text: String) { self.text = text }
+}
+
+/// Which optional organizer sections are shown. Locations is always shown. Stored per layout key
+/// like the rest of the window layout; the preferences pane will edit the same setting.
+@MainActor
+enum OrganizerSettings {
+    static let didChange = Notification.Name("AerisOrganizerSettingsDidChange")
+
+    private static var key: String { "\(EditorWindowController.layoutKey).HiddenSections" }
+
+    static func isHidden(_ kind: OrganizerSection.Kind) -> Bool {
+        kind != .locations && (UserDefaults.standard.stringArray(forKey: key) ?? []).contains(kind.rawValue)
+    }
+
+    static func setHidden(_ kind: OrganizerSection.Kind, _ hidden: Bool) {
+        guard kind != .locations, isHidden(kind) != hidden else { return }
+        var kinds = UserDefaults.standard.stringArray(forKey: key) ?? []
+        kinds.removeAll { $0 == kind.rawValue }
+        if hidden { kinds.append(kind.rawValue) }
+        UserDefaults.standard.set(kinds, forKey: key)
+        NotificationCenter.default.post(name: didChange, object: nil)
+    }
+}
+
+/// The organizer: a source-list outline with the sections Locations, Favorites, Smart Folders and
+/// Tags, and a "+" bar at the bottom. A location row fills the file list; folders below it are
+/// walked in the list, not here.
 final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     let outlineView = NSOutlineView()
     private let emptyLabel = NSTextField(wrappingLabelWithString: "Add a folder to see its Markdown files here.")
-    /// Set by the window controller: opens a file row the user selected (mouse or arrow keys).
-    var onOpen: (@MainActor (URL) -> Void)?
-    /// Set by the window controller: the user selected a folder (or a file, whose folder this is).
+    /// Set by the window controller: the user selected a location, whose folder the list should show.
     var onFolderSelected: (@MainActor (LibraryNode?) -> Void)?
-    /// A programmatic reveal is selecting a row; that selection never opens anything.
+    /// A programmatic reveal is selecting a row; that selection never fills the list.
     private var revealing = false
     /// The saved expansion is being applied; those expansions are not saved again.
     private var restoring = false
 
-    /// Canonical paths of the expanded folders, shared by every window and every launch.
-    private var expandedPathsKey: String { "\(EditorWindowController.layoutKey).ExpandedPaths" }
-    private var expandedPaths: [String] {
-        get { UserDefaults.standard.stringArray(forKey: expandedPathsKey) ?? [] }
-        set { UserDefaults.standard.set(newValue, forKey: expandedPathsKey) }
+    /// Kinds of the sections the user collapsed, shared by every window and every launch.
+    private var collapsedKey: String { "\(EditorWindowController.layoutKey).CollapsedSections" }
+    private var collapsedSections: [String] {
+        get { UserDefaults.standard.stringArray(forKey: collapsedKey) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: collapsedKey) }
     }
 
+    private var visibleSections: [OrganizerSection] { OrganizerSection.all.filter { !OrganizerSettings.isHidden($0.kind) } }
+
+    /// The URL of the selected location (nil if nothing is selected).
     var selectedURL: URL? { (outlineView.item(atRow: outlineView.selectedRow) as? LibraryNode)?.url }
 
     override func loadView() {
@@ -32,6 +87,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.outlineTableColumn = column
         outlineView.dataSource = self
         outlineView.delegate = self
+        outlineView.target = self
+        outlineView.action = #selector(outlineClicked(_:))
         let menu = NSMenu()
         menu.delegate = self
         outlineView.menu = menu
@@ -67,86 +124,69 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         ])
         view = root
         Library.shared.register(self)
+        NotificationCenter.default.addObserver(self, selector: #selector(settingsDidChange(_:)),
+                                               name: OrganizerSettings.didChange, object: nil)
         libraryRootsDidChange()
     }
 
-    /// The library's roots changed (a location was added).
+    /// The library's roots changed (a location was added, removed or re-resolved).
     func libraryRootsDidChange() {
+        reloadKeepingSelection()
+    }
+
+    /// A View > Organizer item hid or showed a section.
+    @objc private func settingsDidChange(_ notification: Notification) {
+        reloadKeepingSelection()
+    }
+
+    private func reloadKeepingSelection() {
+        let selected = outlineView.item(atRow: outlineView.selectedRow) as? LibraryNode
+        revealing = true
+        defer { revealing = false }
         outlineView.reloadData()
         emptyLabel.isHidden = !Library.shared.tree.roots.isEmpty
         restoreExpansion()
-    }
-
-    /// Applies what a disk refresh changed. Only folders on screen are edited in place; a
-    /// collapsed folder reloads when it is expanded. Unchanged folders keep their nodes, so
-    /// they stay expanded. The selection is the user's: it is put back if the edit dropped it,
-    /// never moved, and the view never scrolls.
-    func apply(_ changes: [TreeChange]) {
-        let selected = outlineView.item(atRow: outlineView.selectedRow) as? LibraryNode
-        revealing = true  // selection changes while rows are edited are never a request to open
-        defer { revealing = false }
-        outlineView.beginUpdates()
-        for change in changes where outlineView.isItemExpanded(change.parent) {
-            outlineView.removeItems(at: change.removed, inParent: change.parent, withAnimation: .effectFade)
-            outlineView.insertItems(at: change.inserted, inParent: change.parent, withAnimation: .effectFade)
-        }
-        outlineView.endUpdates()
-        // A renamed folder is a new node: expand it again if its new path is saved as expanded.
-        if changes.contains(where: { change in change.inserted.contains { change.parent.children?[$0].isDirectory == true } }) {
-            restoreExpansion()
-        }
-        if let selected, outlineView.item(atRow: outlineView.selectedRow) as? LibraryNode !== selected {
+        if let selected {
             let row = outlineView.row(forItem: selected)
             if row >= 0 { outlineView.selectRowIndexes([row], byExtendingSelection: false) }
         }
     }
 
-    /// Expands the folders saved as expanded (parents first) and drops saved paths that are
-    /// gone, so a folder deleted since the last launch is forgotten. Paths under a root that is
-    /// missing right now (an unmounted volume) are kept for when it returns.
+    /// Expands every section the user has not collapsed (sections start expanded).
     private func restoreExpansion() {
         restoring = true
         defer { restoring = false }
-        let nodes = expandedPaths.sorted { $0.count < $1.count }.compactMap { path in
-            Library.shared.tree.node(atPath: path).flatMap { $0.isDirectory ? $0 : nil }
-        }
-        nodes.forEach { outlineView.expandItem($0) }
-        let expanded = Set(nodes.map(\.path))
-        let roots = Library.shared.tree.roots
-        expandedPaths = expandedPaths.filter { path in
-            expanded.contains(path) || roots.contains {
-                (path == $0.path || path.hasPrefix($0.path + "/")) && !FileManager.default.fileExists(atPath: $0.path)
-            }
+        for section in visibleSections where !collapsedSections.contains(section.kind.rawValue) {
+            outlineView.expandItem(section)
         }
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
-        guard !restoring, let node = notification.userInfo?["NSObject"] as? LibraryNode,
-              !expandedPaths.contains(node.path) else { return }
-        expandedPaths.append(node.path)
+        guard !restoring, let section = notification.userInfo?["NSObject"] as? OrganizerSection else { return }
+        collapsedSections.removeAll { $0 == section.kind.rawValue }
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
-        guard !restoring, let node = notification.userInfo?["NSObject"] as? LibraryNode else { return }
-        expandedPaths.removeAll { $0 == node.path }
+        guard !restoring, let section = notification.userInfo?["NSObject"] as? OrganizerSection,
+              !collapsedSections.contains(section.kind.rawValue) else { return }
+        collapsedSections.append(section.kind.rawValue)
     }
 
-    /// Selects `url`'s row and scrolls to it. Deselects if `url` is nil, not in the library, or
-    /// (without `expandingAncestors`) inside a folder the user collapsed. Folders are expanded
-    /// only with `expandingAncestors`, which is for a document change, never a focus change.
-    /// Never opens anything.
-    func reveal(_ url: URL?, expandingAncestors: Bool = true) {
+    /// Selects the location that holds `url`'s file and scrolls to it, expanding Locations if the
+    /// user collapsed it. Deselects if `url` is nil or not in the library. Never fills the list.
+    func reveal(_ url: URL?) {
         loadViewIfNeeded()
         revealing = true
         defer { revealing = false }
-        guard let url, let node = Library.shared.tree.node(atPath: LibraryListing.canonicalPath(url)) else {
+        guard let url, var node = Library.shared.tree.node(atPath: LibraryListing.canonicalPath(url)) else {
             outlineView.deselectAll(nil)
             return
         }
-        var ancestors: [LibraryNode] = []
-        var parent = node.parent
-        while let p = parent { ancestors.insert(p, at: 0); parent = p.parent }
-        if expandingAncestors { ancestors.forEach { outlineView.expandItem($0) } }
+        while let parent = node.parent { node = parent }
+        // Opening Locations to show the row is not the user expanding it: their collapse stays saved.
+        restoring = true
+        outlineView.expandItem(OrganizerSection.all[0])
+        restoring = false
         let row = outlineView.row(forItem: node)
         guard row >= 0 else { outlineView.deselectAll(nil); return }
         outlineView.selectRowIndexes([row], byExtendingSelection: false)
@@ -157,7 +197,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// Right-click on a location row offers "Remove from Library"; other rows get no menu.
     func menuItems(forRow row: Int) -> [NSMenuItem] {
-        guard row >= 0, let node = outlineView.item(atRow: row) as? LibraryNode, node.parent == nil,
+        guard row >= 0, let node = outlineView.item(atRow: row) as? LibraryNode,
               let index = Library.shared.tree.roots.firstIndex(where: { $0 === node }) else { return [] }
         let item = NSMenuItem(title: "Remove from Library", action: #selector(removeLocation(_:)), keyEquivalent: "")
         item.target = self
@@ -176,39 +216,91 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     // MARK: NSOutlineViewDataSource
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        guard let node = item as? LibraryNode else { return Library.shared.tree.roots.count }
-        node.loadChildren()
-        return node.children?.count ?? 0
+        guard let item else { return visibleSections.count }
+        guard let section = item as? OrganizerSection else { return 0 }
+        return section.kind == .locations ? Library.shared.tree.roots.count : 1
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        guard let node = item as? LibraryNode else { return Library.shared.tree.roots[index] }
-        return node.children![index]
+        guard let section = item as? OrganizerSection else { return visibleSections[index] }
+        return section.kind == .locations ? Library.shared.tree.roots[index] : section.hint!
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        (item as? LibraryNode)?.isDirectory ?? false
+        item is OrganizerSection
     }
 
     // MARK: NSOutlineViewDelegate
 
-    /// The user selected a row: a folder fills the file list; a file opens (and its folder fills the list).
+    func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
+        item is OrganizerSection
+    }
+
+    /// Only a location can be selected; section titles and hints cannot.
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
+        item is LibraryNode
+    }
+
+    /// The user selected a location: its folder fills the file list.
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !revealing, let node = outlineView.item(atRow: outlineView.selectedRow) as? LibraryNode else { return }
-        onFolderSelected?(node.isDirectory ? node : node.parent)
-        if !node.isDirectory { onOpen?(node.url) }
+        onFolderSelected?(node)
+    }
+
+    /// A click on a location row, even the selected one, brings the list back to the location's top.
+    func locationClicked(row: Int) {
+        guard let node = outlineView.item(atRow: row) as? LibraryNode else { return }
+        onFolderSelected?(node)
+    }
+
+    @objc private func outlineClicked(_ sender: Any?) {
+        locationClicked(row: outlineView.clickedRow)
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
-        guard let node = item as? LibraryNode else { return nil }
-        let id = NSUserInterfaceItemIdentifier("cell")
-        let cell = outlineView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView ?? makeCell(id)
-        let icon = NSWorkspace.shared.icon(forFile: node.path)
-        icon.size = NSSize(width: 16, height: 16)
-        cell.imageView?.image = icon
-        let missing = node.parent == nil && !FileManager.default.fileExists(atPath: node.path)
-        cell.textField?.stringValue = missing ? node.name + " (missing)" : node.name
-        cell.textField?.textColor = missing ? .secondaryLabelColor : .labelColor
+        switch item {
+        case let section as OrganizerSection:
+            let cell = textCell("section")
+            cell.textField?.stringValue = section.title
+            cell.textField?.font = .systemFont(ofSize: 11, weight: .semibold)
+            cell.textField?.textColor = .secondaryLabelColor
+            return cell
+        case let hint as OrganizerHint:
+            let cell = textCell("hint")
+            cell.textField?.stringValue = hint.text
+            cell.textField?.font = .systemFont(ofSize: 11)
+            cell.textField?.textColor = .tertiaryLabelColor
+            return cell
+        case let node as LibraryNode:
+            let id = NSUserInterfaceItemIdentifier("cell")
+            let cell = outlineView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView ?? makeCell(id)
+            let icon = NSWorkspace.shared.icon(forFile: node.path)
+            icon.size = NSSize(width: 16, height: 16)
+            cell.imageView?.image = icon
+            let missing = !FileManager.default.fileExists(atPath: node.path)
+            cell.textField?.stringValue = missing ? node.name + " (missing)" : node.name
+            cell.textField?.textColor = missing ? .secondaryLabelColor : .labelColor
+            return cell
+        default:
+            return nil
+        }
+    }
+
+    private func textCell(_ identifier: String) -> NSTableCellView {
+        let id = NSUserInterfaceItemIdentifier(identifier)
+        if let cell = outlineView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView { return cell }
+        let cell = NSTableCellView()
+        cell.identifier = id
+        let text = NSTextField(labelWithString: "")
+        text.lineBreakMode = .byTruncatingTail
+        text.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(text)
+        cell.textField = text
+        NSLayoutConstraint.activate([
+            text.leadingAnchor.constraint(equalTo: cell.leadingAnchor),
+            text.trailingAnchor.constraint(equalTo: cell.trailingAnchor),
+            text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
         return cell
     }
 

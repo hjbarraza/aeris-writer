@@ -155,6 +155,11 @@ enum MainMenu {
             .separator(),
             sidebarToggle,
             item("Hide Organizer", #selector(LibrarySplitViewController.toggleOrganizer(_:))),
+            submenu("Organizer", [("Favorites", "favorites"), ("Smart Folders", "smartFolders"), ("Tags", "tags")].map { title, kind in
+                let i = item(title, #selector(AppDelegate.toggleOrganizerSection(_:)))
+                i.representedObject = kind
+                return i
+            }),
         ])
     }
 
