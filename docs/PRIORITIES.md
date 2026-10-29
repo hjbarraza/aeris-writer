@@ -102,7 +102,7 @@ publishing Musts). Done tickets are not listed.
 - M5-6 — Paste as conversation
 - M6-12 — Publish from the library
 
-## Could (later) (30)
+## Could (later) (32)
 
 - M1.5-4 — Live stats popover
 - M1.5-11 — Completion list follows the editor
@@ -134,6 +134,8 @@ publishing Musts). Done tickets are not listed.
 - M6-7 — Micro.blog
 - M6-10 — Browser sign-in for self-hosted WordPress and Micropub
 - M6-11 — Choose the blog
+- M2-32 — Renaming a file updates the links to it
+- M2-33 — Find and repair broken links
 
 ## Won't for v1 (2)
 

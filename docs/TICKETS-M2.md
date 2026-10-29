@@ -415,3 +415,26 @@ first line → the file appears there with no dialog; rename/trash/Get Info from
 `#tag` appears in Tags; a smart folder filters and Recents exists; ⇧⌘O finds a word
 inside another file and jumps to it; Back/Forward work for documents and the library; a
 Finder change shows live.
+
+- [ ] **M2-32 — Renaming a file updates the links to it.** When a file or folder is renamed
+  or moved inside Aeris Writer (M2-10, Save As, drag in the library), every Markdown link,
+  image link and wikilink to it in the library's files is updated to the new path, right
+  after the rename. Only the link targets change, byte for byte nothing else; each file
+  keeps its encoding and line endings; open documents update in place (undoable), closed
+  files are rewritten safely. A note under the list says "Updated links in N files" with
+  Undo, which restores both the name and the links (H, 2026-10-29).
+  *Verify:* A.md links to B.md and to img/x.png from two other files; rename B.md → C.md
+  → both links now point to C.md, nothing else in those files changed; move img → links
+  follow; Undo → names and links as before; a link inside a code block is left alone.
+
+- [ ] **M2-33 — Find and repair broken links.** Edit ▸ Find Broken Links… scans the library
+  for links whose target doesn't exist (files, images, #headings, wikilinks) and shows
+  them in a sheet: file, line, the broken target and a suggested replacement (the file
+  with the same name elsewhere in the library, or the closest name; none if no good
+  match). The user approves one by one, approves all, edits a suggestion, or cancels;
+  nothing changes until approved. Same safe rewriting as M2-32 (H, 2026-10-29).
+  *Verify:* a library with three broken links (moved file, renamed image, missing
+  heading) → the sheet lists all three with sensible suggestions; approve one → only that
+  link changes; Approve All → the rest; Cancel → nothing changes; no false positives for
+  web links or links inside code.
+
