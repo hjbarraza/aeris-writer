@@ -12,20 +12,18 @@ Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` gre
   Sidebar collapsible (⌘⌥S), state restored per window.
   *Verify:* toggle sidebar; relaunch → same layout.
 
-- [ ] **M2-1 — Library locations.** `Library` model: list of root folders ("Locations")
+- [x] **M2-1 — Library locations.** `Library` model: list of root folders ("Locations")
   stored as `URL` bookmark data in Application Support (no sandbox, so no
   security scoping needed). "Add Location…" open
   panel. Tree enumerated lazily (folders + `.md/.markdown/.txt`), shown in
   `NSOutlineView`.
   *Verify:* add a folder → its tree appears; relaunch → still there (bookmark resolves).
-  *Status 2026-10-29: built; on screen a stored location loads at launch. Add via the
-  open panel and expanding the tree not yet checked on screen.*
 
-- [ ] **M2-2 — Open from sidebar.** Click a file → opens in the editor (reuse window
+- [x] **M2-2 — Open from sidebar.** Click a file → opens in the editor (reuse window
   or tab); the sidebar selection follows the active document.
   *Verify:* click file A then B → editor shows B; ⌘S saves B; sidebar highlights B.
 
-- [ ] **M2-3 — Live refresh.** Watch each location with `FSEvents` (or
+- [x] **M2-3 — Live refresh.** Watch each location with `FSEvents` (or
   `DispatchSource` per folder); coalesce; re-enumerate the changed subtree only.
   *Verify:* create/rename/delete a file in Finder → sidebar reflects it within 1 s.
 
