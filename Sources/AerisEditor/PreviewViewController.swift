@@ -14,6 +14,7 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
     /// hit the old or blank page and be lost when the load commits, so it waits here.
     private var pageReady = false
     private var pendingBody: String?
+    private var pendingLang: String?
     /// The latest page load: an earlier one's late didFinish must not mark this page ready.
     private var pageNav: WKNavigation?
     private var observer: NSObjectProtocol?
@@ -71,6 +72,24 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
         view = webView
     }
 
+    /// False while the preview is hidden: nothing renders then. Showing it renders at once
+    /// if anything changed meanwhile.
+    var isActive = true {
+        didSet {
+            guard isActive, !oldValue else { return }
+            if stale { stale = false; render() }
+            applySync()   // the editor may have scrolled while the preview was hidden
+        }
+    }
+    private var stale = false
+
+    /// View > Reload Preview: loads the page again from the document's current text.
+    func reload() {
+        loaded = false
+        startEpoch()
+        render()
+    }
+
     private func scheduleRender() {
         debounce?.invalidate()
         debounce = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
@@ -85,19 +104,20 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
 
     private func render() {
         guard let document else { return }
+        guard isActive else { stale = true; return }
         guard !rendering else { renderRequested = true; return }
         rendering = true
         let gen = generation
         let text = document.textStorage.string
         Task { [weak self] in
-            let body = await Task.detached(priority: .userInitiated) {
-                MarkdownCore.html(text, sourceLines: true)
+            let (body, lang) = await Task.detached(priority: .userInitiated) {
+                (MarkdownCore.previewBody(text, sourceLines: true), MarkdownCore.language(of: text))
             }.value
             guard let self else { return }
             self.rendering = false
             if gen > self.shownGeneration {
                 self.shownGeneration = gen
-                self.show(body)
+                self.show(body, lang: lang)
             }
             // Re-render only if the text moved on since this render's snapshot.
             if self.renderRequested, gen != self.generation {
@@ -107,7 +127,7 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
         }
     }
 
-    private func show(_ body: String) {
+    private func show(_ body: String, lang: String?) {
         guard let document else { return }
         if !loaded {
             loaded = true
@@ -118,19 +138,26 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
             pageURL = base ?? URL(string: "about:blank")
             ownLoadsPending += 1
             pageNav = webView.loadHTMLString(
-                MarkdownCore.htmlDocument(body: body, title: title), baseURL: base)
+                MarkdownCore.htmlDocument(body: body, title: title, lang: lang), baseURL: base)
         } else if !pageReady {
             pendingBody = body
+            pendingLang = lang
         } else {
-            setBody(body)
+            setBody(body, lang: lang)
         }
     }
 
-    private func setBody(_ body: String) {
-        // JSON-encode the string so it is a valid, fully escaped JS literal.
+    private func setBody(_ body: String, lang: String?) {
+        // JSON-encode the strings so they are valid, fully escaped JS literals.
         guard let data = try? JSONEncoder().encode(body),
-              let literal = String(data: data, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("document.body.innerHTML = \(literal)")
+              let literal = String(data: data, encoding: .utf8),
+              let langData = try? JSONEncoder().encode(lang ?? ""),
+              let langLiteral = String(data: langData, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("""
+            document.body.innerHTML = \(literal);
+            { const lang = \(langLiteral);
+              if (lang) document.documentElement.lang = lang; else document.documentElement.removeAttribute('lang'); }
+            """)
         applySync()  // queued after the swap, so it measures the new body
     }
 
@@ -169,7 +196,7 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
         ownLoadsPending = 0  // a superseded load never reports; don't let its credit linger
         if let body = pendingBody {
             pendingBody = nil
-            setBody(body)  // applies the sync too
+            setBody(body, lang: pendingLang)  // applies the sync too
         } else {
             applySync()
         }
@@ -309,6 +336,8 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
                 window.tabbingMode = asTab ? .preferred : .disallowed
                 if asTab, let host { host.addTabbedWindow(window, ordered: .above) }
                 window.makeKeyAndOrderFront(nil)
+                // Shown on its own; from now on Window > Merge All Windows may gather it.
+                if !asTab { window.tabbingMode = .preferred }
             }
         }
     }

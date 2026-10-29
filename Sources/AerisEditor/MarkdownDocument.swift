@@ -397,12 +397,21 @@ class MarkdownDocument: NSDocument {
         MainActor.assumeIsolated { savedState = state }
     }
 
+    private static func textViews(in view: NSView?) -> [NSTextView] {
+        guard let view else { return [] }
+        return (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap { textViews(in: $0) }
+    }
+
     /// Safe-save writes a new file and swaps it in, which can drop xattrs set on the
     /// old one, so the state is written after the save completes, to the final file.
     override func save(
         to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType,
         completionHandler: @escaping (Error?) -> Void
     ) {
+        // Close the open typing undo group first: otherwise keystrokes after this save are folded
+        // into an action registered before it, the change count never rises again, and close or
+        // quit drops them (Apple's documented duty for save overrides).
+        for wc in windowControllers { Self.textViews(in: wc.window?.contentView).forEach { $0.breakUndoCoalescing() } }
         // An autosave never writes while a disk change question is open, nor over a file
         // changed or deleted elsewhere that this document hasn't noticed yet (it asks first),
         // so a deleted file is only re-created after Keep.

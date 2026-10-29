@@ -94,7 +94,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   "Yesterday"; select another row → open marker stays on the open file; a 2 000-file
   folder scrolls smoothly.
 
-- [ ] **M2-6a — Relaunch returns to where you were.** On relaunch each restored window
+- [x] **M2-6a — Relaunch returns to where you were.** On relaunch each restored window
   shows the same folder in the file list it showed at quit, with the same file
   selected, and the organizer keeps which folders were expanded. Works after a plain ⌘Q
   with macOS's default "close windows when quitting" setting: the state is stored by the
@@ -129,6 +129,15 @@ filter field at the bottom. Editor (right), with the preview beside it.
 
 ## Writing into the library
 
+- [ ] **M2-7a — Tree folders open on a click and come back after relaunch.** In Tree view a
+  single click on a folder row opens it in place (a second click closes it); the
+  disclosure triangle, arrows, Return and double-click keep working. The folders open in
+  the file list's tree are part of the stored window state, so a relaunch shows the same
+  open folders with the same file selected (H, 2026-10-29).
+  *Verify:* click a closed folder → it opens and its files show; click again → closes;
+  open two nested folders, select a file inside, store and restore the session → same
+  folders open, same file selected; a folder deleted since → skipped, no error.
+
 - [ ] **M2-8 — New drafts save themselves into the folder.** With a library folder
   shown, File ▸ New (⌘N) opens a draft that belongs to that folder. While untitled the
   window title follows the first line. When the name settles (Return after a non-empty
@@ -157,15 +166,15 @@ filter field at the bottom. Editor (right), with the preview beside it.
   enters rename mode), New Folder with Selection (several rows selected), Duplicate
   ("Name copy", then "Name copy 2"), Rename (inline; name selected without extension;
   Return commits, Esc restores, empty or unchanged does nothing), Move to Trash (no
-  prompt), and with Option held **Delete Immediately…** (confirmation naming the item,
-  or the count when several), Show in Finder, Share ▸ (system share menu), Sort By ▸,
+  prompt; the only way files leave — the app never deletes permanently, H 2026-10-29),
+  Show in Finder, Share ▸ (system share menu), Sort By ▸,
   View Options ▸. Multi-selection everywhere. All through `FileManager` with file
   coordination, off the main thread. Failures of a multi-item operation are collected
   into one alert sheet. An open document survives a rename or move.
   *Verify:* right-click a file inside a subfolder → New File → appears in that
   subfolder in rename mode; rename → Esc → old name, disk untouched; rename to "" → no
-  change; Move to Trash → in Finder's Trash, no prompt; Option → Delete Immediately →
-  confirmation → gone; trash 3 files where one is locked → one alert listing it, the
+  change; Move to Trash → in Finder's Trash, no prompt; no menu offers a permanent
+  delete; trash 3 files where one is locked → one alert listing it, the
   other two trashed; rename the open file → editor keeps the document, title updates.
 
 - [ ] **M2-11 — Get Info popover.** Get Info (context menu, File menu ⌥⌘I; ⌘I stays Italic) opens an
@@ -319,7 +328,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   still reaches B; trash C → skipped; select folder X, tag #draft, folder Y → Back in
   Library → #draft, Back → X; relaunch → Back still works.
 
-- [ ] **M2-26 — Tabs.** Native window tabs. Row context menu: Open in New Tab, Open in
+- [x] **M2-26 — Tabs.** Native window tabs. Row context menu: Open in New Tab, Open in
   New Window; ⌘-click a row opens in a new tab, ⌥⌘-click in a new window. Opening a
   document already open in another tab selects that tab. The tab bar's "+" makes a new
   draft in the current folder (M2-8). View ▸ Show Tab Bar, Show All Tabs (⇧⌘\). Library
