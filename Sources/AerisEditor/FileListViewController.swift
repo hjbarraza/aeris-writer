@@ -206,7 +206,8 @@ final class RowInfo: NSObject {
 /// title that names the folder. Double-click or Return on a folder row opens it here; the
 /// button left of the title and ⌘↑ go back up. Rows are the folder's own `LibraryNode`
 /// children, so the live refresh that edits the tree updates this list too.
-final class FileListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+final class FileListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
+                                    NSMenuDelegate, NSMenuItemValidation, NSTextFieldDelegate {
     let tableView = FileListTableView()
     let titleLabel = NSTextField(labelWithString: "")
     let upButton = NSButton(image: NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Enclosing Folder")!,
@@ -265,7 +266,11 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.onEnclosingFolder = { [weak self] in self?.goUp() }
         tableView.onExpand = { [weak self] in self?.expandSelectedFolder(true) ?? false }
         tableView.onCollapse = { [weak self] in self?.expandSelectedFolder(false) ?? false }
-        tableView.menu = FileListMenu.shared.makeMenu()
+        tableView.allowsMultipleSelection = true
+        let contextMenu = NSMenu()
+        contextMenu.delegate = self  // filled for the clicked row in menuNeedsUpdate
+        tableView.menu = contextMenu
+        menuNeedsUpdate(contextMenu)
         NotificationCenter.default.addObserver(self, selector: #selector(optionsChanged), name: FileListSettings.didChange, object: nil)
         sortBar.target = self
         sortBar.action = #selector(sortBarClicked(_:))
@@ -438,6 +443,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     /// Rebuilds and reloads the rows, putting the selection back on the same node; never scrolls or opens anything.
     private func reloadRows(onlyIfOrderChanged: Bool = false) {
+        // A reload would take away the name being edited; it runs once the rename ends.
+        if renamingNode != nil { reloadAfterRename = true; return }
         let selected = node(atRow: tableView.selectedRow)
         let old = rows
         rebuildRows()
@@ -588,15 +595,271 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     /// A row was clicked: a file opens and the editor takes the keyboard.
     @objc private func rowClicked(_ sender: Any?) {
-        guard let node = node(atRow: tableView.selectedRow), !node.isDirectory else { return }
+        guard tableView.selectedRowIndexes.count == 1, let node = node(atRow: tableView.selectedRow), !node.isDirectory else { return }
         onOpen?(node.url, true)
     }
 
     /// The selection moved (arrow keys, or the click's own selection): a file opens, focus stays.
     func tableViewSelectionDidChange(_ notification: Notification) {
         if !revealing { onStateChange?() }
-        guard !revealing, let node = node(atRow: tableView.selectedRow), !node.isDirectory else { return }
+        // Several rows selected: nothing opens.
+        guard !revealing, tableView.selectedRowIndexes.count == 1,
+              let node = node(atRow: tableView.selectedRow), !node.isDirectory else { return }
         onOpen?(node.url, false)
+    }
+
+    // MARK: File operations
+
+    /// What a file command acts on: the right-clicked row (or the selection, if the click was in
+    /// it) for the context menu, the selection for the File menu. `clicked` decides where new
+    /// items go: into a clicked folder, beside a clicked file, else into the folder on screen.
+    private final class Targets: NSObject {
+        let nodes: [LibraryNode]
+        let clicked: LibraryNode?
+        init(nodes: [LibraryNode], clicked: LibraryNode?) { self.nodes = nodes; self.clicked = clicked }
+    }
+
+    /// The file commands, routed here from the File menu whatever has focus in the window.
+    static let fileActions: Set<Selector> = [
+        #selector(newFile(_:)), #selector(newFolder(_:)), #selector(newFolderWithSelection(_:)),
+        #selector(renameItem(_:)), #selector(duplicateItems(_:)), #selector(trashItems(_:)),
+        #selector(deleteItemsImmediately(_:)), #selector(showItemsInFinder(_:)),
+    ]
+
+    /// The row whose name is being edited, and its text field.
+    private(set) var renamingNode: LibraryNode?
+    private(set) var renameField: NSTextField?
+    private var reloadAfterRename = false
+    private var sharePicker: NSSharingServicePicker?
+
+    private func targets(_ sender: Any?) -> Targets {
+        if let targets = (sender as? NSMenuItem)?.representedObject as? Targets { return targets }
+        return Targets(nodes: tableView.selectedRowIndexes.compactMap(node(atRow:)), clicked: nil)
+    }
+
+    private func destination(_ targets: Targets) -> LibraryNode? {
+        guard let clicked = targets.clicked else { return folder }
+        return clicked.isDirectory ? clicked : clicked.parent
+    }
+
+    /// The context menu for a right-click on `row` (-1: the empty area).
+    func contextMenu(forClickedRow row: Int) -> NSMenu {
+        let clicked = node(atRow: row)
+        let selection = tableView.selectedRowIndexes
+        let nodes = clicked == nil ? [] : selection.contains(row) ? selection.compactMap(node(atRow:)) : [clicked!]
+        let targets = Targets(nodes: nodes, clicked: clicked)
+        let menu = NSMenu()
+        func add(_ title: String, _ action: Selector, alternate: Bool = false) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = targets
+            if alternate { item.keyEquivalentModifierMask = .option; item.isAlternate = true }
+            menu.addItem(item)
+        }
+        add("New File", #selector(newFile(_:)))
+        add("New Folder", #selector(newFolder(_:)))
+        add("New Folder with Selection", #selector(newFolderWithSelection(_:)))
+        menu.addItem(.separator())
+        add("Rename", #selector(renameItem(_:)))
+        add("Duplicate", #selector(duplicateItems(_:)))
+        add("Move to Trash", #selector(trashItems(_:)))
+        add("Delete Immediately…", #selector(deleteItemsImmediately(_:)), alternate: true)
+        menu.addItem(.separator())
+        add("Show in Finder", #selector(showItemsInFinder(_:)))
+        if !nodes.isEmpty {
+            let picker = NSSharingServicePicker(items: nodes.map(\.url))
+            sharePicker = picker
+            menu.addItem(picker.standardShareMenuItem)
+        }
+        menu.addItem(.separator())
+        FileListMenu.shared.makeItems().forEach(menu.addItem)
+        return menu
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === tableView.menu else { return }
+        let fresh = contextMenu(forClickedRow: tableView.clickedRow)
+        menu.removeAllItems()
+        for item in fresh.items {
+            fresh.removeItem(item)
+            menu.addItem(item)
+        }
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let t = targets(item)
+        switch item.action {
+        case #selector(newFile(_:)), #selector(newFolder(_:)): return destination(t) != nil
+        case #selector(newFolderWithSelection(_:)): return t.nodes.count > 1
+        case #selector(renameItem(_:)): return t.nodes.count == 1
+        case #selector(duplicateItems(_:)), #selector(trashItems(_:)), #selector(deleteItemsImmediately(_:)),
+             #selector(showItemsInFinder(_:)): return !t.nodes.isEmpty
+        default: return true
+        }
+    }
+
+    @objc func newFile(_ sender: Any?) { create(in: destination(targets(sender)), base: "Untitled", ext: "md", isFolder: false) }
+    @objc func newFolder(_ sender: Any?) { create(in: destination(targets(sender)), base: "untitled folder", ext: "", isFolder: true) }
+
+    private func create(in parent: LibraryNode?, base: String, ext: String, isFolder: Bool) {
+        guard let parent else { return }
+        let dir = parent.url
+        FileOperations.run({
+            FileOperations.each([FileOperations.freeURL(in: dir, base: base, ext: ext)]) { url in
+                if isFolder { try FileOperations.createFolder(at: url) } else { try FileOperations.createFile(at: url) }
+                return url
+            }
+        }) { [weak self] outcome in
+            self?.finish(outcome, failure: "The new item could not be made.", changed: [parent], select: true, rename: true)
+        }
+    }
+
+    @objc func newFolderWithSelection(_ sender: Any?) {
+        let nodes = targets(sender).nodes
+        guard nodes.count > 1, let parent = nodes[0].parent else { return }
+        let dir = parent.url, urls = nodes.map(\.url)
+        FileOperations.run({
+            let folder = FileOperations.freeURL(in: dir, base: "New Folder With Items", ext: "")
+            var outcome = FileOperations.each([folder]) { try FileOperations.createFolder(at: $0); return $0 }
+            guard outcome.failures.isEmpty else { return outcome }
+            outcome.failures = FileOperations.each(urls) { try FileOperations.move($0, to: folder.appending(path: $0.lastPathComponent)); return nil }.failures
+            return outcome
+        }) { [weak self] outcome in
+            self?.finish(outcome, failure: "Some items could not be moved to the new folder.",
+                         changed: [parent] + nodes.compactMap(\.parent), select: true, rename: true)
+        }
+    }
+
+    @objc func duplicateItems(_ sender: Any?) {
+        let nodes = targets(sender).nodes
+        FileOperations.run({ [urls = nodes.map(\.url)] in
+            FileOperations.each(urls) { url in
+                let copy = FileOperations.freeURL(in: url.deletingLastPathComponent(),
+                                                  base: url.deletingPathExtension().lastPathComponent + " copy", ext: url.pathExtension)
+                try FileOperations.copy(url, to: copy)
+                return copy
+            }
+        }) { [weak self] outcome in
+            self?.finish(outcome, failure: "Some items could not be duplicated.", changed: nodes.compactMap(\.parent), select: true)
+        }
+    }
+
+    @objc func trashItems(_ sender: Any?) {
+        let nodes = targets(sender).nodes
+        FileOperations.run({ [urls = nodes.map(\.url)] in FileOperations.each(urls, FileOperations.trash) }) { [weak self] outcome in
+            self?.finish(outcome, failure: "Some items could not be moved to the Trash.", changed: nodes.compactMap(\.parent))
+        }
+    }
+
+    /// Option-Move to Trash: deletes for good, once the user confirms.
+    @objc func deleteItemsImmediately(_ sender: Any?) {
+        let nodes = targets(sender).nodes
+        guard !nodes.isEmpty else { return }
+        let what = nodes.count == 1 ? "“\(nodes[0].name)”" : "these \(nodes.count) items"
+        FileOperations.confirmDelete("Are you sure you want to delete \(what) immediately?", view.window) { [weak self] delete in
+            guard delete else { return }
+            FileOperations.run({ [urls = nodes.map(\.url)] in FileOperations.each(urls) { try FileOperations.delete($0); return nil } }) { outcome in
+                self?.finish(outcome, failure: "Some items could not be deleted.", changed: nodes.compactMap(\.parent))
+            }
+        }
+    }
+
+    @objc func showItemsInFinder(_ sender: Any?) {
+        NSWorkspace.shared.activateFileViewerSelecting(targets(sender).nodes.map(\.url))
+    }
+
+    /// After an operation: re-lists the folders it touched, selects what it made (bringing it on
+    /// screen), optionally starts renaming it, and shows every failure in one alert.
+    private func finish(_ outcome: FileOperations.Outcome, failure: String, changed: [LibraryNode],
+                        select: Bool = false, rename: Bool = false) {
+        Library.shared.folderChanged(Set(changed.map(\.path)).map { FolderChange(path: $0, mustScanSubDirs: false, rootChanged: false) })
+        let made = outcome.made.map(LibraryListing.canonicalPath)
+        if select, let first = made.first {
+            expandAncestors(of: first)
+            if !rows.contains(where: { $0.path == first }), let parent = Library.shared.tree.node(atPath: first)?.parent {
+                showFolder(parent)
+                onNavigate?()
+            }
+            let indexes = IndexSet(made.compactMap { path in rows.firstIndex { $0.path == path } })
+            revealing = true
+            tableView.selectRowIndexes(indexes, byExtendingSelection: false)
+            revealing = false
+            if let row = indexes.first { tableView.scrollRowToVisible(row) }
+            if rename, made.count == 1, let node = rows.first(where: { $0.path == first }) { beginRename(node) }
+        }
+        if !outcome.failures.isEmpty { FileOperations.presentFailures(failure, outcome.failures, view.window) }
+    }
+
+    @objc func renameItem(_ sender: Any?) {
+        guard let node = targets(sender).nodes.first else { return }
+        beginRename(node)
+    }
+
+    /// Edits the row's name in place, the name selected without its extension.
+    private func beginRename(_ node: LibraryNode) {
+        finishRename(commit: true)
+        guard let row = rows.firstIndex(where: { $0 === node }) else { return }
+        revealing = true
+        tableView.selectRowIndexes([row], byExtendingSelection: false)
+        revealing = false
+        tableView.scrollRowToVisible(row)
+        guard let field = (tableView.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView)?.textField else { return }
+        renamingNode = node
+        renameField = field
+        field.stringValue = node.name
+        field.isEditable = true
+        field.delegate = self
+        view.window?.makeFirstResponder(field)
+        let base = node.isDirectory ? node.name : (node.name as NSString).deletingPathExtension
+        field.currentEditor()?.selectedRange = NSRange(location: 0, length: (base as NSString).length)
+    }
+
+    /// Return commits, Esc restores; leaving the field (a click elsewhere) commits too.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard control === renameField else { return false }
+        switch selector {
+        case #selector(NSResponder.cancelOperation(_:)): finishRename(commit: false)
+        case #selector(NSResponder.insertNewline(_:)): finishRename(commit: true)
+        default: return false
+        }
+        return true
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        if notification.object as? NSTextField === renameField { finishRename(commit: true) }
+    }
+
+    /// Ends the rename. An empty or unchanged name does nothing; the row shows its name as before
+    /// until the disk says otherwise.
+    private func finishRename(commit: Bool) {
+        guard let node = renamingNode, let field = renameField else { return }
+        let typed = field.stringValue
+        let editing = field.currentEditor() != nil
+        renamingNode = nil
+        renameField = nil
+        field.abortEditing()
+        field.delegate = nil
+        field.isEditable = false
+        let showExtension = node.isDirectory || AppDefaults.store.bool(forKey: Self.showExtensionsKey)
+        field.stringValue = showExtension ? node.name : (node.name as NSString).deletingPathExtension
+        // Return or Esc gives the keyboard back to the list; a click elsewhere already moved it.
+        if editing { view.window?.makeFirstResponder(tableView) }
+        if reloadAfterRename {
+            reloadAfterRename = false
+            reloadRows()
+        }
+        guard commit, !typed.isEmpty, typed != node.name, let parent = node.parent else { return }
+        guard !typed.contains("/") else {
+            let error = CocoaError(.fileWriteInvalidFileName, userInfo: [NSLocalizedDescriptionKey: "A name can’t contain “/”."])
+            return FileOperations.presentFailures("“\(node.name)” could not be renamed.", [.init(url: node.url, error: error)], view.window)
+        }
+        let source = node.url, target = source.deletingLastPathComponent().appending(path: typed)
+        let wasOpen = openPath == node.path
+        FileOperations.run({ FileOperations.each([source]) { try FileOperations.move($0, to: target); return target } }) { [weak self] outcome in
+            guard let self else { return }
+            if wasOpen, let moved = outcome.made.first { setOpenPath(LibraryListing.canonicalPath(moved)) }
+            finish(outcome, failure: "“\(node.name)” could not be renamed.", changed: [parent], select: true)
+        }
     }
 
     // MARK: NSTableViewDataSource / Delegate

@@ -20,6 +20,21 @@ enum MainMenu {
             .separator(),
             item("Add Location…", #selector(AppDelegate.addLocation(_:))),
             .separator(),
+            // File list commands: they act on the list's selection (FileListViewController).
+            item("New File", #selector(FileListViewController.newFile(_:))),
+            item("New Folder", #selector(FileListViewController.newFolder(_:))),
+            item("New Folder with Selection", #selector(FileListViewController.newFolderWithSelection(_:))),
+            item("Rename", #selector(FileListViewController.renameItem(_:))),
+            item("Duplicate", #selector(FileListViewController.duplicateItems(_:))),
+            item("Move to Trash", #selector(FileListViewController.trashItems(_:))),
+            {
+                let i = item("Delete Immediately…", #selector(FileListViewController.deleteItemsImmediately(_:)))
+                i.keyEquivalentModifierMask = .option
+                i.isAlternate = true
+                return i
+            }(),
+            item("Show in Finder", #selector(FileListViewController.showItemsInFinder(_:))),
+            .separator(),
             item("Close", #selector(NSWindow.performClose(_:)), "w"),
             item("Save", #selector(NSDocument.save(_:)), "s"),
             item("Save As…", #selector(NSDocument.saveAs(_:)), "S"),

@@ -94,6 +94,7 @@ enum SelfCheck {
         anyTextFileChecks()
         hashtagMenuChecks()
         renumberChecks()
+        fileOperationChecks()
         check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
         try? FileManager.default.removeItem(at: scratch)
         cleanStandardDefaults()
@@ -124,6 +125,158 @@ enum SelfCheck {
         check(wc.editorForTesting.completion.isVisible, "add hashtag: the tag list opens")
         wc.editorForTesting.completion.hide()
         doc.close()
+    }
+
+    /// File operations from the file list's context menu (M2-10), against a fake Trash in scratch.
+    @MainActor static func fileOperationChecks() {
+        let fm = FileManager.default
+        let dc = NSDocumentController.shared
+        let loc = scratch.appending(path: "FileOps"), trash = scratch.appending(path: "FileOpsTrash")
+        try? fm.createDirectory(at: loc.appending(path: "sub"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: trash, withIntermediateDirectories: true)
+        for name in ["open.md", "a.md", "b.md", "c.md", "d.md", "e.md", "locked.md", "x.md", "y.md", "sub/inner.md"] {
+            try? "text \(name)".write(to: loc.appending(path: name), atomically: true, encoding: .utf8)
+        }
+        try? fm.setAttributes([.immutable: true], ofItemAtPath: loc.appending(path: "locked.md").path)
+        defer { try? fm.setAttributes([.immutable: false], ofItemAtPath: loc.appending(path: "locked.md").path) }
+
+        let previousTrash = FileOperations.trashItem, previousInTrash = MarkdownDocument.isInTrash
+        let previousFailures = FileOperations.presentFailures, previousConfirm = FileOperations.confirmDelete
+        FileOperations.trashItem = { url in
+            let to = trash.appending(path: url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: to)
+            return to
+        }
+        MarkdownDocument.isInTrash = { $0.path.contains("/FileOpsTrash/") }
+        var alerts: [(title: String, names: [String])] = [], confirms: [String] = []
+        FileOperations.presentFailures = { title, failures, _ in alerts.append((title, failures.map(\.url.lastPathComponent))) }
+        FileOperations.confirmDelete = { message, _, answer in confirms.append(message); answer(true) }
+        defer {
+            FileOperations.trashItem = previousTrash; MarkdownDocument.isInTrash = previousInTrash
+            FileOperations.presentFailures = previousFailures; FileOperations.confirmDelete = previousConfirm
+        }
+        Library.shared.addLocation(loc)
+        defer { Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1) }
+
+        let doc = try! dc.makeDocument(withContentsOf: loc.appending(path: "open.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        defer { wc.close() }
+        let list = wc.fileList, table = list.tableView
+        func row(_ path: String) -> Int? {
+            (0..<table.numberOfRows).first { list.node(atRow: $0)?.url.path(percentEncoded: false).hasSuffix("FileOps/" + path) == true }
+        }
+        func exists(_ path: String) -> Bool { fm.fileExists(atPath: loc.appending(path: path).path) }
+        func listing() -> [String] { ((try? fm.subpathsOfDirectory(atPath: loc.path)) ?? []).sorted() }
+        /// Right-clicks `paths`' rows (the first is the clicked one; nil is the empty area) and picks `title`.
+        @discardableResult func choose(_ title: String, on paths: [String]?) -> Bool {
+            let rows = (paths ?? []).compactMap(row)
+            if rows.count > 1 { table.selectRowIndexes(IndexSet(rows), byExtendingSelection: false) }
+            let menu = list.contextMenu(forClickedRow: rows.first ?? -1)
+            menu.update()
+            guard let item = menu.items.first(where: { $0.title == title }), item.isEnabled, let action = item.action else {
+                check(false, "file ops: the context menu offers an enabled “\(title)”")
+                return false
+            }
+            return NSApp.sendAction(action, to: item.target, from: item)
+        }
+        func editor() -> NSTextView? { list.renameField?.currentEditor() as? NSTextView }
+        func press(_ selector: Selector) { editor()?.doCommand(by: selector) }
+        _ = wait(timeout: 3) { row("sub") != nil }
+        list.restoreSelection(path: LibraryListing.canonicalPath(loc.appending(path: "sub/inner.md")))  // opens "sub" in the tree
+
+        // New File on a file inside a subfolder: the file appears in that subfolder, in rename mode.
+        let before = listing()
+        choose("New File", on: ["sub/inner.md"])
+        check(wait(timeout: 3) { exists("sub/Untitled.md") && list.renamingNode?.name == "Untitled.md" }
+              && editor()?.string == "Untitled.md" && editor()?.selectedRange() == NSRange(location: 0, length: 8),
+              "file ops: New File on a file in a subfolder makes sub/Untitled.md in rename mode, name selected without extension")
+        // Esc restores the old name; the disk is untouched.
+        press(#selector(NSResponder.cancelOperation(_:)))
+        check(list.renamingNode == nil && listing() == (before + ["sub/Untitled.md"]).sorted()
+              && (table.view(atColumn: 0, row: row("sub/Untitled.md") ?? 0, makeIfNecessary: true) as? FileCellView)?.nameLabel.stringValue == "Untitled",
+              "file ops: Esc in rename restores the old name and leaves the disk alone")
+        // Renamed to "" or to the same name: nothing changes.
+        let afterNew = listing()
+        for typed in ["", "Untitled.md"] {
+            choose("Rename", on: ["sub/Untitled.md"])
+            editor()?.string = typed
+            press(#selector(NSResponder.insertNewline(_:)))
+            _ = wait(timeout: 0.5) { false }
+            check(list.renamingNode == nil && listing() == afterNew && alerts.isEmpty, "file ops: rename to \(typed.debugDescription) changes nothing")
+        }
+        // Return commits a real rename.
+        choose("Rename", on: ["sub/Untitled.md"])
+        editor()?.string = "Notes.md"
+        press(#selector(NSResponder.insertNewline(_:)))
+        check(wait(timeout: 3) { exists("sub/Notes.md") && !exists("sub/Untitled.md") && row("sub/Notes.md") != nil },
+              "file ops: Return commits the rename on disk and in the list")
+
+        // A rename never overwrites: the clash is reported and both files stay.
+        choose("Rename", on: ["a.md"])
+        editor()?.string = "b.md"
+        press(#selector(NSResponder.insertNewline(_:)))
+        check(wait(timeout: 3) { alerts.count == 1 } && exists("a.md")
+              && (try? String(contentsOf: loc.appending(path: "b.md"), encoding: .utf8)) == "text b.md",
+              "file ops: renaming onto an existing name reports it and overwrites nothing")
+        alerts.removeAll()
+
+        // Duplicate: "Name copy", then "Name copy 2".
+        choose("Duplicate", on: ["a.md"])
+        check(wait(timeout: 3) { exists("a copy.md") }, "file ops: Duplicate makes “a copy.md”")
+        choose("Duplicate", on: ["a.md"])
+        check(wait(timeout: 3) { exists("a copy 2.md") }, "file ops: a second Duplicate makes “a copy 2.md”")
+
+        // Move to Trash: no prompt.
+        choose("Move to Trash", on: ["b.md"])
+        check(wait(timeout: 3) { !exists("b.md") && fm.fileExists(atPath: trash.appending(path: "b.md").path) } && confirms.isEmpty,
+              "file ops: Move to Trash moves the file to the Trash without asking")
+        // Delete Immediately (the Option alternate) asks, naming the item, then deletes.
+        choose("Delete Immediately…", on: ["c.md"])
+        check(wait(timeout: 3) { !exists("c.md") } && !fm.fileExists(atPath: trash.appending(path: "c.md").path)
+              && confirms.count == 1 && confirms[0].contains("“c.md”"),
+              "file ops: Delete Immediately asks, naming the item, then deletes (\(confirms))")
+        choose("Delete Immediately…", on: ["x.md", "y.md"])
+        check(confirms.count == 2 && confirms[1].contains("2 items") && wait(timeout: 3) { !exists("x.md") && !exists("y.md") },
+              "file ops: Delete Immediately on several rows names the count (\(confirms))")
+
+        // Trash three files, one locked: one alert lists it, the other two are trashed.
+        choose("Move to Trash", on: ["d.md", "locked.md", "e.md"])
+        check(wait(timeout: 3) { alerts.count == 1 } && alerts[0].names == ["locked.md"] && exists("locked.md")
+              && !exists("d.md") && !exists("e.md"),
+              "file ops: trashing 3 files with one locked shows one alert listing it and trashes the others (\(alerts))")
+        alerts.removeAll()
+
+        // New Folder with Selection.
+        try? "1".write(to: loc.appending(path: "p.md"), atomically: true, encoding: .utf8)
+        try? "2".write(to: loc.appending(path: "q.md"), atomically: true, encoding: .utf8)
+        Library.shared.folderChanged([FolderChange(path: list.folder!.path, mustScanSubDirs: false, rootChanged: false)])
+        choose("New Folder with Selection", on: ["p.md", "q.md"])
+        check(wait(timeout: 3) { exists("New Folder With Items/p.md") && exists("New Folder With Items/q.md") }
+              && wait(timeout: 3) { list.renamingNode?.name == "New Folder With Items" },
+              "file ops: New Folder with Selection moves the rows into a new folder in rename mode")
+        press(#selector(NSResponder.cancelOperation(_:)))
+        // New Folder on the empty area: in the shown folder, in rename mode.
+        choose("New Folder", on: nil)
+        check(wait(timeout: 3) { exists("untitled folder") && list.renamingNode?.name == "untitled folder" },
+              "file ops: New Folder on the empty area makes “untitled folder” in the shown folder, in rename mode")
+        press(#selector(NSResponder.cancelOperation(_:)))
+
+        // Renaming the open file: the editor keeps the document and the title follows.
+        let text = editorTextView(wc).string
+        choose("Rename", on: ["open.md"])
+        editor()?.string = "renamed.md"
+        press(#selector(NSResponder.insertNewline(_:)))
+        check(wait(timeout: 3) { doc.fileURL?.lastPathComponent == "renamed.md" } && wc.document === doc
+              && editorTextView(wc).string == text && doc.displayName?.hasPrefix("renamed") == true && exists("renamed.md") && !exists("open.md"),
+              "file ops: renaming the open file keeps the document and updates its title (\(doc.displayName ?? "nil"))")
+        // Trashing the open file: the document follows it and asks.
+        choose("Move to Trash", on: ["renamed.md"])
+        check(wait(timeout: 3) { diskAsks.contains { $0.doc === doc && $0.change == .deleted } },
+              "file ops: trashing the open file tells its window")
+        for ask in diskAsks where ask.doc === doc { ask.answer(true) }
+        diskAsks.removeAll { $0.doc === doc }
+        check(alerts.isEmpty, "file ops: no unexpected alert (\(alerts))")
     }
 
     static func check(_ ok: Bool, _ label: String) {
