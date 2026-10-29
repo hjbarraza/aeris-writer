@@ -70,7 +70,7 @@ final class Library {
 
     /// Disk changes: a moved or deleted root re-resolves every bookmark and re-lists every loaded
     /// folder (so no other change in the batch is lost); anything else re-lists only the loaded
-    /// folders involved and tells each sidebar what changed.
+    /// folders involved and tells each file list what changed.
     func folderChanged(_ changes: [FolderChange]) {
         if changes.contains(where: \.rootChanged) {
             // Not inside the stream's callback: reload stops the stream that is still delivering.
@@ -81,7 +81,6 @@ final class Library {
         }
         let treeChanges = tree.refresh(changes)
         guard !treeChanges.isEmpty else { return }
-        for sidebar in sidebars.allObjects { sidebar.apply(treeChanges) }
         for list in fileLists.allObjects { list.apply(treeChanges) }
     }
 }

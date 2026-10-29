@@ -36,6 +36,7 @@ enum SelfCheck {
         persistenceChecks()
         openChecks()
         sidebarChecks()
+        organizerChecks()
         columnChecks()
         liveRefreshChecks()
         liveRefreshEdgeChecks()
@@ -184,10 +185,35 @@ enum SelfCheck {
         wc.close()
     }
 
-    /// Forgets the saved expanded folders, so a check group starts from collapsed folders
-    /// instead of whatever the previous group left expanded.
-    @MainActor static func resetExpandedFolders() {
-        UserDefaults.standard.removeObject(forKey: "\(EditorWindowController.layoutKey).ExpandedPaths")
+    /// The location rows of a window's organizer, in order.
+    @MainActor static func locationRows(_ wc: EditorWindowController) -> [LibraryNode] {
+        let ov = wc.sidebar.outlineView
+        return (0..<ov.numberOfRows).compactMap { ov.item(atRow: $0) as? LibraryNode }
+    }
+
+    /// Selects a location in the organizer as a click does, which fills the file list.
+    @MainActor static func selectLocation(_ wc: EditorWindowController, _ node: LibraryNode) {
+        let ov = wc.sidebar.outlineView
+        ov.selectRowIndexes(IndexSet(integer: ov.row(forItem: node)), byExtendingSelection: false)
+    }
+
+    /// The names the file list shows.
+    @MainActor static func listNames(_ wc: EditorWindowController) -> [String] {
+        let list = wc.fileList
+        return (0..<list.tableView.numberOfRows).compactMap { list.node(atRow: $0)?.name }
+    }
+
+    /// The row the file list highlights (the open document, or what the user selected).
+    @MainActor static func highlighted(_ wc: EditorWindowController) -> URL? {
+        wc.fileList.node(atRow: wc.fileList.tableView.selectedRow)?.url
+    }
+
+    /// Selects `url`'s row in the file list as a click does, bringing the list to its folder first.
+    @MainActor static func selectInList(_ wc: EditorWindowController, _ url: URL) {
+        let node = Library.shared.tree.node(atPath: LibraryListing.canonicalPath(url))!
+        wc.fileList.showFolder(node.parent)
+        let row = (0..<wc.fileList.tableView.numberOfRows).first { wc.fileList.node(atRow: $0) === node }!
+        wc.fileList.tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
     }
 
     /// `docs/demo-library`, found by walking up from the executable, then from this source file,
@@ -205,30 +231,28 @@ enum SelfCheck {
     }
 
     @MainActor static func libraryChecks() {
-        resetExpandedFolders()
         guard let demo = demoLibrary() else {
             print("FAIL - library: docs/demo-library not found above the executable or the source file")
             exit(1)
         }
         let wc = EditorWindowController()
         wc.sidebar.loadViewIfNeeded()
-        let ov = wc.sidebar.outlineView
-        check(ov.numberOfRows == 0, "sidebar: empty library has no rows")
+        check(locationRows(wc).isEmpty, "sidebar: empty library has no location rows")
         Library.shared.addLocation(demo)
-        check(ov.numberOfRows == 1, "sidebar: one row per location")
-        ov.expandItem(ov.item(atRow: 0))
-        check((1..<ov.numberOfRows).map { (ov.item(atRow: $0) as! LibraryNode).name } == ["Drafts", "Notes", "Welcome.md"],
-              "sidebar: expanding a location lists its children")
-        check(ov.isExpandable(ov.item(atRow: 1)) && !ov.isExpandable(ov.item(atRow: 3)), "sidebar: folders expand, files don't")
+        check(locationRows(wc).count == 1, "sidebar: one row per location")
+        selectLocation(wc, locationRows(wc)[0])
+        check(listNames(wc) == ["Drafts", "Notes", "Welcome.md"], "sidebar: selecting a location lists its children in the file list")
+        check(locationRows(wc).allSatisfy { $0.parent == nil }, "sidebar: the organizer shows locations, never their subfolders")
+        let list = wc.fileList
+        check(list.node(atRow: 0)!.isDirectory && !list.node(atRow: 2)!.isDirectory, "sidebar: the list tells folders from files")
         Library.shared.addLocation(demo)
-        check(ov.numberOfChildren(ofItem: nil) == 1, "sidebar: adding the same folder twice is a no-op")
+        check(locationRows(wc).count == 1, "sidebar: adding the same folder twice is a no-op")
         let add = MainMenu.make().item(withTitle: "File")?.submenu?.item(withTitle: "Add Location…")
         check(add?.action == #selector(AppDelegate.addLocation(_:)) && add?.keyEquivalent == "", "sidebar: File > Add Location… exists")
         wc.close()
     }
 
     @MainActor static func persistenceChecks() {
-        resetExpandedFolders()
         let fm = FileManager.default
         let folderA = scratch.appending(path: "PersistA"), folderB = scratch.appending(path: "PersistB")
         try? fm.createDirectory(at: folderA, withIntermediateDirectories: true)
@@ -246,40 +270,30 @@ enum SelfCheck {
         wc.sidebar.loadViewIfNeeded()
         let ov = wc.sidebar.outlineView
         Library.shared.addLocation(folderB)
-        let row = Library.shared.tree.roots.count - 1
+        let missingNode = Library.shared.tree.roots.last!
         try? fm.removeItem(at: folderB)
         Library.shared.reload()
+        let row = ov.row(forItem: Library.shared.tree.roots.last!)
+        check(row >= 0 && Library.shared.tree.roots.last !== missingNode, "persist: setup - the missing location has a row")
         let cell = ov.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView
         check(cell?.textField?.stringValue == "PersistB (missing)" && cell?.textField?.textColor == .secondaryLabelColor,
               "persist: unresolvable location shows dimmed '(missing)'")
         check(relaunched().tree.roots.count == Library.shared.tree.roots.count, "persist: missing location kept in the store")
 
         let items = wc.sidebar.menuItems(forRow: row)
-        check(items.map(\.title) == ["Remove from Library"] && items[0].tag == row, "menu: location row offers Remove from Library")
-        ov.expandItem(ov.item(atRow: 0))
-        check(wc.sidebar.menuItems(forRow: 1).isEmpty && wc.sidebar.menuItems(forRow: -1).isEmpty, "menu: child rows and empty space offer nothing")
+        check(items.map(\.title) == ["Remove from Library"] && items[0].tag == Library.shared.tree.roots.count - 1,
+              "menu: location row offers Remove from Library")
+        check(wc.sidebar.menuItems(forRow: 0).isEmpty && wc.sidebar.menuItems(forRow: -1).isEmpty,
+              "menu: section rows and empty space offer nothing")
         let before = Library.shared.tree.roots.count
         _ = items[0].target?.perform(items[0].action, with: items[0])
-        check(Library.shared.tree.roots.count == before - 1 && ov.numberOfChildren(ofItem: nil) == before - 1,
+        check(Library.shared.tree.roots.count == before - 1 && locationRows(wc).count == before - 1,
               "menu: Remove from Library removes the row")
 
-        // Saved expansion under a root that is missing right now survives; under an existing root, a gone folder is pruned.
-        let expandedKey = "\(EditorWindowController.layoutKey).ExpandedPaths"
         let folderC = scratch.appending(path: "PersistC")
         try? fm.createDirectory(at: folderC, withIntermediateDirectories: true)
         Library.shared.addLocation(folderC)
-        let folderD = scratch.appending(path: "PersistD")
-        try? fm.createDirectory(at: folderD, withIntermediateDirectories: true)
-        Library.shared.addLocation(folderD)
-        let pathD = LibraryListing.canonicalPath(folderD)
-        try? fm.removeItem(at: folderD)
-        Library.shared.reload()
-        let pathB = pathD, pathC = LibraryListing.canonicalPath(folderC)
-        UserDefaults.standard.set([pathB + "/sub", pathC + "/gone"], forKey: expandedKey)
-        wc.sidebar.libraryRootsDidChange()
-        check(UserDefaults.standard.stringArray(forKey: expandedKey) == [pathB + "/sub"],
-              "persist: expansion under a missing root is kept; a gone folder under a live root is pruned")
-        resetExpandedFolders()
+        let pathC = LibraryListing.canonicalPath(folderC)
 
         // A root-changed event rebuilds the watcher on the next turn, never inside the stream's callback.
         let watcherBefore = Library.shared.watcherForTesting
@@ -289,12 +303,139 @@ enum SelfCheck {
         wc.close()
     }
 
+    /// The organizer: its sections, hints and settings, and walking folders in the file list.
+    @MainActor static func organizerChecks() {
+        guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else { return }
+        let fm = FileManager.default
+        let dc = NSDocumentController.shared
+        let previousKey = EditorWindowController.layoutKey
+        let layout = "Aeris.SelfCheck.Organizer"
+        EditorWindowController.layoutKey = layout
+        let defaultsKeys = ["\(layout).CollapsedSections", "\(layout).HiddenSections"]
+        func clean() { defaultsKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) } }
+        clean()
+        defer { clean(); EditorWindowController.layoutKey = previousKey }
+
+        let loc = scratch.appending(path: "OrgLib")
+        try? fm.createDirectory(at: loc.appending(path: "Sub/Deep"), withIntermediateDirectories: true)
+        for name in ["top.md", "Sub/mid.md", "Sub/Deep/inner.md"] { try? name.write(to: loc.appending(path: name), atomically: true, encoding: .utf8) }
+        func canonical(_ url: URL?) -> String? { url.map(LibraryListing.canonicalPath) }
+        func node(_ url: URL) -> LibraryNode { Library.shared.tree.node(atPath: canonical(url)!)! }
+        Library.shared.addLocation(loc)
+        let rootsBefore = Library.shared.tree.roots.map(\.path)
+
+        // A window opened after the location was added shows it, and adds nothing.
+        let untitled = try! MarkdownDocument(type: "net.daringfireball.markdown")
+        dc.addDocument(untitled); untitled.makeWindowControllers()
+        let wc = untitled.windowControllers[0] as! EditorWindowController
+        wc.sidebar.loadViewIfNeeded()
+        let ov = wc.sidebar.outlineView
+        func sections() -> [OrganizerSection] { (0..<ov.numberOfRows).compactMap { ov.item(atRow: $0) as? OrganizerSection } }
+        func hints() -> [OrganizerHint] { (0..<ov.numberOfRows).compactMap { ov.item(atRow: $0) as? OrganizerHint } }
+        check(Library.shared.tree.roots.map(\.path) == rootsBefore && locationRows(wc).map(\.path).contains(canonical(loc)!),
+              "organizer: an existing location shows as a row, nothing re-added")
+        check(sections().map(\.title) == ["Locations", "Favorites", "Smart Folders", "Tags"],
+              "organizer: sections are Locations, Favorites, Smart Folders, Tags")
+        check(sections().allSatisfy { ov.isItemExpanded($0) }, "organizer: sections start expanded")
+        check(locationRows(wc).allSatisfy { $0.parent == nil }, "organizer: location rows are roots, never subfolders")
+
+        // Empty sections show a hint.
+        let hintRow = hints().first.map { ov.row(forItem: $0) } ?? -1
+        let hintCell = hintRow >= 0 ? ov.view(atColumn: 0, row: hintRow, makeIfNecessary: true) as? NSTableCellView : nil
+        check(hints().map(\.text) == ["Drop files or folders here", "Save a search to find it again here", "Type #tag in any file"]
+              && hintCell?.textField?.stringValue == "Drop files or folders here",
+              "organizer: each empty section shows its hint (\(hints().map(\.text)))")
+        check(hints().allSatisfy { !wc.sidebar.outlineView(ov, shouldSelectItem: $0) }
+              && sections().allSatisfy { !wc.sidebar.outlineView(ov, shouldSelectItem: $0) }
+              && locationRows(wc).allSatisfy { wc.sidebar.outlineView(ov, shouldSelectItem: $0) },
+              "organizer: only location rows can be selected")
+
+        // Selecting a location fills the list; folders open in the list and ⌘↑ goes back up.
+        selectLocation(wc, node(loc))
+        let list = wc.fileList, table = list.tableView
+        func key(_ code: UInt16, _ flags: NSEvent.ModifierFlags = [], _ chars: String = "") -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+                             context: nil, characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!
+        }
+        func selectRow(named name: String) { table.selectRowIndexes(IndexSet(integer: listNames(wc).firstIndex(of: name)!), byExtendingSelection: false) }
+        check(list.folder === node(loc) && listNames(wc) == ["Sub", "top.md"], "organizer: selecting a location lists its contents (\(listNames(wc)))")
+        check(!list.upButton.isEnabled, "organizer: no way up from a location")
+        table.keyDown(with: key(126, .command))
+        check(list.folder === node(loc), "organizer: ⌘↑ at a location does nothing")
+        selectRow(named: "top.md")
+        table.keyDown(with: key(36, [], "\r"))
+        check(list.folder === node(loc), "organizer: Return on a file does not navigate")
+        selectRow(named: "Sub")
+        table.sendAction(table.doubleAction, to: table.target)
+        check(list.folder === node(loc.appending(path: "Sub")) && listNames(wc) == ["Deep", "mid.md"] && list.titleLabel.stringValue == "Sub"
+              && list.upButton.isEnabled, "organizer: double-clicking a folder opens it in the list")
+        selectRow(named: "Deep")
+        table.keyDown(with: key(36, [], "\r"))
+        check(list.folder === node(loc.appending(path: "Sub/Deep")) && listNames(wc) == ["inner.md"], "organizer: Return on a folder opens it")
+        check(canonical(wc.sidebar.selectedURL) == canonical(loc), "organizer: the organizer stays on the location while the list goes down")
+        table.keyDown(with: key(126, .command))
+        check(list.folder === node(loc.appending(path: "Sub")) && list.node(atRow: table.selectedRow)?.name == "Deep",
+              "organizer: ⌘↑ goes back up and selects the folder it came from")
+        list.upButton.performClick(nil)
+        check(list.folder === node(loc) && list.node(atRow: table.selectedRow)?.name == "Sub", "organizer: the up button goes back up too")
+
+        // Revealing a document in a subfolder: location in the organizer, folder and row in the list.
+        let inner = try! dc.makeDocument(withContentsOf: loc.appending(path: "Sub/Deep/inner.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(inner); inner.makeWindowControllers()
+        let wcInner = inner.windowControllers[0] as! EditorWindowController
+        check(canonical(wcInner.sidebar.selectedURL) == canonical(loc) && wcInner.fileList.folder === node(loc.appending(path: "Sub/Deep"))
+              && highlighted(wcInner)?.lastPathComponent == "inner.md",
+              "organizer: revealing a document selects its location and its row in the list")
+        wcInner.close(); inner.close()
+
+        // Collapsing a section is remembered, and sections start expanded in a fresh window.
+        let tags = sections().first { $0.kind == .tags }!
+        ov.collapseItem(tags)
+        check(UserDefaults.standard.stringArray(forKey: defaultsKeys[0]) == ["tags"] && hints().count == 2, "organizer: collapsing Tags is saved")
+        let wc2 = EditorWindowController()
+        wc2.sidebar.loadViewIfNeeded()
+        let ov2 = wc2.sidebar.outlineView
+        let sections2 = (0..<ov2.numberOfRows).compactMap { ov2.item(atRow: $0) as? OrganizerSection }
+        check(sections2.map { ov2.isItemExpanded($0) } == [true, true, true, false], "organizer: a new window restores the collapsed Tags")
+        ov.expandItem(tags)
+        check((UserDefaults.standard.stringArray(forKey: defaultsKeys[0]) ?? []).isEmpty, "organizer: expanding Tags again is saved")
+        wc2.close()
+
+        // Hiding sections: the View > Organizer submenu, live in open windows, kept for new ones.
+        let organizerMenu = MainMenu.make().item(withTitle: "View")?.submenu?.item(withTitle: "Organizer")?.submenu
+        check(organizerMenu?.items.map(\.title) == ["Favorites", "Smart Folders", "Tags"], "organizer: View > Organizer lists the three hideable sections")
+        let smart = organizerMenu!.item(withTitle: "Smart Folders")!
+        let appDelegate = NSApp.delegate as! AppDelegate
+        check(appDelegate.validateMenuItem(smart) && smart.state == .on, "organizer: a shown section is checked in the menu")
+        check(NSApp.sendAction(smart.action!, to: nil, from: smart), "organizer: the menu item reaches the app")
+        check(sections().map(\.title) == ["Locations", "Favorites", "Tags"] && hints().count == 2, "organizer: hiding Smart Folders removes the section")
+        check(UserDefaults.standard.stringArray(forKey: defaultsKeys[1]) == ["smartFolders"], "organizer: the hidden section is stored")
+        _ = appDelegate.validateMenuItem(smart)
+        check(smart.state == .off, "organizer: a hidden section is unchecked in the menu")
+        let wc3 = EditorWindowController()
+        wc3.sidebar.loadViewIfNeeded()
+        let ov3 = wc3.sidebar.outlineView
+        check((0..<ov3.numberOfRows).compactMap { (ov3.item(atRow: $0) as? OrganizerSection)?.title } == ["Locations", "Favorites", "Tags"],
+              "organizer: a new window keeps Smart Folders hidden")
+        wc3.close()
+        _ = NSApp.sendAction(smart.action!, to: nil, from: smart)
+        check(sections().map(\.title) == ["Locations", "Favorites", "Smart Folders", "Tags"]
+              && (UserDefaults.standard.stringArray(forKey: defaultsKeys[1]) ?? []).isEmpty, "organizer: enabling it again brings the section back")
+        let wc4 = EditorWindowController()
+        wc4.sidebar.loadViewIfNeeded()
+        check(wc4.sidebar.outlineView.numberOfRows == ov.numberOfRows, "organizer: and a new window shows it")
+        wc4.close()
+
+        check(NSApp.windows.allSatisfy { !$0.isVisible }, "organizer: no window was ordered in")
+        (wc.document as? NSDocument)?.close()
+        Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
+    }
+
     /// The file list column: filled from the sidebar's folder, opens files (click focuses the
     /// editor, arrow keys keep focus in the list), follows disk changes; the two hide commands
     /// and the widths and hidden states persist.
     @MainActor static func columnChecks() {
         guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else { return }
-        resetExpandedFolders()
         let fm = FileManager.default
         let dc = NSDocumentController.shared
         let previousKey = EditorWindowController.layoutKey
@@ -327,9 +468,7 @@ enum SelfCheck {
               "columns: sidebar | list | editor | preview")
 
         // Selecting a folder in the sidebar lists its children.
-        let ov = wc.sidebar.outlineView
-        ov.expandItem(node(loc))
-        ov.selectRowIndexes(IndexSet(integer: ov.row(forItem: node(loc))), byExtendingSelection: false)
+        selectLocation(wc, node(loc))
         let children = node(loc).children!.map(\.name)
         check(list.folder === node(loc) && names() == children && children.contains("A.md") && children.contains("sub"),
               "columns: selecting a folder lists its files and subfolders (\(names()))")
@@ -678,7 +817,6 @@ enum SelfCheck {
             check(false, "open: skipped, 'Ask to keep changes when closing documents' is on")
             return
         }
-        resetExpandedFolders()
         let fm = FileManager.default
         let dc = NSDocumentController.shared
         let loc = scratch.appending(path: "OpenLib")
@@ -691,9 +829,6 @@ enum SelfCheck {
         try? Data([0xFF, 0xFE, 0x41]).write(to: urlBad)
         func disk(_ url: URL) -> String? { try? String(contentsOf: url, encoding: .utf8) }
         func canonical(_ url: URL?) -> String? { url.map(LibraryListing.canonicalPath) }
-        func row(_ ov: NSOutlineView, _ url: URL) -> IndexSet {
-            IndexSet(integer: ov.row(forItem: Library.shared.tree.node(atPath: canonical(url)!)))
-        }
         /// Types into the window's editor inside one closed undo group, as a key event does.
         /// (Headless, no event ever ends an auto-opened group, so the document would never
         /// count as edited; ending that group by hand makes the undo manager raise later.)
@@ -709,7 +844,8 @@ enum SelfCheck {
         dc.addDocument(a); a.makeWindowControllers()
         let wc = a.windowControllers[0] as! EditorWindowController
         func current() -> MarkdownDocument? { wc.document as? MarkdownDocument }
-        check(canonical(wc.sidebar.selectedURL) == canonical(urlA), "open: sidebar highlights the document the window opened with")
+        check(canonical(highlighted(wc)) == canonical(urlA) && canonical(wc.sidebar.selectedURL) == canonical(loc),
+              "open: the list highlights the document the window opened with and the organizer its location")
         // As if the window had appeared (it never does headless; this shows nothing), so the
         // editor takes its swap-in-a-live-window path.
         wc.editorForTesting.viewDidAppear()
@@ -728,7 +864,7 @@ enum SelfCheck {
               "open: editor shows B after opening it from the library")
         check(!dc.documents.contains(a) && current()?.windowControllers.first === wc,
               "open: A closed, same window controller now shows B")
-        check(canonical(wc.sidebar.selectedURL) == canonical(urlB), "open: sidebar highlights B")
+        check(canonical(highlighted(wc)) == canonical(urlB), "open: the list highlights B")
         check(editorTextView(wc).textStorage === current()?.textStorage && current()?.editor === wc.editorForTesting,
               "open: the editor edits B's own text storage")
         check(a.editor == nil && editorState(at: urlA)?.sel == [2, 0], "open: A keeps its own caret in its xattr")
@@ -748,7 +884,8 @@ enum SelfCheck {
               "open (a): switching away autosaves B's edit to disk")
         check(current()?.textStorage.string == "gamma" && wc.window?.isDocumentEdited == false,
               "open: C shows, window not marked edited")
-        check(wc.sidebar.selectedURL?.lastPathComponent == "C.md", "open: highlight follows into a collapsed subfolder")
+        check(highlighted(wc)?.lastPathComponent == "C.md" && wc.fileList.folder?.name == "sub" && wc.sidebar.selectedURL.map(canonical) == canonical(loc),
+              "open: the list follows the document into its subfolder, the organizer stays on the location")
         check(wait(timeout: 3) { wc.stats.model.stats?.words == 1 }, "open: stats follow the new document")
         let c = current()!
         let bState = editorState(at: urlB)
@@ -790,18 +927,17 @@ enum SelfCheck {
         check(disk(urlC) == "xgamma", "open (c): the target is read first, so the current document was not autosaved")
 
         // A user selection of a file row opens it; a folder row opens nothing.
-        let ov = wc.sidebar.outlineView
-        ov.selectRowIndexes(row(ov, urlA), byExtendingSelection: false)
+        selectInList(wc, urlA)
         check(wait(timeout: 3) { current()?.fileURL?.lastPathComponent == "A.md" }, "open: selecting a file row opens it")
         check(disk(urlC) == "yxgamma", "open: C's edit was saved by the close check when A opened")
-        ov.selectRowIndexes(row(ov, loc.appending(path: "sub")), byExtendingSelection: false)
+        selectInList(wc, loc.appending(path: "sub"))
         check(!wait(timeout: 0.3) { current()?.fileURL?.lastPathComponent != "A.md" }, "open: selecting a folder row opens nothing")
 
         // (b) Dirty untitled document: the close check asks; nothing switches until answered; Cancel keeps it.
         let u = try! HeldCloseDocument(type: "net.daringfireball.markdown")
         dc.addDocument(u); u.makeWindowControllers()
         let wc2 = u.windowControllers[0] as! EditorWindowController
-        check(wc2.sidebar.selectedURL == nil, "open: an untitled document highlights nothing")
+        check(highlighted(wc2) == nil, "open: an untitled document highlights nothing")
         type("unsaved", in: wc2)
         result = nil
         wc2.replaceDocument(with: urlBad) { result = $0 }
@@ -819,12 +955,10 @@ enum SelfCheck {
               && !dc.documents.contains { $0.fileURL?.lastPathComponent == "B.md" },
               "open (b): Cancel keeps the untitled document with its text")
         u.answer = nil
-        let ov2 = wc2.sidebar.outlineView
-        ov2.expandItem(Library.shared.tree.roots.last)
-        ov2.selectRowIndexes(row(ov2, urlB), byExtendingSelection: false)
-        check(u.answer != nil && wc2.document === u, "open (b): a sidebar click asks the untitled document too")
+        selectInList(wc2, urlB)
+        check(u.answer != nil && wc2.document === u, "open (b): a list click asks the untitled document too")
         u.answer?(false)
-        check(wc2.document === u && u.textStorage.string == "unsaved" && wc2.sidebar.selectedURL == nil,
+        check(wc2.document === u && u.textStorage.string == "unsaved" && highlighted(wc2) == nil,
               "open (b): after Cancel the highlight goes back")
 
         check(NSApp.windows.allSatisfy { !$0.isVisible }, "open: no window was ordered in")
@@ -835,16 +969,12 @@ enum SelfCheck {
         Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
 
-    /// Sidebar behaviour from first on-screen use: expanded folders persist, a focus change
-    /// never re-expands a collapsed folder, fast switching keeps the latest click, and the same
-    /// file is never opened twice.
+    /// Behaviour from first on-screen use: a focus change never moves the list, fast switching
+    /// keeps the latest click, and the same file is never opened twice.
     @MainActor static func sidebarChecks() {
         guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else { return }
         let fm = FileManager.default
         let dc = NSDocumentController.shared
-        let expandedKey = "\(EditorWindowController.layoutKey).ExpandedPaths"
-        UserDefaults.standard.removeObject(forKey: expandedKey)
-        defer { UserDefaults.standard.removeObject(forKey: expandedKey) }
         let loc = scratch.appending(path: "FixLib")
         try? fm.createDirectory(at: loc.appending(path: "a/b"), withIntermediateDirectories: true)
         let urlA = loc.appending(path: "A.md"), urlB = loc.appending(path: "B.md"), urlDeep = loc.appending(path: "a/b/deep.md")
@@ -852,42 +982,21 @@ enum SelfCheck {
         for (url, text) in [(urlA, "alpha"), (urlB, "beta"), (urlDeep, "deep"), (urlKept, "kept")] { try? text.write(to: url, atomically: true, encoding: .utf8) }
         func canonical(_ url: URL?) -> String? { url.map(LibraryListing.canonicalPath) }
         func node(_ url: URL) -> LibraryNode { Library.shared.tree.node(atPath: canonical(url)!)! }
-        func stored() -> [String] { UserDefaults.standard.stringArray(forKey: expandedKey) ?? [] }
         func docs(_ url: URL) -> [NSDocument] { dc.documents.filter { canonical($0.fileURL) == canonical(url) } }
-        func select(_ ov: NSOutlineView, _ url: URL) { ov.selectRowIndexes(IndexSet(integer: ov.row(forItem: node(url))), byExtendingSelection: false) }
+        func select(_ wc: EditorWindowController, _ url: URL) { selectInList(wc, url) }
         Library.shared.addLocation(loc)
-        let rootNode = Library.shared.tree.roots.last!
         let dirA = loc.appending(path: "a"), dirB = loc.appending(path: "a/b")
-
-        // Expanded folders persist across windows (stand-in for launches), by canonical path.
-        let first = EditorWindowController()
-        first.sidebar.loadViewIfNeeded()
-        let ov1 = first.sidebar.outlineView
-        [rootNode, node(dirA), node(dirB)].forEach { ov1.expandItem($0) }
-        first.close()
-        UserDefaults.standard.set(stored() + ["/no/such/folder"], forKey: expandedKey)
-        let second = EditorWindowController()
-        second.sidebar.loadViewIfNeeded()
-        let ov2 = second.sidebar.outlineView
-        check([rootNode, node(dirA), node(dirB)].allSatisfy { ov2.isItemExpanded($0) },
-              "persist: a new window has the same folders expanded")
-        check(!stored().contains("/no/such/folder") && stored().contains(canonical(dirB)!),
-              "persist: a path that no longer exists is dropped, the others kept")
-        ov2.collapseItem(node(dirB))
-        check(!stored().contains(canonical(dirB)!) && stored().contains(canonical(dirA)!),
-              "persist: collapsing a folder is saved")
-        second.close()
 
         // Focus change: a folder the user collapsed stays collapsed.
         let deep = try! dc.makeDocument(withContentsOf: urlDeep, ofType: "net.daringfireball.markdown") as! MarkdownDocument
         dc.addDocument(deep); deep.makeWindowControllers()
         let wcDeep = deep.windowControllers[0] as! EditorWindowController
-        let ovDeep = wcDeep.sidebar.outlineView
-        check(ovDeep.isItemExpanded(node(dirA)) && ovDeep.isItemExpanded(node(dirB)),
-              "reveal: opening a document expands its folders")
-        ovDeep.collapseItem(node(dirA))
+        check(wcDeep.fileList.folder === node(dirB) && canonical(highlighted(wcDeep)) == canonical(urlDeep)
+              && canonical(wcDeep.sidebar.selectedURL) == canonical(loc),
+              "reveal: opening a document shows its folder in the list, selects its row and its location")
+        wcDeep.fileList.showFolder(node(dirA))
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: wcDeep.window)
-        check(!ovDeep.isItemExpanded(node(dirA)), "reveal: the window becoming key does not re-expand a collapsed folder")
+        check(wcDeep.fileList.folder === node(dirA), "reveal: the window becoming key does not move the list")
         deep.close()
 
         // Fast switching: a second request while the first is pending is kept, not dropped.
@@ -895,7 +1004,6 @@ enum SelfCheck {
             let u = try! HeldCloseDocument(type: "net.daringfireball.markdown")
             dc.addDocument(u); u.makeWindowControllers()
             let wc = u.windowControllers[0] as! EditorWindowController
-            wc.sidebar.outlineView.expandItem(rootNode)
             return (u, wc)
         }
         func finish(_ u: HeldCloseDocument, _ wc: EditorWindowController) {
@@ -905,22 +1013,22 @@ enum SelfCheck {
             (wc.document as? NSDocument)?.close()
         }
         let (u, wcFast) = heldWindow()
-        select(wcFast.sidebar.outlineView, urlA)
-        select(wcFast.sidebar.outlineView, urlB)
-        check(u.answer != nil && canonical(wcFast.sidebar.selectedURL) == canonical(urlB),
+        select(wcFast, urlA)
+        select(wcFast, urlB)
+        check(u.answer != nil && canonical(highlighted(wcFast)) == canonical(urlB),
               "switch: the highlight stays on the latest click while the first switch is pending")
         u.answer?(true)
         check(wait(timeout: 3) { canonical((wcFast.document as? NSDocument)?.fileURL) == canonical(urlB) },
               "switch: the latest click (B) ends up open")
-        check(canonical(wcFast.sidebar.selectedURL) == canonical(urlB) && docs(urlA).isEmpty && docs(urlB).count == 1,
+        check(canonical(highlighted(wcFast)) == canonical(urlB) && docs(urlA).isEmpty && docs(urlB).count == 1,
               "switch: B is highlighted, A is not left open")
         finish(u, wcFast)
 
         let (u2, wcCancel) = heldWindow()
-        select(wcCancel.sidebar.outlineView, urlA)
-        select(wcCancel.sidebar.outlineView, urlB)
+        select(wcCancel, urlA)
+        select(wcCancel, urlB)
         u2.answer?(false)
-        check(wcCancel.document === u2 && docs(urlA).isEmpty && docs(urlB).isEmpty && wcCancel.sidebar.selectedURL == nil,
+        check(wcCancel.document === u2 && docs(urlA).isEmpty && docs(urlB).isEmpty && highlighted(wcCancel) == nil,
               "switch: a cancelled switch opens nothing and the highlight goes back to the current document")
         finish(u2, wcCancel)
 
@@ -928,15 +1036,14 @@ enum SelfCheck {
         let kept = try! HeldCloseDocument(contentsOf: urlKept, ofType: "net.daringfireball.markdown")
         dc.addDocument(kept); kept.makeWindowControllers()
         let wcKept = kept.windowControllers[0] as! EditorWindowController
-        wcKept.sidebar.outlineView.expandItem(rootNode)
-        check(canonical(wcKept.sidebar.selectedURL) == canonical(urlKept), "switch: the current document starts highlighted")
-        select(wcKept.sidebar.outlineView, urlA)
-        select(wcKept.sidebar.outlineView, urlKept)
-        check(kept.answer != nil && canonical(wcKept.sidebar.selectedURL) == canonical(urlKept),
+        check(canonical(highlighted(wcKept)) == canonical(urlKept), "switch: the current document starts highlighted")
+        select(wcKept, urlA)
+        select(wcKept, urlKept)
+        check(kept.answer != nil && canonical(highlighted(wcKept)) == canonical(urlKept),
               "switch: clicking the current document while a switch is pending keeps the highlight on it")
         kept.answer?(true)
         _ = wait(timeout: 0.5) { false }
-        check(wcKept.document === kept && docs(urlA).isEmpty && canonical(wcKept.sidebar.selectedURL) == canonical(urlKept),
+        check(wcKept.document === kept && docs(urlA).isEmpty && canonical(highlighted(wcKept)) == canonical(urlKept),
               "switch: the pending target never opens and the current document stays highlighted")
         finish(kept, wcKept)
 
@@ -958,7 +1065,7 @@ enum SelfCheck {
         Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
 
-    /// Disk changes reach the sidebar within a second without collapsing folders or losing the highlight.
+    /// Disk changes reach the file list within a second without moving its folder or losing the highlight.
     @MainActor static func liveRefreshChecks() {
         guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else {
             print("skip - live: NSCloseAlwaysConfirmsChanges is set, live refresh checks did not run")
@@ -966,59 +1073,51 @@ enum SelfCheck {
         }
         let fm = FileManager.default
         let dc = NSDocumentController.shared
-        let expandedKey = "\(EditorWindowController.layoutKey).ExpandedPaths"
-        UserDefaults.standard.removeObject(forKey: expandedKey)
-        defer { UserDefaults.standard.removeObject(forKey: expandedKey) }
         let live = scratch.appending(path: "LiveLib")
         let L = live.appending(path: "L"), Lrenamed = live.appending(path: "L-renamed")
         try? fm.createDirectory(at: L.appending(path: "sub"), withIntermediateDirectories: true)
         for name in ["sub/x.md", "y.md"] { fm.createFile(atPath: L.appending(path: name).path, contents: Data()) }
         Library.shared.addLocation(L)
-        func rowNames(_ ov: NSOutlineView) -> [String] {
-            (0..<ov.numberOfRows).compactMap { (ov.item(atRow: $0) as? LibraryNode)?.name }
-        }
         func tree(_ path: String) -> LibraryNode { Library.shared.tree.node(atPath: LibraryListing.canonicalPath(L.appending(path: path)))! }
         let doc = try! dc.makeDocument(withContentsOf: L.appending(path: "y.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
         dc.addDocument(doc); doc.makeWindowControllers()
         let wc = doc.windowControllers[0] as! EditorWindowController
-        let ov = wc.sidebar.outlineView
+        let list = wc.fileList
         let subNode = tree("sub"), root = Library.shared.tree.roots.last!
-        ov.expandItem(subNode)
-        check(ov.isItemExpanded(root) && ov.isItemExpanded(subNode) && wc.sidebar.selectedURL?.lastPathComponent == "y.md",
-              "live: setup - location and sub expanded, y.md highlighted")
+        check(list.folder === root && highlighted(wc)?.lastPathComponent == "y.md",
+              "live: setup - the location is listed, y.md highlighted")
 
-        let before = ov.numberOfRows
-        fm.createFile(atPath: L.appending(path: "sub/new.md").path, contents: Data())
-        check(wait(timeout: 1) { ov.numberOfRows == before + 1 }, "live: created file appears within 1 s")
-        check(ov.isItemExpanded(subNode), "live: expanded folder stays expanded")
-        check(wc.sidebar.selectedURL?.lastPathComponent == "y.md", "live: active document stays highlighted")
-        try! fm.moveItem(at: L.appending(path: "sub/new.md"), to: L.appending(path: "sub/renamed.md"))
-        check(wait(timeout: 1) { rowNames(ov).contains("renamed.md") && !rowNames(ov).contains("new.md") }, "live: rename reflected")
-        try! fm.removeItem(at: L.appending(path: "sub/renamed.md"))
-        check(wait(timeout: 1) { ov.numberOfRows == before }, "live: delete reflected")
+        let before = listNames(wc).count
+        fm.createFile(atPath: L.appending(path: "new.md").path, contents: Data())
+        check(wait(timeout: 1) { listNames(wc).count == before + 1 }, "live: created file appears within 1 s")
+        check(list.folder === root, "live: the list stays in its folder")
+        check(highlighted(wc)?.lastPathComponent == "y.md", "live: active document stays highlighted")
+        try! fm.moveItem(at: L.appending(path: "new.md"), to: L.appending(path: "renamed.md"))
+        check(wait(timeout: 1) { listNames(wc).contains("renamed.md") && !listNames(wc).contains("new.md") }, "live: rename reflected")
+        try! fm.removeItem(at: L.appending(path: "renamed.md"))
+        check(wait(timeout: 1) { listNames(wc).count == before }, "live: delete reflected")
 
-        // A change under a folder that is expanded but hidden by a collapsed ancestor shows once the ancestor opens.
-        ov.collapseItem(root)
+        // A folder the user descended into follows disk changes too.
+        list.showFolder(subNode)
         fm.createFile(atPath: L.appending(path: "sub/hidden.md").path, contents: Data())
-        _ = wait(timeout: 0.6) { false }
-        ov.expandItem(root)
-        wc.sidebar.reveal(doc.fileURL, expandingAncestors: false)  // collapsing the location dropped the highlight; a focus change restores it
-        check(rowNames(ov).contains("hidden.md") && ov.isItemExpanded(subNode), "live: change under a collapsed ancestor shows on expand")
+        check(wait(timeout: 1) { listNames(wc).contains("hidden.md") }, "live: change in a subfolder shows in the list")
         try! fm.removeItem(at: L.appending(path: "sub/hidden.md"))
-        check(wait(timeout: 1) { !rowNames(ov).contains("hidden.md") }, "live: and is removed again")
+        check(wait(timeout: 1) { !listNames(wc).contains("hidden.md") }, "live: and is removed again")
+        list.showFolder(root)
+        list.reveal(doc.fileURL)
 
-        // A renamed loaded folder is a new node: it must appear (collapsed, or expanded if saved as expanded) without a crash.
+        // A renamed loaded folder is a new node: it must appear without a crash.
         try! fm.moveItem(at: L.appending(path: "sub"), to: L.appending(path: "sub2"))
-        check(wait(timeout: 1) { rowNames(ov).contains("sub2") && !rowNames(ov).contains("sub") }, "live: renamed folder reflected")
-        check(wc.sidebar.selectedURL?.lastPathComponent == "y.md", "live: highlight survives a folder rename")
+        check(wait(timeout: 1) { listNames(wc).contains("sub2") && !listNames(wc).contains("sub") }, "live: renamed folder reflected")
+        check(highlighted(wc)?.lastPathComponent == "y.md", "live: highlight survives a folder rename")
 
         // The location itself renamed while running: bookmarks are re-resolved.
         try! fm.moveItem(at: L, to: Lrenamed)
-        check(wait(timeout: 2) { rowNames(ov).contains(Lrenamed.lastPathComponent) }, "live: renamed location re-resolved")
+        check(wait(timeout: 2) { locationRows(wc).contains { $0.name == Lrenamed.lastPathComponent } }, "live: renamed location re-resolved")
         check(Library.shared.tree.roots.last?.path == LibraryListing.canonicalPath(Lrenamed), "live: root tracks the new path")
+        selectLocation(wc, Library.shared.tree.roots.last!)
         fm.createFile(atPath: Lrenamed.appending(path: "after.md").path, contents: Data())
-        ov.expandItem(Library.shared.tree.roots.last!)
-        check(wait(timeout: 1) { rowNames(ov).contains("after.md") }, "live: renamed location is watched at its new path")
+        check(wait(timeout: 1) { listNames(wc).contains("after.md") }, "live: renamed location is watched at its new path")
 
         check(NSApp.windows.allSatisfy { !$0.isVisible }, "live: no window was ordered in")
         doc.close()
@@ -1034,9 +1133,6 @@ enum SelfCheck {
         }
         let fm = FileManager.default
         let dc = NSDocumentController.shared
-        let expandedKey = "\(EditorWindowController.layoutKey).ExpandedPaths"
-        UserDefaults.standard.removeObject(forKey: expandedKey)
-        defer { UserDefaults.standard.removeObject(forKey: expandedKey) }
         let edge = scratch.appending(path: "EdgeLib")
         let A = edge.appending(path: "A"), A2 = edge.appending(path: "A-renamed"), B = edge.appending(path: "B")
         let C = edge.appending(path: "C"), D = edge.appending(path: "D")
@@ -1044,29 +1140,26 @@ enum SelfCheck {
         for url in [A.appending(path: "a.md"), A.appending(path: "sub/s.md"), B.appending(path: "b.md"),
                     C.appending(path: "c1.md"), D.appending(path: "d1.md")] { fm.createFile(atPath: url.path, contents: Data()) }
         [A, B, C, D].forEach { Library.shared.addLocation($0) }
-        func rowNames(_ ov: NSOutlineView) -> [String] {
-            (0..<ov.numberOfRows).compactMap { (ov.item(atRow: $0) as? LibraryNode)?.name }
-        }
         func node(_ url: URL) -> LibraryNode { Library.shared.tree.node(atPath: LibraryListing.canonicalPath(url))! }
+        func locationNames(_ wc: EditorWindowController) -> [String] { locationRows(wc).map(\.name) }
         let doc = try! dc.makeDocument(withContentsOf: A.appending(path: "a.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
         dc.addDocument(doc); doc.makeWindowControllers()
         let wc = doc.windowControllers[0] as! EditorWindowController
-        let ov = wc.sidebar.outlineView
-        [B, C, D].forEach { ov.expandItem(node($0)) }
-        check(rowNames(ov).contains("c1.md") && rowNames(ov).contains("d1.md") && rowNames(ov).contains("b.md"),
-              "edge: setup - four locations expanded")
+        check(locationNames(wc).suffix(4) == ["A", "B", "C", "D"], "edge: setup - four locations in the organizer")
 
         // A folder row the user selected stays selected through a refresh: no re-reveal of the document.
-        ov.selectRowIndexes(IndexSet(integer: ov.row(forItem: node(A.appending(path: "sub")))), byExtendingSelection: false)
-        let rows = ov.numberOfRows
+        let table = wc.fileList.tableView
+        selectInList(wc, A.appending(path: "sub"))
+        let rows = table.numberOfRows
         fm.createFile(atPath: A.appending(path: "new.md").path, contents: Data())
-        check(wait(timeout: 1) { ov.numberOfRows == rows + 1 }, "edge: file created beside the selected folder appears")
-        check(wc.sidebar.selectedURL?.lastPathComponent == "sub", "edge: a refresh keeps the user's folder selection")
+        check(wait(timeout: 1) { table.numberOfRows == rows + 1 }, "edge: file created beside the selected folder appears")
+        check(wc.fileList.node(atRow: table.selectedRow)?.name == "sub", "edge: a refresh keeps the user's folder selection")
 
         // A batch with a location rename and a change in another location: both are applied.
+        selectLocation(wc, node(B))
         try! fm.moveItem(at: A, to: A2)
         fm.createFile(atPath: B.appending(path: "b2.md").path, contents: Data())
-        check(wait(timeout: 2) { rowNames(ov).contains("A-renamed") && rowNames(ov).contains("b2.md") },
+        check(wait(timeout: 2) { locationNames(wc).contains("A-renamed") && listNames(wc).contains("b2.md") },
               "edge: a location rename does not swallow a change in another location")
 
         // The same batch handed over directly (no timing involved): the other change is applied too.
@@ -1075,18 +1168,20 @@ enum SelfCheck {
             FolderChange(path: LibraryListing.canonicalPath(A2), mustScanSubDirs: false, rootChanged: true),
             FolderChange(path: LibraryListing.canonicalPath(B), mustScanSubDirs: false, rootChanged: false),
         ])
-        check(wait(timeout: 2) { rowNames(ov).contains("b3.md") }, "edge: a batch holding a root change still applies its other changes")
+        check(wait(timeout: 2) { listNames(wc).contains("b3.md") }, "edge: a batch holding a root change still applies its other changes")
 
         // A location recreated at the same path lists its new contents.
+        selectLocation(wc, node(C))
         try! fm.removeItem(at: C)
         try! fm.createDirectory(at: C, withIntermediateDirectories: true)
         fm.createFile(atPath: C.appending(path: "c2.md").path, contents: Data())
-        check(wait(timeout: 2) { rowNames(ov).contains("c2.md") && !rowNames(ov).contains("c1.md") },
+        check(wait(timeout: 2) { listNames(wc).contains("c2.md") && !listNames(wc).contains("c1.md") },
               "edge: a recreated location shows its new contents")
 
         // A location deleted while running shows no stale children.
+        selectLocation(wc, node(D))
         try! fm.removeItem(at: D)
-        check(wait(timeout: 2) { !rowNames(ov).contains("d1.md") }, "edge: a deleted location shows no stale files")
+        check(wait(timeout: 2) { !listNames(wc).contains("d1.md") }, "edge: a deleted location shows no stale files")
 
         check(NSApp.windows.allSatisfy { !$0.isVisible }, "edge: no window was ordered in")
         doc.close()
