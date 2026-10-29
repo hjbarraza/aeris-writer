@@ -27,6 +27,15 @@ struct DraftNameTests {
         #expect(DraftName.make(String(repeating: "x", count: 70)) == String(repeating: "x", count: 60))
         #expect(DraftName.make(String(repeating: "word ", count: 30)).count <= 60)
     }
+    @Test func cappedInBytes() {
+        let family = "👨‍👩‍👧‍👦"
+        let name = DraftName.make(String(repeating: family, count: 60))
+        #expect(name.utf8.count <= DraftName.maxBytes && name.count == DraftName.maxBytes / 25)
+        #expect(DraftName.make(family) == family)
+    }
+    @Test func invisibleControlsRemoved() {
+        #expect(DraftName.make("A\u{200B}B\u{202E}C\u{2066}D\u{FEFF}") == "ABCD")
+    }
     @Test func clashGetsANumber() {
         let taken: Set<String> = ["My Post.md", "My Post 2.md"]
         #expect(DraftName.unique("My Post", ext: "md") { taken.contains($0) } == "My Post 3.md")

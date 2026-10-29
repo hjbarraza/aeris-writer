@@ -229,6 +229,83 @@ enum SelfCheck {
         try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
         d6.updateChangeCount(.changeCleared)
 
+        // Real key events through the window. The app's event loop closes a per-event undo group
+        // (dropping it when empty); the self-check runs inside a callout where that close never
+        // fires, so each key gets an explicit group. An explicit empty group still counts as a
+        // change, so these checks do NOT catch the post-save coalescing bug (MarkdownDocument's
+        // breakUndoCoalescing before save); they cover the key path, the menu item and the disk.
+        func press(_ keys: String, in window: NSWindow) {
+            let undo = (window.windowController?.document as? NSDocument)?.undoManager
+            undo?.groupsByEvent = false
+            defer { undo?.groupsByEvent = true }
+            for key in keys {
+                undo?.beginUndoGrouping()
+                defer { undo?.endUndoGrouping() }
+                let s = String(key)
+                let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                         timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                         context: nil, characters: s, charactersIgnoringModifiers: s,
+                                         isARepeat: false, keyCode: s == "\r" ? 36 : 0)!
+                NSApp.postEvent(e, atStart: false)
+                while let ev = NSApp.nextEvent(matching: .any, until: Date().addingTimeInterval(1), inMode: .default, dequeue: true) {
+                    if ev.type == .keyDown { window.sendEvent(ev); break }
+                    NSApp.sendEvent(ev)
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        var shown: [NSDocument] = []
+        AerisDocumentController.frontEditor = { hostWC }
+        AerisDocumentController.show = { shown.append($0) }
+        let newItem = NSApp.mainMenu?.item(withTitle: "File")?.submenu?.item(withTitle: "New")
+        if let newItem, let action = newItem.action { NSApp.sendAction(action, to: newItem.target, from: newItem) }
+        check(newItem?.keyEquivalent == "n" && newItem?.keyEquivalentModifierMask == .command && shown.first is DraftDocument,
+              "draft: File ▸ New (⌘N) with a folder shown opens a draft (got \(shown))")
+        if let k = shown.first as? DraftDocument, let kwc = k.windowControllers.first as? EditorWindowController,
+           let kw = kwc.window {
+            kw.makeFirstResponder(editorTextView(kwc))
+            press("# Keys\r", in: kw)
+            check(wait(timeout: 3) { k.fileURL != nil } && disk("Keys.md") == "# Keys\n",
+                  "draft: typed with key events, Return writes Keys.md (got \(disk("Keys.md").debugDescription))")
+            press("later", in: kw)
+            check(k.isDocumentEdited, "draft: keys typed after the Return save mark the document edited")
+            autosave(k)
+            press(" more", in: kw)
+            check(k.isDocumentEdited, "draft: keys typed after an autosave mark the document edited")
+            check(canClose(k) == true && disk("Keys.md") == "# Keys\nlater more",
+                  "draft: closing writes the keys typed after both saves (got \(disk("Keys.md").debugDescription))")
+            k.close()
+        }
+        AerisDocumentController.frontEditor = { nil }
+        AerisDocumentController.show = { _ in }
+
+        // Two drafts with the same first line settling in the same run-loop turn.
+        let r1 = dc.makeDraft(from: hostWC)!, r2 = dc.makeDraft(from: hostWC)!
+        type("Same\none", in: r1)
+        type("Same\ntwo", in: r2)
+        check(wait(timeout: 3) { r1.fileURL != nil && r2.fileURL != nil } && r1.fileURL != r2.fileURL
+                && Set([disk("Same.md"), disk("Same 2.md")]) == ["Same\none", "Same\ntwo"],
+              "draft: two same-name drafts settling together get two files, neither overwritten (files \(files()))")
+
+        // A dangling symlink holds its name.
+        try? fm.createSymbolicLink(atPath: x.appending(path: "Dangling.md").path, withDestinationPath: "/nonexistent/aeris")
+        let s1 = dc.makeDraft(from: hostWC)!
+        type("Dangling\n", in: s1)
+        check(wait(timeout: 3) { s1.fileURL != nil } && s1.fileURL?.lastPathComponent == "Dangling 2.md"
+                && (try? fm.destinationOfSymbolicLink(atPath: x.appending(path: "Dangling.md").path)) == "/nonexistent/aeris",
+              "draft: a broken symlink keeps its name (got \(s1.fileURL?.lastPathComponent ?? "nil"))")
+
+        // An autosave while the folder save is in flight never autosaves the draft elsewhere.
+        let a1 = dc.makeDraft(from: hostWC)!
+        type("Inflight", in: a1)
+        var autosaves = 0
+        a1.autosave(withImplicitCancellability: false) { _ in autosaves += 1 }
+        a1.autosave(withImplicitCancellability: false) { _ in autosaves += 1 }
+        check(wait(timeout: 3) { autosaves == 2 } && a1.fileURL?.lastPathComponent == "Inflight.md"
+                && a1.autosavedContentsFileURL == nil,
+              "draft: an autosave during the folder save writes nothing elsewhere (\(String(describing: a1.autosavedContentsFileURL)))")
+        for doc in [r1, r2, s1, a1] { doc.close() }
+
         AppDefaults.store.set("untitled", forKey: DraftSettings.newDocumentKey)
         check(dc.makeDraft(from: hostWC) == nil, "draft: the setting can make ⌘N the classic untitled document")
         AppDefaults.store.removeObject(forKey: DraftSettings.newDocumentKey)

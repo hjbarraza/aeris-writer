@@ -85,15 +85,28 @@ final class DraftDocument: MarkdownDocument {
         let url: URL
         do {
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            // The name is claimed by creating it exclusively (anything there, a broken symlink
+            // included, counts as taken), so no other draft or app can get it before the save
+            // replaces this empty placeholder.
+            var claimError: Int32 = 0
             let name = DraftName.unique(DraftName.make(textStorage.string), ext: DraftSettings.fileExtension) {
-                fm.fileExists(atPath: folder.appending(path: $0).path)
+                let fd = open(folder.appending(path: $0).path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+                if fd >= 0 { Darwin.close(fd); return false }
+                if errno == EEXIST { return true }
+                claimError = errno
+                return false
             }
+            if claimError != 0 { throw POSIXError(POSIXErrorCode(rawValue: claimError) ?? .EIO) }
             url = folder.appending(path: name)
         } catch {
             return failed(error, done)
         }
         save(to: url, ofType: fileType ?? "net.daringfireball.markdown", for: .saveAsOperation) { error in
-            if let error { return self.failed(error, done) }
+            if let error {
+                // The name was claimed for this draft: the placeholder, or a partly written file, goes.
+                try? fm.removeItem(at: url)
+                return self.failed(error, done)
+            }
             self.settling = false
             done(true)
         }
@@ -115,7 +128,8 @@ final class DraftDocument: MarkdownDocument {
             return super.autosave(withImplicitCancellability: autosavingIsImplicitlyCancellable,
                                   completionHandler: completionHandler)
         }
-        if isBlank { return completionHandler(nil) }
+        // Blank, or the folder save is already under way: nothing to write elsewhere.
+        if isBlank || settling { return completionHandler(nil) }
         settle { saved in
             if saved { return completionHandler(nil) }
             super.autosave(withImplicitCancellability: autosavingIsImplicitlyCancellable,
