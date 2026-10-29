@@ -1,6 +1,7 @@
 import AppKit
 import LibraryCore
 import MarkdownCore
+import UniformTypeIdentifiers
 
 /// The table of the file list. Return opens the selected folder and ⌘↑ goes up to the enclosing one.
 final class FileListTableView: NSTableView {
@@ -919,15 +920,30 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
                 if choice == 0 { rename(base + "." + old) } else if choice == 1 { rename(typed) }
             }
         }
-        guard typed.hasPrefix("."), !node.name.hasPrefix(".") else { return checkExtension() }
+        // A folder with a package extension (.app, .rtfd, .bundle, .textbundle…) turns into a package.
+        func checkPackage() {
+            let type = UTType(filenameExtension: new, conformingTo: .directory)
+            guard node.isDirectory, !new.isEmpty, new.lowercased() == "textbundle" || type?.conforms(to: .package) == true
+            else { return checkExtension() }
+            FileOperations.askRename("Are you sure you want to add the extension “.\(new)”? The folder will become a package and leave the list.",
+                                     ["Cancel", "Add “.\(new)”"], view.window) { choice in
+                if choice == 1 { rename(typed) }
+            }
+        }
+        guard typed.hasPrefix("."), !node.name.hasPrefix(".") else { return checkPackage() }
         FileOperations.askRename("Are you sure you want to use a name that begins with a dot “.”? The item will be hidden and leave the list.",
                                  ["Cancel", "Use “.”"], view.window) { choice in
-            if choice == 1 { checkExtension() }
+            if choice == 1 { checkPackage() }
         }
     }
 
-    private func rename(_ node: LibraryNode, to name: String) {
-        guard name != node.name, let parent = node.parent else { return }
+    private func rename(_ stale: LibraryNode, to name: String) {
+        // A refresh may have replaced or dropped the node while a warning was up: look it up again.
+        guard let node = Library.shared.tree.node(atPath: stale.path), let parent = node.parent else {
+            let error = CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: stale.url.path])
+            return FileOperations.presentFailures("“\(stale.name)” could not be renamed.", [.init(url: stale.url, error: error)], view.window)
+        }
+        guard name != node.name else { return }
         guard !name.contains("/") else {
             let error = CocoaError(.fileWriteInvalidFileName, userInfo: [NSLocalizedDescriptionKey: "A name can’t contain “/”."])
             return FileOperations.presentFailures("“\(node.name)” could not be renamed.", [.init(url: node.url, error: error)], view.window)
@@ -936,7 +952,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         FileOperations.run({ FileOperations.each([source]) { try FileOperations.move($0, to: target); return target } }) { [weak self] outcome in
             guard let self else { return }
             if let moved = outcome.made.first { followMove(from: node.path, to: LibraryListing.canonicalPath(moved)) }
-            finish(outcome, failure: "“\(node.name)” could not be renamed.", changed: [parent], select: true)
+            // Selected only where the user still looks: a rename committed by a folder change never navigates back.
+            let onScreen = parent === folder || (options.navigation == .tree && rows.contains { $0 === parent })
+            finish(outcome, failure: "“\(node.name)” could not be renamed.", changed: [parent], select: onScreen)
         }
     }
 

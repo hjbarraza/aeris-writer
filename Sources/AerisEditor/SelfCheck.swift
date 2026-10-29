@@ -160,7 +160,12 @@ enum SelfCheck {
         // Rename warnings: recorded, answered with `renameAnswer` (0 is the default button).
         let previousAsk = FileOperations.askRename
         var renameAsks: [(message: String, buttons: [String])] = [], renameAnswer = 0
-        FileOperations.askRename = { message, buttons, _, answer in renameAsks.append((message, buttons)); answer(renameAnswer) }
+        var beforeRenameAnswer: (() -> Void)?
+        FileOperations.askRename = { message, buttons, _, answer in
+            renameAsks.append((message, buttons))
+            beforeRenameAnswer?()
+            answer(renameAnswer)
+        }
         defer {
             FileOperations.trashItem = previousTrash; MarkdownDocument.isInTrash = previousInTrash
             FileOperations.presentFailures = previousFailures; FileOperations.askRename = previousAsk
@@ -311,12 +316,34 @@ enum SelfCheck {
               "file ops: “Keep .rtf” renames as typed after the warning (\(renameAsks))")
         renameAnswer = 0
 
-        // A rename in progress is committed before the list changes folder.
-        choose("Rename", on: ["h1.md"])
-        (list.renameField?.currentEditor() as? NSTextView)?.string = "h4.md"
-        list.showFolder(Library.shared.tree.node(atPath: LibraryListing.canonicalPath(loc.appending(path: "sub"))))
-        check(list.renamingNode == nil && wait(timeout: 3) { exists("h4.md") }, "file ops: changing folder commits the rename in progress")
+        // A folder renamed with a package extension would leave the list: it warns, the default keeps it.
+        rename("v1.2 copy", to: "v1.app")
+        check(wait(timeout: 3) { renameAsks.count == 5 } && renameAsks[4].message.contains("“.app”") && exists("v1.2 copy") && !exists("v1.app"),
+              "file ops: a folder renamed to a package extension warns; the default keeps it (\(renameAsks.last?.message ?? "none"))")
+        // The file goes away while the warning is up: the confirmed rename is reported, not dropped.
+        beforeRenameAnswer = {
+            try? fm.moveItem(at: loc.appending(path: "x.md"), to: scratch.appending(path: "x-moved.md"))
+            Library.shared.folderChanged([FolderChange(path: list.folder!.path, mustScanSubDirs: false, rootChanged: false)])
+        }
+        renameAnswer = 1
+        rename("x.md", to: "x")
+        check(wait(timeout: 3) { alerts.count == 1 } && alerts[0].names == ["x.md"] && !exists("x"),
+              "file ops: a file gone while the warning was up is reported, not silently dropped (\(alerts))")
+        beforeRenameAnswer = nil; renameAnswer = 0; alerts.removeAll()
+
+        // A rename in progress is committed when the list changes folder, and the list stays where the user went.
+        // List navigation: the parent folder does not show sub's rows.
+        FileListSettings.shared.update { $0.navigation = .list }
+        let subNode = Library.shared.tree.node(atPath: LibraryListing.canonicalPath(loc.appending(path: "sub")))
+        list.showFolder(subNode)
+        choose("Rename", on: ["sub/Notes.md"])
+        (list.renameField?.currentEditor() as? NSTextView)?.string = "Notes2.md"
         list.goUp()
+        let parentFolder = list.folder
+        check(list.renamingNode == nil && parentFolder !== subNode && wait(timeout: 3) { exists("sub/Notes2.md") && !exists("sub/Notes.md") }
+              && !wait(timeout: 0.5) { list.folder !== parentFolder },
+              "file ops: going up during a rename commits it on disk and the list stays in the parent folder (\(list.folder?.name ?? "nil"))")
+        FileListSettings.shared.update { $0.navigation = .tree }
 
         // File menu commands do nothing while the library column is hidden.
         let fileItem = wc.splitViewController.splitViewItems[1]
