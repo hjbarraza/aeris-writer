@@ -70,7 +70,8 @@ func runRichTextMarkdownChecks() {
     let big = String(repeating: "<ul><li>a", count: 220_000)          // about 2 MB
     let (bigOut, bigMs) = timed { md(big) }
     check(bigOut == nil || bigOut!.utf8.count <= RichTextMarkdown.maxHTMLBytes, "richtext: 2 MB of nested lists -> output within the cap")
-    check(bigMs < 1000, "richtext: 2 MB of nested lists converts in under 1 s (\(Int(bigMs)) ms)")
+    // Idle: ~0.8 s debug. 5 s leaves room for parallel builds; the unbounded version froze for 9 s.
+    check(bigMs < 5000, "richtext: 2 MB of nested lists converts in under 5 s (\(Int(bigMs)) ms)")
     let deep = String(repeating: "<ul><li>", count: 40) + "x"
     check(md(deep)!.split(separator: "\n").last!.prefix { $0 == " " }.count <= 64, "richtext: list indent stops at 16 levels")
     let tooDeep = String(repeating: "<div>", count: 300), closeAll = String(repeating: "</div>", count: 300)

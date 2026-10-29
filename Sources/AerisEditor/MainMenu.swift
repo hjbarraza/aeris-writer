@@ -25,6 +25,15 @@ enum MainMenu {
             .separator(),
             item("Add Location…", #selector(AppDelegate.addLocation(_:))),
             .separator(),
+            // File list commands: they act on the list's selection (FileListViewController).
+            item("New File", #selector(FileListViewController.newFile(_:))),
+            item("New Folder", #selector(FileListViewController.newFolder(_:))),
+            item("New Folder with Selection", #selector(FileListViewController.newFolderWithSelection(_:))),
+            item("Rename", #selector(FileListViewController.renameItem(_:))),
+            item("Duplicate", #selector(FileListViewController.duplicateItems(_:))),
+            item("Move to Trash", #selector(FileListViewController.trashItems(_:))),
+            item("Show in Finder", #selector(FileListViewController.showItemsInFinder(_:))),
+            .separator(),
             item("Close", #selector(NSWindow.performClose(_:)), "w"),
             item("Save", #selector(NSDocument.save(_:)), "s"),
             item("Save As…", #selector(NSDocument.saveAs(_:)), "S"),
@@ -36,6 +45,14 @@ enum MainMenu {
             .separator(),
             item("Cut", #selector(NSText.cut(_:)), "x"),
             item("Copy", #selector(NSText.copy(_:)), "c"),
+            item("Copy as Markdown", #selector(EditorViewController.copyAsMarkdown(_:))),
+            {
+                let i = item("Copy as HTML", #selector(EditorViewController.copyAsHTML(_:)), "C")
+                i.keyEquivalentModifierMask = [.command, .shift, .option]
+                return i
+            }(),
+            item("Copy as Rich Text", #selector(EditorViewController.copyAsRichText(_:))),
+            item("Copy as Plain Text", #selector(EditorViewController.copyAsPlainText(_:))),
             item("Paste", #selector(NSText.paste(_:)), "v"),
             item("Paste as Markdown", #selector(EditorViewController.pasteAsMarkdown(_:)), "V"),
             item("Paste Rich Text as Markdown", #selector(EditorViewController.togglePasteRichTextAsMarkdown(_:))),

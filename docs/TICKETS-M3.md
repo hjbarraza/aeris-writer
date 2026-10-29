@@ -86,7 +86,7 @@ Order: the preview tickets (M3-9…M3-13) come first, because export reuses thei
   *Verify:* `.pdf` opens in Preview.app; headings, code, table paginate sanely, long code
   blocks and tables don't clip; Page Setup A4 → Letter is reflected in the next export.
 
-- [ ] **M3-4 — Copy matrix.** Edit ▸ Copy as Markdown / HTML / Rich Text / Plain Text, each
+- [x] **M3-4 — Copy matrix.** Edit ▸ Copy as Markdown / HTML / Rich Text / Plain Text, each
   for the selection, or the whole document when nothing is selected. Rich text via
   `NSAttributedString(html:)` on the export HTML. Plain Text is the rendered text with all
   Markdown removed (headings, emphasis, link URLs, list markers kept as readable bullets).

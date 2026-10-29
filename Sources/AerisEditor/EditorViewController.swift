@@ -176,8 +176,81 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
         return html.flatMap { RichTextMarkdown.convert(html: $0, emphasisCounts: emphasisCounts) }
     }
 
+    // MARK: Copy matrix (M3-4)
+
+    enum CopyFormat { case markdown, html, richText, plainText }
+
+    @objc func copyAsMarkdown(_ sender: Any?) { copy(as: .markdown, to: .general) }
+    @objc func copyAsHTML(_ sender: Any?) { copy(as: .html, to: .general) }
+    @objc func copyAsRichText(_ sender: Any?) { copy(as: .richText, to: .general) }
+    @objc func copyAsPlainText(_ sender: Any?) { copy(as: .plainText, to: .general) }
+
+    /// The selection's Markdown (every range of a discontiguous selection, joined by the document's
+    /// line ending, as stock Copy does), or the whole document when nothing is selected.
+    func copySource() -> String {
+        let text = textView.string as NSString
+        let parts = textView.selectedRanges.map(\.rangeValue)
+            .filter { $0.length > 0 && NSMaxRange($0) <= text.length }.map { text.substring(with: $0) }
+        return parts.isEmpty ? text as String : parts.joined(separator: LineEnding.of(text as String))
+    }
+
+    /// Above this many UTF-16 units of source, Copy as Rich Text builds off the main thread.
+    static let richTextAsyncThreshold = 300_000
+
+    /// The RTF of Markdown `source`: HTML without front matter or resources, through Cocoa's importer.
+    nonisolated static func richTextData(_ source: String) -> (rtf: Data, plain: String)? {
+        let body = RichTextHTML.withoutResources(MarkdownCore.html(String(Excerpt.withoutFrontMatter(Substring(source)))))
+        let page = "<html><head><meta charset=\"utf-8\"><style>body { font-family: -apple-system, Helvetica; font-size: 13px; }"
+            + " code, pre { font-family: Menlo; }</style></head><body>\(body)</body></html>"
+        guard let attributed = NSAttributedString(html: Data(page.utf8), options: [
+                .documentType: NSAttributedString.DocumentType.html,
+                .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil),
+              let rtf = attributed.rtf(from: NSRange(location: 0, length: attributed.length), documentAttributes: [:])
+        else { return nil }
+        return (rtf, attributed.string)
+    }
+
+    /// Puts the selection (or the whole document) on `board` in one format: only that type,
+    /// plus plain text. Never touches the document. Front matter is left out of HTML, Rich Text and
+    /// Plain Text (Markdown stays raw). A large Rich Text copy puts the plain text on at once and the
+    /// RTF when it is built (if the pasteboard has not changed since); `done` runs then.
+    @discardableResult
+    func copy(as format: CopyFormat, to board: NSPasteboard, done: (() -> Void)? = nil) -> Bool {
+        let source = copySource()
+        board.clearContents()
+        switch format {
+        case .markdown:
+            return board.setString(source, forType: .string)
+        case .plainText:
+            return board.setString(PlainText.make(source), forType: .string)
+        case .html:
+            let html = MarkdownCore.html(String(Excerpt.withoutFrontMatter(Substring(source))))
+            return board.setData(Data(html.utf8), forType: .html) && board.setString(html, forType: .string)
+        case .richText:
+            if (source as NSString).length > Self.richTextAsyncThreshold {
+                guard board.setString(PlainText.make(source), forType: .string) else { return false }
+                let count = board.changeCount
+                nonisolated(unsafe) let target = board, finish = done
+                // NSAttributedString(html:) is main-thread only: build it on the next main-queue turn,
+                // after the menu has closed and the plain text is already on the pasteboard.
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        let built = Self.richTextData(source)
+                        if let built, target.changeCount == count { target.setData(built.rtf, forType: .rtf) }
+                        finish?()
+                    }
+                }
+                return true
+            }
+            guard let built = Self.richTextData(source) else { return false }
+            return board.setData(built.rtf, forType: .rtf) && board.setString(built.plain, forType: .string)
+        }
+    }
+
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        case #selector(copyAsMarkdown(_:)), #selector(copyAsHTML(_:)), #selector(copyAsRichText(_:)),
+             #selector(copyAsPlainText(_:)): return textView.string.contains { !$0.isWhitespace }
         case #selector(toggleTypewriterMode(_:)): item.state = typewriter ? .on : .off; return true
         case #selector(toggleFocusMode(_:)): item.state = focus ? .on : .off; return true
         case #selector(setFocusScope(_:)): item.state = item.tag == focusScope.rawValue ? .on : .off; return true
@@ -808,4 +881,20 @@ final class EditorTextView: NSTextView {
     }
     /// Paste as the stock text view does, without offering the pasteboard to `richPaste` again.
     func pasteWithoutRichText(_ sender: Any?) { super.paste(sender) }
+
+    /// The context menu gains the Copy as items, after Copy.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let menu = super.menu(for: event) else { return nil }
+        let at = (menu.items.firstIndex { $0.action == #selector(NSText.copy(_:)) } ?? menu.items.count - 1) + 1
+        let entries: [(String, Selector)] = [
+            ("Copy as Markdown", #selector(EditorViewController.copyAsMarkdown(_:))),
+            ("Copy as HTML", #selector(EditorViewController.copyAsHTML(_:))),
+            ("Copy as Rich Text", #selector(EditorViewController.copyAsRichText(_:))),
+            ("Copy as Plain Text", #selector(EditorViewController.copyAsPlainText(_:))),
+        ]
+        for (i, entry) in entries.enumerated() where !menu.items.contains(where: { $0.action == entry.1 }) {
+            menu.insertItem(NSMenuItem(title: entry.0, action: entry.1, keyEquivalent: ""), at: min(at + i, menu.items.count))
+        }
+        return menu
+    }
 }

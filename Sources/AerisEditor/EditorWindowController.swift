@@ -86,7 +86,7 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
         // New documents and File > Open join the key window as tabs.
         window.tabbingMode = .preferred
         super.init(window: window)
-        applyPreviewMode()
+        applyPreviewMode(animated: false)
         fileList.onOpenElsewhere = { [weak self] url, asTab in self?.preview.open(url, asTab: asTab) }
         NotificationCenter.default.addObserver(self, selector: #selector(splitDidResize(_:)),
                                                name: NSSplitView.didResizeSubviewsNotification, object: split.splitView)
@@ -411,10 +411,19 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
         }
     }
 
-    private func applyPreviewMode() {
+    private func applyPreviewMode(animated: Bool = true) {
         let items = splitViewController.splitViewItems
-        items[2].isCollapsed = previewMode == .full
-        items[3].isCollapsed = previewMode == .hidden
+        let full = previewMode == .full, hidden = previewMode == .hidden
+        if animated {
+            // Same animation as the library toggle (and none under Reduce Motion).
+            splitViewController.animateCollapse {
+                items[2].animator().isCollapsed = full
+                items[3].animator().isCollapsed = hidden
+            }
+        } else {
+            items[2].isCollapsed = full
+            items[3].isCollapsed = hidden
+        }
         preview.isActive = previewMode != .hidden
     }
 
@@ -444,7 +453,9 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
     /// Format and View commands reach the editor even when the preview has focus
     /// (the editor is not in the preview's responder chain; this window controller is).
     override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
-        EditorViewController.commandActions.contains(action) ? editor : super.supplementalTarget(forAction: action, sender: sender)
+        // File commands act on the list, and only while the list is on screen.
+        if FileListViewController.fileActions.contains(action) { return splitViewController.splitViewItems[1].isCollapsed ? nil : fileList }
+        return EditorViewController.commandActions.contains(action) ? editor : super.supplementalTarget(forAction: action, sender: sender)
     }
 
     override var document: AnyObject? {
@@ -477,6 +488,14 @@ final class LibrarySplitViewController: NSSplitViewController {
     /// (which can leave a column opening at its minimum).
     private var leftWidths: [CGFloat] = [0, 0]
     private var overlapped = false
+
+    /// Runs collapse or expand changes with the window's usual split animation; instant under Reduce Motion.
+    func animateCollapse(_ changes: @escaping () -> Void, completion: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup({ ctx in
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { ctx.duration = 0 }
+            changes()
+        }, completionHandler: completion)
+    }
 
     private var libraryShown: Bool { !splitViewItems[0].isCollapsed || !splitViewItems[1].isCollapsed }
 
@@ -527,7 +546,7 @@ final class LibrarySplitViewController: NSSplitViewController {
         }
         togglesRunning += 1
         if togglesRunning >= 2 { overlapped = true }
-        NSAnimationContext.runAnimationGroup({ _ in change() }, completionHandler: {
+        animateCollapse(change, completion: {
             MainActor.assumeIsolated {
                 self.togglesRunning -= 1
                 // Only the last toggle to finish acts, and only if a left column ended up open.
