@@ -173,6 +173,9 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   by default (not `.txt`); the format pop-up still allows `.markdown` and `.txt`.
   *Verify:* ⌘N, type, ⌘S → the save panel proposes `Untitled.md`; save → the file on disk
   ends in `.md`.
+  *Note (2026-10-29):* not reproduced. The default type is already Markdown and a new
+  document's extension is `md`; the two `.txt` drafts carry another editor's metadata and
+  predate this app's save path. Kept open until H tries ⌘N → ⌘S once.
 
 - [ ] **M1-18 — Our own link menu in the preview.** Right-clicking a link in the preview shows
   Aeris's menu instead of WebKit's, so every item works. A link to a note: Open, Open in
