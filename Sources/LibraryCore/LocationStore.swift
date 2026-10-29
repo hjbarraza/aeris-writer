@@ -18,6 +18,9 @@ public final class LocationStore {
 
     private let fileURL: URL
     public private(set) var locations: [Location] = []
+    /// Set when the file exists but could not be read; the list is then empty and the file's
+    /// bytes are copied to `<file>.backup` before the first save replaces them.
+    public private(set) var loadFailed = false
 
     public init(fileURL: URL) {
         self.fileURL = fileURL
@@ -32,11 +35,13 @@ public final class LocationStore {
             .appending(path: "Aeris/Locations.plist")
     }
 
-    /// Reads the file; a missing or unreadable file leaves the store empty.
+    /// Reads the file; a missing or unreadable file leaves the store empty (`loadFailed` tells them apart).
     public func load() {
+        loadFailed = false
         guard let data = try? Data(contentsOf: fileURL),
               let file = try? PropertyListDecoder().decode(File.self, from: data) else {
             locations = []
+            loadFailed = FileManager.default.fileExists(atPath: fileURL.path)
             return
         }
         locations = file.locations
@@ -50,23 +55,24 @@ public final class LocationStore {
             return false
         }
         let bookmark = try folder.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-        locations.append(Location(bookmark: bookmark, path: path))
-        try save()
+        try commit(locations + [Location(bookmark: bookmark, path: path)])
         return true
     }
 
     public func remove(at index: Int) throws {
         guard locations.indices.contains(index) else { return }
-        locations.remove(at: index)
-        try save()
+        var updated = locations
+        updated.remove(at: index)
+        try commit(updated)
     }
 
     /// Sets the display name of the location at `index`. Blank (after trimming) clears it.
     public func setLabel(_ label: String?, at index: Int) throws {
         guard locations.indices.contains(index) else { return }
         let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines)
-        locations[index].label = (trimmed?.isEmpty ?? true) ? nil : trimmed
-        try save()
+        var updated = locations
+        updated[index].label = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        try commit(updated)
     }
 
     /// Resolves the bookmark. A moved or renamed folder updates the stored path (and a stale
@@ -102,7 +108,24 @@ public final class LocationStore {
         resolveBookmark(at: index)?.0
     }
 
+    /// Saves `updated`; the in-memory list changes only when the save succeeded.
+    private func commit(_ updated: [Location]) throws {
+        let previous = locations
+        locations = updated
+        do { try save() } catch {
+            locations = previous
+            throw error
+        }
+    }
+
     private func save() throws {
+        if loadFailed {
+            // Keep the unreadable file's bytes; never silently replace them with a shorter list.
+            let backup = fileURL.appendingPathExtension("backup")
+            try? FileManager.default.removeItem(at: backup)
+            try FileManager.default.copyItem(at: fileURL, to: backup)
+            loadFailed = false
+        }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
