@@ -1,6 +1,8 @@
 import AppKit
+import MarkdownCore
 
-/// A plain-text Markdown document: the file's UTF-8 bytes are the whole model.
+/// A plain-text Markdown document: the file's text is the whole model, kept in the
+/// encoding it was read in (see `TextEncoding`).
 /// Registered in Info.plist as NSDocumentClass `AerisEditor.MarkdownDocument`
 /// for `net.daringfireball.markdown` and `public.plain-text`.
 ///
@@ -13,6 +15,8 @@ class MarkdownDocument: NSDocument {
     weak var editor: EditorViewController?
     /// Caret/scroll state read from the file's xattr on open, for the editor to restore.
     private(set) var savedState: EditorState?
+    /// The file's encoding, detected on read; new documents are UTF-8 without a BOM.
+    private(set) var encoding: TextEncoding = .utf8
 
     override class var autosavesInPlace: Bool { true }
 
@@ -24,15 +28,26 @@ class MarkdownDocument: NSDocument {
     }
 
     override func data(ofType typeName: String) throws -> Data {
-        Data(textStorage.string.utf8)
+        guard let data = encoding.encode(textStorage.string) else {
+            // Never drop characters the file's encoding can't hold: fail the save instead.
+            throw CocoaError(.fileWriteInapplicableStringEncoding, userInfo: [
+                NSLocalizedDescriptionKey: "The document couldn’t be saved in its text encoding.",
+                NSLocalizedRecoverySuggestionErrorKey:
+                    "This file uses the Western (Windows Latin 1) encoding, which can’t store some characters "
+                    + "in the text, such as emoji. Remove those characters to save.",
+            ])
+        }
+        return data
     }
 
     override func read(from data: Data, ofType typeName: String) throws {
-        guard let s = String(data: data, encoding: .utf8) else {
+        guard let (s, detected) = TextEncoding.decode(data) else {
             throw CocoaError(.fileReadInapplicableStringEncoding)
         }
         // Safe only because canConcurrentlyReadDocuments returns false (main-thread reads).
         MainActor.assumeIsolated {
+            // Saves write back in the encoding the file was read in.
+            encoding = detected
             // Plain text, no copied attributes: the editor's styler styles the new text.
             textStorage.beginEditing()
             textStorage.replaceCharacters(

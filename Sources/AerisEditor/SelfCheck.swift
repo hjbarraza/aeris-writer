@@ -34,6 +34,7 @@ enum SelfCheck {
         sidebarChecks()
         liveRefreshChecks()
         liveRefreshEdgeChecks()
+        encodingChecks()
         try? FileManager.default.removeItem(at: scratch)
         if failed { print("selfcheck FAILED"); exit(1) }
         print("selfcheck passed")
@@ -284,6 +285,76 @@ enum SelfCheck {
     }
 
     @MainActor static func editorTextView(_ wc: EditorWindowController) -> NSTextView { wc.editorForTesting.textViewForTesting }
+
+    /// Open a non-UTF-8 file, edit, save: same encoding, same bytes outside the edit,
+    /// and a save that can't be encoded fails instead of dropping characters.
+    @MainActor static func encodingChecks() {
+        let dir = scratch.appending(path: "Encoding")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        func charset(_ url: URL) -> String {
+            let p = Process(), pipe = Pipe()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/file")
+            p.arguments = ["-b", "-I", url.path]
+            p.standardOutput = pipe
+            try? p.run(); p.waitUntilExit()
+            let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            return out.components(separatedBy: "charset=").last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        func open(_ url: URL) -> MarkdownDocument? {
+            try? NSDocumentController.shared.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                as? MarkdownDocument
+        }
+        /// Saves in place; nil when the save didn't finish in time.
+        func save(_ doc: MarkdownDocument) -> Result<Void, Error>? {
+            var result: Result<Void, Error>?
+            doc.save(to: doc.fileURL!, ofType: doc.fileType!, for: .saveOperation) { error in
+                result = error.map { .failure($0) } ?? .success(())
+            }
+            _ = wait(timeout: 3) { result != nil }
+            return result
+        }
+        func succeeded(_ r: Result<Void, Error>?) -> Bool { if case .success = r { true } else { false } }
+        func insert(_ text: String, in doc: MarkdownDocument) {
+            doc.textStorage.replaceCharacters(in: NSRange(location: 0, length: 0), with: text)
+        }
+
+        // Latin-1 text with accents and CRLF line endings.
+        let latin1 = dir.appending(path: "latin1.md")
+        let original = Data([0x4E, 0x6F, 0xEB, 0x6C, 0x20, 0x63, 0x61, 0x66, 0xE9, 0x0D, 0x0A, 0x78, 0x0A])
+        try? original.write(to: latin1)
+        let before = charset(latin1)
+        let doc = open(latin1)
+        check(doc?.textStorage.string == "Noël café\r\nx\n" && doc?.encoding == .windows1252,
+              "encoding: a Latin-1 file opens with the correct text")
+        if let doc {
+            insert("Hé ", in: doc)
+            let saved = succeeded(save(doc))
+            let disk = try? Data(contentsOf: latin1)
+            check(saved && disk == Data([0x48, 0xE9, 0x20]) + original,
+                  "encoding: after edit + save, bytes outside the edit are unchanged")
+            check(before == "iso-8859-1" && charset(latin1) == before, "encoding: `file -I` still reports \(before)")
+
+            insert("👋", in: doc)
+            var failure: Error?
+            if case .failure(let e) = save(doc) { failure = e }
+            check((failure as? CocoaError)?.code == .fileWriteInapplicableStringEncoding
+                  && (try? Data(contentsOf: latin1)) == disk,
+                  "encoding: an emoji in a Windows-1252 file fails the save and leaves the file untouched")
+            doc.close()
+        }
+
+        // UTF-8 with a BOM keeps it; UTF-8 without one doesn't gain one.
+        for (name, bom) in [("bom.md", true), ("plain.md", false)] {
+            let url = dir.appending(path: name)
+            let mark = bom ? Data([0xEF, 0xBB, 0xBF]) : Data()
+            try? (mark + Data("café".utf8)).write(to: url)
+            guard let d = open(url) else { check(false, "encoding: \(name) opens"); continue }
+            insert("x", in: d)
+            check(succeeded(save(d)) && (try? Data(contentsOf: url)) == mark + Data("xcafé".utf8),
+                  "encoding: UTF-8 \(bom ? "keeps its BOM" : "gains no BOM") after save")
+            d.close()
+        }
+    }
 
     static func editorState(at url: URL) -> EditorState? {
         ExtendedAttributes.data(named: EditorState.attributeName, at: url)
