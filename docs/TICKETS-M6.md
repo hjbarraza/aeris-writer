@@ -89,3 +89,25 @@ and unit-tested.
 Exit criteria for M6: add a WordPress account (token in Keychain), Publish → draft on
 the site, nothing public; republish updates the same post. Ghost/Micropub/Micro.blog
 each pass their own ticket.
+
+- [ ] **M6-13 — Publish to Substack.** Substack has no public posting API, so Aeris prepares the
+  post for its editor: File ▸ Publish to ▸ Substack copies the document as rich text that
+  Substack's editor keeps (headings, emphasis, links, lists, quotes, code, images as hosted
+  or local files with a clear note), sets the title and subtitle from the first heading and
+  subheading, and opens the publication's new-post page in the browser. Paid-content
+  markers (a `[paywall]` line) become a visible reminder in the copied text. Never stores
+  Substack credentials (H, 2026-10-29).
+  *Verify:* a test document → pasteboard holds HTML with the expected elements and plain
+  text fallback; title/subtitle taken from the first two headings; the browser opens the
+  configured publication URL; on screen: paste into a Substack draft keeps formatting.
+
+- [ ] **M6-14 — Publish to a Hugo site.** Settings: one or more Hugo sites (a folder with a
+  Hugo config). File ▸ Publish to ▸ (site) writes the document into the site's content
+  folder as a page bundle (`content/<section>/<slug>/index.md`) with front matter (title,
+  date, draft, tags from #hashtags, description), copies local images next to it and
+  rewrites their links, and never overwrites an existing post without asking. Optional:
+  run the site's build or deploy command and show its output (H, 2026-10-29).
+  *Verify:* publish a document with two images into a fixture site → bundle and front matter
+  as expected, images copied and links rewritten, original document untouched; publish
+  again → asks before replacing; build command output shown, failure shown as an error.
+

@@ -7,6 +7,7 @@ func inlineEditCases() -> [(InlineMarker, String, String)] {
     let pairs: [(InlineMarker, String, String)] = [
         (.strong, "**", "**"), (.emphasis, "_", "_"), (.code, "`", "`"), (.strikethrough, "~~", "~~"),
         (.highlight, "==", "=="), (.wikilink, "[[", "]]"), (.comment, "<!-- ", " -->"),
+        (.math, "$", "$"),
     ]
     var cases: [(InlineMarker, String, String)] = []
     for (m, o, c) in pairs {
@@ -114,4 +115,21 @@ func runInlineEditChecks() {
     // Out-of-bounds selection is clamped; the edit stays inside the text.
     let e = InlineEdit.toggle(.strong, in: "ab", selection: NSRange(location: 5, length: 3))
     check(NSMaxRange(e.range) <= 2 && e.applied(to: "ab") == "**ab**", "inline selection clamped")
+}
+
+func runInsertChecks() {
+    // Insert Date: 2026-10-29 -> 2026-10-29, replacing a selection.
+    let tz = TimeZone(identifier: "UTC")!
+    let day = Date(timeIntervalSince1970: 1_793_275_200)  // 2026-10-29 12:00 UTC
+    let d = InlineEdit.insertDate(day, in: "a «b» c".replacingOccurrences(of: "«", with: "").replacingOccurrences(of: "»", with: ""),
+                                  selection: NSRange(location: 2, length: 1), timeZone: tz)
+    check(d.applied(to: "a b c") == "a 2026-10-29 c" && d.selection == NSRange(location: 12, length: 0), "insert date 2026-10-29")
+    // Add Hashtag.
+    for (input, expected) in [("ab|cd", "ab #|cd"), ("ab |cd", "ab #|cd"), ("|", "#|"), ("a\n|b", "a\n#|b"),
+                              ("«ab»", "#|"), ("x «ab»", "x #|")] {
+        let (text, sel) = unmarkSelection(input)
+        let got = markedResult(text, InlineEdit.addHashtag(in: text, selection: sel))
+        if got != expected { print("     got \(got.debugDescription)") }
+        check(got == expected, "add hashtag \(input.debugDescription)")
+    }
 }

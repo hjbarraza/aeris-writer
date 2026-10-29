@@ -4,6 +4,12 @@ import UniformTypeIdentifiers
 /// File > Open… also takes folders: a chosen folder becomes a library location (like Add Location…),
 /// chosen files open as documents.
 final class AerisDocumentController: NSDocumentController {
+    /// The self-check never adds its temp files to the user's Open Recent.
+    override func noteNewRecentDocumentURL(_ url: URL) {
+        if AppDefaults.isolated { return }
+        super.noteNewRecentDocumentURL(url)
+    }
+
     override func runModalOpenPanel(_ openPanel: NSOpenPanel, forTypes types: [String]?) -> Int {
         openPanel.canChooseDirectories = true
         // Any file can be chosen: one whose bytes are text opens (MarkdownDocument refuses the rest).
@@ -19,7 +25,9 @@ final class AerisDocumentController: NSDocumentController {
 
     override func openDocument(withContentsOf url: URL, display displayDocument: Bool,
                                completionHandler: @escaping (NSDocument?, Bool, Error?) -> Void) {
-        guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else {
+        // Only a real folder becomes a location; a package (.rtfd, .app) is opened as a file and refused.
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+        guard values?.isDirectory == true, values?.isPackage != true else {
             super.openDocument(withContentsOf: url, display: displayDocument, completionHandler: completionHandler)
             return
         }

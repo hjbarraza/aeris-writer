@@ -328,7 +328,8 @@ class MarkdownDocument: NSDocument {
 
     override func read(from data: Data, ofType typeName: String) throws {
         // RTF is text-encoded markup, not plain text: refused like binary, never shown as code.
-        guard !data.starts(with: Data("{\\rtf".utf8)), let (s, detected) = TextEncoding.decode(data) else {
+        guard !data.starts(with: Data("{\\rtf".utf8)), let (s, detected) = TextEncoding.decode(data),
+              !Self.hasBinaryCodes(s.unicodeScalars.lazy.map(\.value)) else {
             throw CocoaError(.fileReadInapplicableStringEncoding)
         }
         // Safe only because canConcurrentlyReadDocuments returns false (main-thread reads).
@@ -350,20 +351,36 @@ class MarkdownDocument: NSDocument {
         }
     }
 
+    /// NUL, C0 controls other than tab, LF, form feed and CR, and DEL: binary, not text.
+    private static func hasBinaryCodes<S: Sequence>(_ codes: S) -> Bool where S.Element: BinaryInteger {
+        codes.contains { ($0 < 0x20 && $0 != 0x09 && $0 != 0x0A && $0 != 0x0C && $0 != 0x0D) || $0 == 0x7F }
+    }
+
+    /// Opening shows "The document “x” could not be opened." followed by the failure reason.
+    private static func notPlainText() -> NSError {
+        NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileReadInapplicableStringEncoding.rawValue, userInfo: [
+            NSLocalizedFailureReasonErrorKey: "It isn’t a plain text file.",
+            NSLocalizedRecoverySuggestionErrorKey: "Aeris Writer opens text in UTF-8, UTF-16 with a byte order mark, "
+                + "or Western (Windows Latin 1). Rich text and binary files can’t be opened.",
+        ])
+    }
+
     // MARK: Editor state in an extended attribute (never in the file's content)
 
     override func read(from url: URL, ofType typeName: String) throws {
+        // A package, or a file whose first 8 KB already show binary, is refused before the
+        // whole file is read (a multi-GB video refuses at once).
+        if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true { throw Self.notPlainText() }
+        let handle = try FileHandle(forReadingFrom: url)
+        let head = try handle.read(upToCount: 8192) ?? Data()
+        try? handle.close()
+        // UTF-16 holds NUL and low bytes by design; its decoded text is checked instead.
+        let utf16 = head.starts(with: [0xFF, 0xFE]) || head.starts(with: [0xFE, 0xFF])
+        if !utf16, Self.hasBinaryCodes(head) { throw Self.notPlainText() }
         do {
             try super.read(from: url, ofType: typeName)
         } catch CocoaError.fileReadInapplicableStringEncoding {
-            throw NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileReadInapplicableStringEncoding.rawValue,
-                          userInfo: [
-                              // Opening shows "The document “x” could not be opened." followed by the reason.
-                              NSLocalizedDescriptionKey: "“\(url.lastPathComponent)” can’t be opened because it isn’t a plain text file.",
-                              NSLocalizedFailureReasonErrorKey: "It isn’t a plain text file.",
-                              NSLocalizedRecoverySuggestionErrorKey: "Aeris Writer opens text in UTF-8, UTF-16 with a byte order mark, "
-                                  + "or Western (Windows Latin 1). Rich text and binary files can’t be opened.",
-                          ])
+            throw Self.notPlainText()
         }
         let state = ExtendedAttributes.data(named: EditorState.attributeName, at: url)
             .flatMap { try? JSONDecoder().decode(EditorState.self, from: $0) }

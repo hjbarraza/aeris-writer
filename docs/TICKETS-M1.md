@@ -160,7 +160,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   and makes no network request. `file://host/x.md` → ignored. Unsaved doc, ⌘-click
   `other.md#x` → nothing happens.
 
-- [ ] **M1-16 — The self-check never touches the user's app state.** `--selfcheck` runs
+- [x] **M1-16 — The self-check never touches the user's app state.** `--selfcheck` runs
   against its own preferences domain and its own window state, so running it (by hand or by
   any agent) never changes the user's column widths, collapsed sections, last folder or
   open documents. It also never hangs: each check that waits has a timeout and reports
