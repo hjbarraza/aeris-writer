@@ -36,6 +36,7 @@ enum SelfCheck {
         shellChecks()
         layoutChecks()
         libraryChecks()
+        folderDropChecks()
         persistenceChecks()
         openChecks()
         sidebarChecks()
@@ -256,6 +257,85 @@ enum SelfCheck {
         check(locationRows(wc).count == 1, "sidebar: adding the same folder twice is a no-op")
         let add = MainMenu.make().item(withTitle: "File")?.submenu?.item(withTitle: "Add Location…")
         check(add?.action == #selector(AppDelegate.addLocation(_:)) && add?.keyEquivalent == "", "sidebar: File > Add Location… exists")
+        wc.close()
+    }
+
+    /// A dragging session that carries only a pasteboard, enough for the outline view's drop methods.
+    final class FakeDrag: NSObject, NSDraggingInfo {
+        let pb = NSPasteboard(name: NSPasteboard.Name(rawValue: "aeris.selfcheck.\(UUID().uuidString)"))
+        init(_ urls: [URL]) { super.init(); pb.clearContents(); pb.writeObjects(urls as [NSURL]) }
+        var draggingDestinationWindow: NSWindow? { nil }
+        var draggingSourceOperationMask: NSDragOperation { .every }
+        var draggingLocation: NSPoint { .zero }
+        var draggedImageLocation: NSPoint { .zero }
+        var draggedImage: NSImage? { nil }
+        var draggingPasteboard: NSPasteboard { pb }
+        var draggingSource: Any? { nil }
+        var draggingSequenceNumber: Int { 0 }
+        var draggingFormation: NSDraggingFormation = .default
+        var animatesToDestination = false
+        var numberOfValidItemsForDrop = 0
+        var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+        func slideDraggedImage(to screenPoint: NSPoint) {}
+        func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?,
+                                    classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+                                    using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+        func resetSpringLoading() {}
+    }
+
+    @MainActor static func folderDropChecks() {
+        let fm = FileManager.default
+        let dropA = scratch.appending(path: "DropA"), dropB = scratch.appending(path: "DropB")
+        let dropFile = scratch.appending(path: "Dropped.md")
+        for d in [dropA, dropB] { try? fm.createDirectory(at: d, withIntermediateDirectories: true) }
+        try? "x".write(to: dropFile, atomically: true, encoding: .utf8)
+        try? "n".write(to: dropA.appending(path: "n.md"), atomically: true, encoding: .utf8)
+        let wc = EditorWindowController()
+        wc.sidebar.loadViewIfNeeded()
+        let ov = wc.sidebar.outlineView
+        let tree = Library.shared.tree
+        func drop(_ urls: [URL]) -> (NSDragOperation, Bool) {
+            let info = FakeDrag(urls)
+            let op = wc.sidebar.outlineView(ov, validateDrop: info, proposedItem: nil, proposedChildIndex: -1)
+            return (op, op.isEmpty ? false : wc.sidebar.outlineView(ov, acceptDrop: info, item: OrganizerSection.all[0], childIndex: -1))
+        }
+        func canonical(_ url: URL?) -> String? { url.map(LibraryListing.canonicalPath) }
+        let base = tree.roots.count
+
+        let fileDrop = drop([dropFile])
+        check(fileDrop.0.isEmpty && !fileDrop.1 && tree.roots.count == base, "drop: a file dropped on the organizer is refused")
+        let mixed = drop([dropA, dropFile])
+        check(mixed.0.isEmpty && tree.roots.count == base, "drop: a mix of folder and file is refused")
+
+        let one = drop([dropA])
+        check(!one.0.isEmpty && one.1 && tree.roots.count == base + 1, "drop: a folder is added as a location")
+        check(canonical(wc.sidebar.selectedURL) == canonical(dropA), "drop: the new location is the selected organizer row")
+        check(locationRows(wc).contains { canonical($0.url) == canonical(dropA) }, "drop: the location shows under Locations")
+        check(listNames(wc) == ["n.md"], "drop: the new location's contents fill the file list")
+        check(fm.fileExists(atPath: dropA.appending(path: "n.md").path), "drop: the folder on disk is untouched")
+
+        _ = drop([dropA])
+        check(tree.roots.count == base + 1, "drop: the same folder again is a no-op")
+
+        let before = tree.roots.count
+        let two = drop([dropB, dropA])
+        check(two.1 && tree.roots.count == before + 1 && canonical(tree.roots.last?.url) == canonical(dropB)
+              && canonical(wc.sidebar.selectedURL) == canonical(dropB), "drop: several folders add the new ones in order")
+
+        check(NSDocumentController.shared is AerisDocumentController, "open: the document controller accepts folders")
+        let dropC = scratch.appending(path: "DropC")
+        try? fm.createDirectory(at: dropC, withIntermediateDirectories: true)
+        var done = 0
+        var opened: NSDocument?
+        let dc = NSDocumentController.shared
+        let rootsBefore = tree.roots.count
+        dc.openDocument(withContentsOf: dropC, display: false) { doc, _, _ in opened = doc; done += 1 }
+        dc.openDocument(withContentsOf: dropFile, display: false) { doc, _, _ in if let doc { opened = doc }; done += 1 }
+        check(wait(timeout: 5) { done == 2 }, "open: both chosen URLs were handled")
+        check(tree.roots.count == rootsBefore + 1 && canonical(tree.roots.last?.url) == canonical(dropC), "open: a chosen folder is added as a location")
+        check(canonical(opened?.fileURL) == canonical(dropFile) && !dc.documents.contains { canonical($0.fileURL) == canonical(dropC) },
+              "open: a chosen file opens as a document")
+        opened?.close()
         wc.close()
     }
 
