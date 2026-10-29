@@ -82,7 +82,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   collapsed; hide Smart Folders → section gone, back after re-enabling and relaunch;
   empty Favorites shows its hint.
 
-- [ ] **M2-6 — File list rows: excerpt, date, open marker.** Each file row shows the
+- [x] **M2-6 — File list rows: excerpt, date, open marker.** Each file row shows the
   name (extension per a "show extensions" setting), a date on the right (time for
   today, "Yesterday", otherwise a short date) and up to two lines of excerpt: the text
   with Markdown removed (`MarkdownCore`, tested). An empty file reads "No text". A

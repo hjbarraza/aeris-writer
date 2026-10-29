@@ -90,7 +90,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   *Verify:* update fixtures; mdcheck asserts curly quotes in prose and straight quotes
   inside `code`.
 
-- [ ] **M1-10 — External changes to the open document (H, 2026-10-29).** When another
+- [x] **M1-10 — External changes to the open document (H, 2026-10-29).** When another
   app or process changes, replaces, moves or deletes the file of an open document,
   Aeris detects it (NSFilePresenter via NSDocument: `presentedItemDidChange`,
   `presentedItemDidMove`, `accommodatePresentedItemDeletion`, comparing the file
@@ -125,7 +125,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   *Verify:* a document with a table of contents → click an entry → preview scrolls there, no
   Finder window opens; a link to `other.md` opens it in Aeris.
 
-- [ ] **M1-12 — Line endings stay consistent.** In a CRLF document, Return and every edit
+- [x] **M1-12 — Line endings stay consistent.** In a CRLF document, Return and every edit
   command insert CRLF, so a file never ends up with mixed endings.
   *Verify:* open a CRLF file, add lines with Return and list continuation, save → every line
   ends in CRLF (`od -c`).
@@ -149,7 +149,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   bytes unchanged by opening.
 
 
-- [ ] **M1-15 — The preview never navigates on its own.** The preview loads only the HTML
+- [x] **M1-15 — The preview never navigates on its own.** The preview loads only the HTML
   Aeris renders for it. Every other navigation is cancelled: forms, meta refresh, iframes or
   embeds pointing elsewhere, and any `file:` page. In-page `#anchor` moves are allowed.
   Link clicks keep M1-11's rules. A `file:` link with a host other than empty or `localhost`
