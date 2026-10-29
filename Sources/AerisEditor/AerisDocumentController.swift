@@ -9,6 +9,27 @@ final class AerisDocumentController: NSDocumentController {
         super.noteNewRecentDocumentURL(url)
     }
 
+    /// File ▸ New (⌘N): with a library folder shown, a draft that saves itself into that folder
+    /// (M2-8); otherwise, or when the setting says so, the classic untitled document.
+    @MainActor @objc func newDraft(_ sender: Any?) {
+        let source = (NSApp.mainWindow ?? NSApp.keyWindow)?.windowController as? EditorWindowController
+        guard let draft = makeDraft(from: source) else { return newDocument(sender) }
+        draft.showWindows()
+    }
+
+    /// A draft for the folder `source` lists, in a window showing that folder; nil when ⌘N is set
+    /// to the classic untitled document or `source` lists no folder.
+    @MainActor func makeDraft(from source: EditorWindowController?) -> DraftDocument? {
+        guard DraftSettings.newMakesDraft, let source, let folder = source.fileList.folder?.url else { return nil }
+        let draft = DraftDocument(folder: folder)
+        draft.fileType = defaultType
+        addDocument(draft)
+        draft.makeWindowControllers()
+        (draft.windowControllers.first as? EditorWindowController)?.restoreLibraryView(
+            folderPath: folder.path, selectedPath: nil, expandedPaths: source.sidebar.expandedFolderPaths)
+        return draft
+    }
+
     override func runModalOpenPanel(_ openPanel: NSOpenPanel, forTypes types: [String]?) -> Int {
         openPanel.canChooseDirectories = true
         return super.runModalOpenPanel(openPanel, forTypes: types)
