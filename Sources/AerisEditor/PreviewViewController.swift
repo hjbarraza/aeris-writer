@@ -8,7 +8,7 @@ import MarkdownCore
 /// only the web view update happens on main. After the first load the body is swapped
 /// in place, which keeps scroll position and avoids flashing.
 final class PreviewViewController: NSViewController, WKNavigationDelegate {
-    private var webView: WKWebView!
+    private var webView: PreviewWebView!
     private var loaded = false
     /// False from issuing a page load until it finishes. A body swap before then would
     /// hit the old or blank page and be lost when the load commits, so it waits here.
@@ -33,7 +33,7 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
     }
 
     #if DEBUG
-    var webViewForTesting: WKWebView { webView }
+    var webViewForTesting: PreviewWebView { webView }
     #endif
 
     weak var document: MarkdownDocument? {
@@ -65,7 +65,8 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
         // evaluateJavaScript calls are unaffected by this setting.
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
-        webView = WKWebView(frame: .zero, configuration: config)
+        webView = PreviewWebView(frame: .zero, configuration: config)
+        webView.linkMenuItems = { [weak self] in self?.menuItems(for: $0) ?? [] }
         webView.navigationDelegate = self
         view = webView
     }
@@ -225,5 +226,74 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
     func scroll(toAnchor id: String) {
         webView.callAsyncJavaScript("document.getElementById(id)?.scrollIntoView()", arguments: ["id": id],
                                     in: nil, in: .defaultClient)
+    }
+
+    // MARK: Link menu (M1-18)
+
+    /// Where "Reveal in Finder" goes. Replaceable so a headless check opens nothing.
+    var revealInFinder: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
+    /// Where "Copy Link" writes. Replaceable so a headless check leaves the real pasteboard alone.
+    var pasteboard: NSPasteboard = .general
+
+    /// The menu for a right-click on a link. Every item goes through `LinkAction.decide`, so the
+    /// rules of a click (file host, same page, only Markdown files) apply to the menu too.
+    func menuItems(for url: URL) -> [NSMenuItem] {
+        let action = LinkAction.decide(url, documentURL: document?.fileURL)
+        var items: [NSMenuItem] = []
+        switch action {
+        case .openDocument(let file):
+            items = [
+                BlockMenuItem("Open") { [weak self] in self?.perform(action) },
+                BlockMenuItem("Open in New Tab") { [weak self] in self?.open(file, asTab: true) },
+                BlockMenuItem("Open in New Window") { [weak self] in self?.open(file, asTab: false) },
+                BlockMenuItem("Reveal in Finder") { [weak self] in self?.reveal(file) },
+            ]
+        case .system(let target):
+            items = [BlockMenuItem(target.scheme?.lowercased() == "mailto" ? "Open in Mail" : "Open in Browser") { [weak self] in
+                self?.perform(action)
+            }]
+        case .scroll:
+            items = [BlockMenuItem("Jump to Section") { [weak self] in self?.perform(action) }]
+        case .ignore:
+            break
+        }
+        items.append(BlockMenuItem("Copy Link") { [weak self] in
+            self?.pasteboard.clearContents()
+            self?.pasteboard.setString(url.absoluteString, forType: .string)
+        })
+        return items
+    }
+
+    private func fail(missing url: URL) {
+        let error = CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
+        if let window = view.window {
+            window.presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)
+        } else {
+            NSApp.presentError(error)
+        }
+    }
+
+    private func reveal(_ file: URL) {
+        guard FileManager.default.fileExists(atPath: file.path) else { return fail(missing: file) }
+        revealInFinder(file)
+    }
+
+    /// Opens `file` as a tab of this window, or in a window of its own. A document that is
+    /// already open anywhere is brought forward instead of opened twice.
+    func open(_ file: URL, asTab: Bool) {
+        guard FileManager.default.fileExists(atPath: file.path) else { return fail(missing: file) }
+        let dc = NSDocumentController.shared
+        if let doc = dc.document(for: file) { doc.showWindows(); return }
+        let host = view.window
+        dc.openDocument(withContentsOf: file, display: false) { doc, _, _ in
+            MainActor.assumeIsolated {
+                guard let doc else { return }
+                doc.makeWindowControllers()
+                guard let window = doc.windowControllers.first?.window else { return }
+                window.tabbingMode = asTab ? .preferred : .disallowed
+                if asTab, let host { host.addTabbedWindow(window, ordered: .above) }
+                window.makeKeyAndOrderFront(nil)
+            }
+        }
     }
 }
