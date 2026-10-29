@@ -16,6 +16,12 @@ check(html.contains("<strong>world</strong>"), "strong renders")
 let page = MarkdownCore.htmlDocument(body: "<p>hi</p>", title: "T <x>")
 check(page.contains("<p>hi</p>") && page.contains("name=\"color-scheme\" content=\"light dark\"")
       && page.contains("prefers-color-scheme: dark") && page.contains("T &lt;x&gt;"), "htmlDocument template")
+check(MarkdownCore.language(of: "Bonjour, ceci est un document en français avec plusieurs phrases pour la détection.") == "fr"
+      && MarkdownCore.language(of: "This is an English document with several words in it.") == "en"
+      && MarkdownCore.language(of: "") == nil, "language detection")
+check(MarkdownCore.htmlDocument(body: "", title: "T", lang: "fr").contains("<html lang=\"fr\">")
+      && !MarkdownCore.htmlDocument(body: "", title: "T").contains("lang="), "htmlDocument lang")
+check(MarkdownCore.previewBody(" \n\t").contains("class=\"empty\"") && MarkdownCore.previewBody("# A").contains("<h1"), "empty preview placeholder")
 check(MarkdownCore.html("a < b & c").contains("a &lt; b &amp; c"), "html escaped")
 
 // Fixtures: name.md is rendered; each non-empty line of name.expected is a
