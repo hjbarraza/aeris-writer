@@ -25,6 +25,8 @@ final class EditorWindowController: NSWindowController {
     /// three, so it has its own name rather than reading a layout of the wrong shape.
     @MainActor static var splitAutosaveName: String { layoutKey + ".Columns" }
 
+    func focusEditor() { editor.focusText() }
+
     var isSidebarCollapsed: Bool { splitViewController.splitViewItems[0].isCollapsed }
 
     init() {

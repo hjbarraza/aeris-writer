@@ -68,6 +68,9 @@ enum MainMenu {
             }(),
         ]))
         main.addItem(viewMenu())
+        main.addItem(submenu("Go", [
+            item("Quick Search\u{2026}", #selector(EditorWindowController.showQuickSearch(_:)), "O"),
+        ]))
         let window = submenu("Window", [
             item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
             item("Zoom", #selector(NSWindow.performZoom(_:))),
