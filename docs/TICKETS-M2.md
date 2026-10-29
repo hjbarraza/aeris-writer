@@ -177,6 +177,12 @@ filter field at the bottom. Editor (right), with the preview beside it.
   delete; trash 3 files where one is locked → one alert listing it, the
   other two trashed; rename the open file → editor keeps the document, title updates.
 
+- [ ] **M2-10b — Undo for file operations.** ⌘Z after New File, New Folder, Rename,
+  Duplicate, New Folder with Selection or Move to Trash reverses it (Trash: put back from
+  the Trash), as Finder does; Edit ▸ Undo names the operation.
+  *Verify:* each operation then ⌘Z → disk as before; ⌘⇧Z redoes; the open document
+  follows an undone rename.
+
 - [ ] **M2-11 — Get Info popover.** Get Info (context menu, File menu ⌥⌘I; ⌘I stays Italic) opens an
   in-app popover anchored to the row: icon or thumbnail, Name, Size, Extension, Date
   Created, Date Modified. Not Finder's window.
