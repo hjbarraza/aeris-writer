@@ -166,15 +166,15 @@ filter field at the bottom. Editor (right), with the preview beside it.
   enters rename mode), New Folder with Selection (several rows selected), Duplicate
   ("Name copy", then "Name copy 2"), Rename (inline; name selected without extension;
   Return commits, Esc restores, empty or unchanged does nothing), Move to Trash (no
-  prompt), and with Option held **Delete Immediately…** (confirmation naming the item,
-  or the count when several), Show in Finder, Share ▸ (system share menu), Sort By ▸,
+  prompt; the only way files leave — the app never deletes permanently, H 2026-10-29),
+  Show in Finder, Share ▸ (system share menu), Sort By ▸,
   View Options ▸. Multi-selection everywhere. All through `FileManager` with file
   coordination, off the main thread. Failures of a multi-item operation are collected
   into one alert sheet. An open document survives a rename or move.
   *Verify:* right-click a file inside a subfolder → New File → appears in that
   subfolder in rename mode; rename → Esc → old name, disk untouched; rename to "" → no
-  change; Move to Trash → in Finder's Trash, no prompt; Option → Delete Immediately →
-  confirmation → gone; trash 3 files where one is locked → one alert listing it, the
+  change; Move to Trash → in Finder's Trash, no prompt; no menu offers a permanent
+  delete; trash 3 files where one is locked → one alert listing it, the
   other two trashed; rename the open file → editor keeps the document, title updates.
 
 - [ ] **M2-11 — Get Info popover.** Get Info (context menu, File menu ⌥⌘I; ⌘I stays Italic) opens an
