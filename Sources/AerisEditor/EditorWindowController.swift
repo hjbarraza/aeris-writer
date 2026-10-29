@@ -79,7 +79,12 @@ final class EditorWindowController: NSWindowController {
         window.isRestorable = !AppDefaults.isolated
         // Ctrl-Tab moves the keyboard between the editor and the sidebar.
         window.autorecalculatesKeyViewLoop = true
+        // New documents and File > Open join the key window as tabs.
+        window.tabbingMode = .preferred
         super.init(window: window)
+        fileList.onOpenElsewhere = { [weak self] url, asTab in self?.preview.open(url, asTab: asTab) }
+        NotificationCenter.default.addObserver(self, selector: #selector(splitDidResize(_:)),
+                                               name: NSSplitView.didResizeSubviewsNotification, object: split.splitView)
         preview.openDocument = { [weak self] url in self?.openLinked(url) }
         editor.onLink = { [weak self] url in self?.preview.handleLink(url) }
         fileList.onOpen = { [weak self] url, focusEditor in self?.open(url, focusEditor: focusEditor) }
@@ -97,6 +102,53 @@ final class EditorWindowController: NSWindowController {
         }
         NotificationCenter.default.addObserver(self, selector: #selector(windowDidBecomeKey(_:)),
                                                name: NSWindow.didBecomeKeyNotification, object: window)
+    }
+
+    // MARK: Tabs (M2-26)
+
+    /// The tab bar's +: a new untitled document as a tab of this window, listing this tab's folder.
+    override func newWindowForTab(_ sender: Any?) {
+        let controller = NSDocumentController.shared
+        guard let host = window, let type = controller.defaultType,
+              let doc = try? controller.makeUntitledDocument(ofType: type) else { return }
+        controller.addDocument(doc)
+        doc.makeWindowControllers()
+        guard let new = doc.windowControllers.first as? EditorWindowController, let newWindow = new.window else { return }
+        new.fileList.showFolder(fileList.folder)
+        newWindow.tabbingMode = .preferred
+        host.addTabbedWindow(newWindow, ordered: .above)
+        newWindow.makeKeyAndOrderFront(nil)
+    }
+
+    /// The window controller that was key before the current one: a new tab takes its library widths.
+    @MainActor private static weak var lastKey: EditorWindowController?
+    @MainActor private static var syncingWidths = false
+
+    /// The organizer's and the list's widths, or nil while either is collapsed.
+    private var libraryWidths: [CGFloat]? {
+        let items = splitViewController.splitViewItems[0..<2]
+        guard items.allSatisfy({ !$0.isCollapsed }) else { return nil }
+        return items.map { $0.viewController.view.frame.width.rounded() }
+    }
+
+    private func setLibraryWidths(_ widths: [CGFloat]) {
+        guard libraryWidths != nil, libraryWidths != widths else { return }
+        let split = splitViewController.splitView
+        split.setPosition(widths[0], ofDividerAt: 0)
+        split.setPosition(widths[0] + split.dividerThickness + widths[1], ofDividerAt: 1)
+    }
+
+    /// The other tabs of this window.
+    private var siblingControllers: [EditorWindowController] {
+        (window?.tabbedWindows ?? []).filter { $0 !== window }.compactMap { $0.windowController as? EditorWindowController }
+    }
+
+    /// A divider moved in the key tab: the other tabs follow, so the library keeps its size across tabs.
+    @objc private func splitDidResize(_ notification: Notification) {
+        guard !Self.syncingWidths, window?.tabGroup?.selectedWindow === window, let widths = libraryWidths else { return }
+        Self.syncingWidths = true
+        defer { Self.syncingWidths = false }
+        siblingControllers.forEach { $0.setLibraryWidths(widths) }
     }
 
     // MARK: Window restoration
@@ -195,6 +247,13 @@ final class EditorWindowController: NSWindowController {
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
         reveal((document as? NSDocument)?.fileURL, expandingAncestors: false)
+        if let previous = Self.lastKey, previous !== self, siblingControllers.contains(where: { $0 === previous }),
+           let widths = previous.libraryWidths {
+            Self.syncingWidths = true
+            setLibraryWidths(widths)
+            Self.syncingWidths = false
+        }
+        Self.lastKey = self
     }
 
     /// Opens a file row the user chose in the file list. A click in the list also moves
@@ -216,15 +275,15 @@ final class EditorWindowController: NSWindowController {
     /// Shows a link's failure. Replaceable so a headless check shows nothing.
     var presentLinkError: (Error) -> Void = { _ in }
 
-    /// Opens a Markdown file linked from the document (preview click or editor ⌘-click) in this
-    /// window, the way a library row opens. A missing file is reported without touching the
-    /// current document.
+    /// Opens a Markdown file linked from the document (preview click or editor ⌘-click) in a new
+    /// tab of this window (a file already open is brought forward). A missing file is reported
+    /// without touching the current document.
     private func openLinked(_ url: URL) {
         guard FileManager.default.fileExists(atPath: url.path) else {
             let error = CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
             return presentLinkError(error)
         }
-        open(url, focusEditor: false)
+        preview.open(url, asTab: true)
     }
 
     /// Highlights `url` in the file list. A document change also selects the document's location

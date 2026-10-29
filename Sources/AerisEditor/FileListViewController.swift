@@ -6,6 +6,25 @@ import MarkdownCore
 final class FileListTableView: NSTableView {
     var onReturn: (@MainActor () -> Void)?
     var onEnclosingFolder: (@MainActor () -> Void)?
+    /// A ⌘-click or ⌥⌘-click on a row; true if it was taken (the click then selects nothing).
+    var onModifiedClick: (@MainActor (_ row: Int, NSEvent.ModifierFlags) -> Bool)?
+    /// The right-click menu for a row.
+    var menuProvider: (@MainActor (_ row: Int) -> [NSMenuItem])?
+
+    override func mouseDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let row = row(at: convert(event.locationInWindow, from: nil))
+        if flags.contains(.command), row >= 0, onModifiedClick?(row, flags) == true { return }
+        super.mouseDown(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let items = menuProvider?(row(at: convert(event.locationInWindow, from: nil))) ?? []
+        guard !items.isEmpty else { return nil }
+        let menu = NSMenu()
+        items.forEach(menu.addItem)
+        return menu
+    }
 
     override func keyDown(with event: NSEvent) {
         switch (event.keyCode, event.modifierFlags.intersection(.deviceIndependentFlagsMask)) {
@@ -158,6 +177,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.target = self
         tableView.action = #selector(rowClicked(_:))
         tableView.doubleAction = #selector(rowDoubleClicked(_:))
+        tableView.onModifiedClick = { [weak self] row, flags in self?.modifiedClick(row: row, flags: flags) ?? false }
+        tableView.menuProvider = { [weak self] row in self?.contextMenuItems(forRow: row) ?? [] }
         tableView.onReturn = { [weak self] in self?.openSelectedFolder() }
         tableView.onEnclosingFolder = { [weak self] in self?.goUp() }
         upButton.target = self
@@ -339,6 +360,25 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     @objc private func upClicked(_ sender: Any?) { goUp() }
 
     // MARK: Opening
+
+    /// Set by the window controller: opens a file in a new tab of this window, or in a window of its own.
+    var onOpenElsewhere: (@MainActor (URL, _ asTab: Bool) -> Void)?
+
+    /// The right-click menu of a file row; folders and empty space have none.
+    func contextMenuItems(forRow row: Int) -> [NSMenuItem] {
+        guard let node = node(atRow: row), !node.isDirectory else { return [] }
+        return [
+            BlockMenuItem("Open in New Tab") { [weak self] in self?.onOpenElsewhere?(node.url, true) },
+            BlockMenuItem("Open in New Window") { [weak self] in self?.onOpenElsewhere?(node.url, false) },
+        ]
+    }
+
+    /// ⌘-click opens a file row in a new tab, ⌥⌘-click in a new window.
+    private func modifiedClick(row: Int, flags: NSEvent.ModifierFlags) -> Bool {
+        guard flags == [.command] || flags == [.command, .option], let node = node(atRow: row), !node.isDirectory else { return false }
+        onOpenElsewhere?(node.url, !flags.contains(.option))
+        return true
+    }
 
     /// A row was clicked: a file opens and the editor takes the keyboard.
     @objc private func rowClicked(_ sender: Any?) {

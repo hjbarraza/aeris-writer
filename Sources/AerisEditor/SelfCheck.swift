@@ -86,6 +86,7 @@ enum SelfCheck {
         externalChangeChecks()
         linkChecks()
         linkMenuChecks()
+        tabChecks()
         navigationChecks()
         rowChecks()
         restorationChecks()
@@ -2186,10 +2187,139 @@ enum SelfCheck {
         check(errors.count == 1 && (errors[0] as? CocoaError)?.code == .fileNoSuchFile && wc.document === doc,
               "links: a missing .md shows an error and leaves the document alone")
         openLinked(other)
-        check(wait(timeout: 3) { (wc.document as? MarkdownDocument)?.textStorage.string == "other doc" }
-              && errors.count == 1, "links: an existing .md opens in the same window")
-
+        let otherDoc = Box<NSDocument?>(nil)
+        check(wait(timeout: 3) { otherDoc.value = dc.document(for: other); return otherDoc.value?.windowControllers.first?.window != nil }
+              && wc.window?.tabbedWindows?.contains { $0 === otherDoc.value?.windowControllers.first?.window } == true
+              && wc.document === doc && errors.count == 1, "links: an existing .md opens in a new tab of the same window")
         wc.close()
+    }
+
+    /// M2-26: native tabs. Row menu and modified clicks, no duplicate tabs, the tab bar's +,
+    /// the menus, and library widths shared by the tabs of one window.
+    @MainActor static func tabChecks() {
+        let fm = FileManager.default
+        let dc = NSDocumentController.shared
+        let loc = scratch.appending(path: "TabLib")
+        try? fm.createDirectory(at: loc.appending(path: "sub"), withIntermediateDirectories: true)
+        for n in ["A", "B", "C", "D"] { try? "\(n) doc".write(to: loc.appending(path: "\(n).md"), atomically: true, encoding: .utf8) }
+        Library.shared.addLocation(loc)
+        func open(_ n: String) -> MarkdownDocument {
+            let d = try! dc.makeDocument(withContentsOf: loc.appending(path: "\(n).md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
+            dc.addDocument(d); d.makeWindowControllers()
+            return d
+        }
+        func doc(_ n: String) -> NSDocument? { dc.document(for: loc.appending(path: "\(n).md")) }
+        func window(_ n: String) -> NSWindow? { doc(n)?.windowControllers.first?.window }
+        let docA = open("A")
+        let wc = docA.windowControllers[0] as! EditorWindowController
+        let win = wc.window!
+        check(win.tabbingMode == .preferred, "tabs: a document window prefers a tab (new documents and File > Open join the key window)")
+        win.setContentSize(NSSize(width: 1320, height: 400))
+        win.orderFront(nil)
+        win.contentView?.layoutSubtreeIfNeeded()
+        let list = wc.fileList, table = list.tableView
+        func row(_ name: String) -> Int { (0..<table.numberOfRows).first { list.node(atRow: $0)?.name == name } ?? -1 }
+        check(wait(timeout: 3) { row("B.md") >= 0 }, "tabs: the list shows the folder")
+        let base = win.tabbedWindows?.count ?? 1  // windows from earlier checks may already be in this tab group
+
+        // Row context menu.
+        check(list.contextMenuItems(forRow: row("B.md")).map(\.title) == ["Open in New Tab", "Open in New Window"],
+              "tabs: a file row's menu offers Open in New Tab and Open in New Window")
+        check(list.contextMenuItems(forRow: row("sub")).isEmpty && list.contextMenuItems(forRow: -1).isEmpty,
+              "tabs: a folder row or empty space has no tab items")
+        if let i = list.contextMenuItems(forRow: row("B.md")).first(where: { $0.title == "Open in New Tab" }), let t = i.target, let a = i.action {
+            _ = t.perform(a, with: i)
+        }
+        check(wait(timeout: 3) { win.tabbedWindows?.count == base + 1 && window("B") != nil }
+              && win.tabbedWindows?.contains { $0 === window("B") } == true,
+              "tabs: Open in New Tab adds a tab to this window (\(win.tabbedWindows?.count ?? 0) tabs)")
+        check((wc.document as? NSDocument) === docA && docA.windowControllers.first === wc,
+              "tabs: the first tab keeps its document")
+
+        // A document open in another tab is selected, not opened again.
+        _ = wait(timeout: 1) { false }
+        win.makeKeyAndOrderFront(nil)
+        let docCount = dc.documents.count
+        let openedB = Box(false)
+        wc.replaceDocument(with: loc.appending(path: "B.md")) { _ in openedB.value = true }
+        check(wait(timeout: 3) { win.tabGroup?.selectedWindow === window("B") } && openedB.value
+              && dc.documents.count == docCount && (wc.document as? NSDocument) === docA,
+              "tabs: opening a file that is in tab 2 from tab 1 selects tab 2")
+        win.makeKeyAndOrderFront(nil)
+        _ = wait(timeout: 3) { win.tabGroup?.selectedWindow === win }
+        func click(_ r: Int, _ flags: NSEvent.ModifierFlags) {
+            let rect = table.rect(ofRow: r)
+            let p = table.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+            let e = NSEvent.mouseEvent(with: .leftMouseDown, location: p, modifierFlags: flags,
+                                       timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: win.windowNumber,
+                                       context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            table.mouseDown(with: e)
+        }
+        click(row("B.md"), .command)
+        check(wait(timeout: 3) { win.tabGroup?.selectedWindow === window("B") } && win.tabbedWindows?.count == base + 1,
+              "tabs: command-click on a row whose file is in a tab selects it")
+        win.makeKeyAndOrderFront(nil)
+
+        // Command-click opens a tab, option-command-click a window; the current document stays.
+        click(row("C.md"), .command)
+        check(wait(timeout: 3) { win.tabbedWindows?.count == base + 2 && window("C") != nil } && (wc.document as? NSDocument) === docA
+              && win.tabbedWindows?.contains { $0 === window("C") } == true,
+              "tabs: command-click on a row opens it in a new tab and leaves this tab's document alone")
+        win.makeKeyAndOrderFront(nil)
+        click(row("D.md"), [.command, .option])
+        check(wait(timeout: 3) { window("D") != nil } && window("D")?.tabbedWindows == nil && win.tabbedWindows?.count == base + 2
+              && (wc.document as? NSDocument) === docA,
+              "tabs: option-command-click on a row opens it in a window of its own")
+
+        // The tab bar's +.
+        let before = dc.documents.count
+        win.makeKeyAndOrderFront(nil)
+        wc.newWindowForTab(nil)
+        let fresh = dc.documents.first { $0.fileURL == nil && $0.windowControllers.first?.window?.tabbedWindows?.contains { $0 === win } == true }
+        check(wait(timeout: 3) { win.tabbedWindows?.count == base + 3 } && dc.documents.count == before + 1 && fresh != nil,
+              "tabs: the tab bar's + opens a new untitled tab in this window (\(win.tabbedWindows?.count ?? 0) tabs)")
+
+        // Menus.
+        let menu = MainMenu.make()
+        func menuItem(_ top: String, _ sel: Selector) -> NSMenuItem? {
+            menu.items.first { $0.title == top }?.submenu?.items.first { $0.action == sel }
+        }
+        let tabBar = menuItem("View", #selector(NSWindow.toggleTabBar(_:)))
+        let overview = menuItem("View", #selector(NSWindow.toggleTabOverview(_:)))
+        check(tabBar != nil && overview != nil && overview?.keyEquivalent == "\\"
+              && overview?.keyEquivalentModifierMask == [.command, .shift],
+              "tabs: View has Show Tab Bar and Show All Tabs (shift-command-backslash)")
+        check(menuItem("Window", #selector(NSWindow.mergeAllWindows(_:))) != nil, "tabs: Window has Merge All Windows")
+
+        // Library widths follow across the tabs of one window.
+        func widths(_ w: EditorWindowController) -> [CGFloat] {
+            w.splitViewController.splitViewItems[0..<2].map { $0.viewController.view.frame.width.rounded() }
+        }
+        let other = window("B")?.windowController as! EditorWindowController
+        other.splitViewController.showLibrary()
+        _ = wait(timeout: 3) { other.splitViewController.splitViewItems[0..<2].allSatisfy { !$0.isCollapsed } }
+        _ = wait(timeout: 0.7) { false }  // the show animation finishes before the widths are compared
+        win.makeKeyAndOrderFront(nil)
+        win.contentView?.layoutSubtreeIfNeeded()
+        let split = wc.splitViewController.splitView
+        split.setPosition(300, ofDividerAt: 0)
+        split.setPosition(300 + split.dividerThickness + 330, ofDividerAt: 1)
+        split.layoutSubtreeIfNeeded()
+        check(wait(timeout: 3) { widths(other) == widths(wc) } && widths(wc) == [300, 330],
+              "tabs: dragging the library dividers in tab 1 resizes tab 2 to match (\(widths(wc)) vs \(widths(other)))")
+        other.window?.makeKeyAndOrderFront(nil)
+        other.splitViewController.splitView.setPosition(250, ofDividerAt: 0)
+        check(wait(timeout: 3) { widths(other)[0] == 250 && widths(wc)[0] == 250 },
+              "tabs: and the other way round (\(widths(wc)) vs \(widths(other)))")
+
+        // Window > Merge All Windows brings the separate window in.
+        win.makeKeyAndOrderFront(nil)
+        win.mergeAllWindows(nil)
+        check(wait(timeout: 3) { win.tabbedWindows?.contains { $0 === window("D") } == true },
+              "tabs: Merge All Windows gathers the separate window into the tabs (\(win.tabbedWindows?.count ?? 0))")
+
+        for n in ["D", "C", "B"] { doc(n)?.close() }
+        fresh?.close()
     }
 
     /// M1-18: the preview's own link menu. Builds the menu for each link kind and runs every item.
