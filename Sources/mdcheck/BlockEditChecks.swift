@@ -130,6 +130,46 @@ func runBlockEditChecks() {
     check(ListEdit.newline(text: "- a\n\nTitle\n-", selection: r(12)) == nil, "newline: setext underline after a list and a blank line")
     check(ap("x\r\ny\r\n- a", ListEdit.newline(text: "x\r\ny\r\n- a", selection: r(9))!) == "x\r\ny\r\n- a\r\n- ", "newline: document line ending from an earlier line")
 
+    // Lists: ordered renumbering (M1.5-23)
+    e = ListEdit.newline(text: "1. a\n2. b\n3. c", selection: r(4))!
+    check(ap("1. a\n2. b\n3. c", e) == "1. a\n2. \n3. b\n4. c" && e.selection == r(8), "renumber: Return mid-list renumbers the items below")
+    check(ap("1. a\n2. b", ListEdit.newline(text: "1. a\n2. b", selection: r(3))!) == "1. \n2. a\n3. b", "renumber: Return splitting an item")
+    check(ap("1) a\n2) b", ListEdit.newline(text: "1) a\n2) b", selection: r(4))!) == "1) a\n2) \n3) b", "renumber: paren delimiter")
+    check(ap("1. a\n\n2. b", ListEdit.newline(text: "1. a\n\n2. b", selection: r(4))!) == "1. a\n2. \n\n3. b", "renumber: across a blank line (loose list)")
+    check(ap("1. a\n   1. x\n2. b", ListEdit.newline(text: "1. a\n   1. x\n2. b", selection: r(4))!) == "1. a\n2. \n   1. x\n3. b", "renumber: nested items left alone")
+    check(ap("1. a\n2. b\n\npara\n\n3. c", ListEdit.newline(text: "1. a\n2. b\n\npara\n\n3. c", selection: r(4))!) == "1. a\n2. \n3. b\n\npara\n\n3. c", "renumber: stops at the end of the list")
+    check(ap("1. a\n2. b\n- c\n3. d", ListEdit.newline(text: "1. a\n2. b\n- c\n3. d", selection: r(4))!) == "1. a\n2. \n3. b\n- c\n3. d", "renumber: stops at a bullet item")
+    check(ap("1. a\n2. \n3. b", ListEdit.newline(text: "1. a\n2. \n3. b", selection: r(8))!) == "1. a\n\n2. b", "renumber: Return on an empty item clears it and renumbers")
+    check(ap("1. a\r\n2. b", ListEdit.newline(text: "1. a\r\n2. b", selection: r(4))!) == "1. a\r\n2. \r\n3. b", "renumber: CRLF")
+    e = ListEdit.delete(text: "1. a\n2. \n3. b\n4. c", range: r(5, 4))!
+    check(ap("1. a\n2. \n3. b\n4. c", e) == "1. a\n2. b\n3. c" && e.selection == r(5), "renumber: deleting an item's line renumbers the items below")
+    check(ap("1. a\n2. b\n3. c", ListEdit.delete(text: "1. a\n2. b\n3. c", range: r(4, 1))!) == "1. a2. b\n2. c", "renumber: joining two items renumbers")
+    check(ap("1. a\n2. b\n3. c\n4. d", ListEdit.delete(text: "1. a\n2. b\n3. c\n4. d", range: r(4, 10))!) == "1. a\n2. d", "renumber: deleting across items")
+    check(ListEdit.delete(text: "1. a\n2. b\n3. c", range: r(4, 0)) == nil, "renumber: empty deletion is nil")
+    check(ListEdit.delete(text: "1. ab\n2. c", range: r(4, 1)) == nil, "renumber: deletion without a line break is nil")
+    check(ListEdit.delete(text: "- a\n- b\n- c", range: r(3, 4)) == nil, "renumber: bullet list is nil")
+    check(ListEdit.delete(text: "1. a\n2. b\n3. c", range: r(9, 5)) == nil, "renumber: deleting the last item needs no renumbering")
+    check(ap("1. a\n1. b\n1. c", ListEdit.newline(text: "1. a\n1. b\n1. c", selection: r(4))!) == "1. a\n2. \n1. b\n1. c", "renumber: a 1. 1. 1. list keeps its numbers")
+    check(ap("2019. a\n2021. b", ListEdit.newline(text: "2019. a\n2021. b", selection: r(7))!) == "2019. a\n2020. \n2021. b", "renumber: hand-picked numbers (years) are untouched")
+    check(ListEdit.delete(text: "1. a\n1. b\n1. c", range: r(4, 1)) == nil, "renumber: joining items of a 1. 1. 1. list renumbers nothing")
+    check(ListEdit.delete(text: "2019. a\n\n2021. b\n2022. c", range: r(7, 1)) == nil, "renumber: deleting a blank line in a year list renumbers nothing")
+    e = ListEdit.delete(text: "1. a\n2. b\n3. c", range: r(0, 5))!
+    check(ap("1. a\n2. b\n3. c", e) == "1. b\n2. c" && e.selection == r(0), "renumber: deleting the first item renumbers the rest from 1")
+    check(ap("# T\n1. a\n2. b", ListEdit.delete(text: "# T\n1. a\n2. b", range: r(4, 5))!) == "# T\n1. b", "renumber: deleting the first item under a heading")
+    check(ap("1. a\n   1. x\n   2. y\n2. b", ListEdit.delete(text: "1. a\n   1. x\n   2. y\n2. b", range: r(5, 8))!) == "1. a\n   1. y\n2. b", "renumber: deleting a nested list's first item")
+    // Return in item 1 of a 2,000-item list (best of 5).
+    let big = (1...2000).map { "\($0). item" }.joined(separator: "\n")
+    var best = Double.infinity
+    var bigEdit: TextEdit?
+    for _ in 0..<5 {
+        let t0 = Date()
+        bigEdit = ListEdit.newline(text: big, selection: r(7))
+        best = min(best, Date().timeIntervalSince(t0) * 1000)
+    }
+    print(String(format: "info - renumber: Return in item 1 of 2,000 items: %.1f ms", best))
+    check(bigEdit.map { ap(big, $0).hasSuffix("\n2001. item") } == true && best < 30,
+          "renumber: Return in item 1 of a 2,000-item list renumbers all, under 30 ms")
+
     // Lists: indent / outdent
     e = ListEdit.indent(text: "- a", selection: r(3))
     check(ap("- a", e) == "  - a" && e.selection == r(5), "indent: bullet by 2")
