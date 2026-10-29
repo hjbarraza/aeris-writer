@@ -22,9 +22,18 @@ func runTextEncodingChecks() {
     roundTrips(bytes([0x4E, 0x6F, 0xEB, 0x6C]), .windows1252, "Noël", "Latin-1 with accents")
     // Valid UTF-8 wins over a 1252 reading of the same bytes ("Ã©").
     roundTrips(Data("é".utf8), .utf8, "é", "ambiguous bytes")
-    // No BOM, so never UTF-16, even when the bytes look like it.
-    check(TextEncoding.decode("ab".data(using: .utf16LittleEndian)!)?.encoding == .utf8,
-          "encoding: UTF-16 not guessed without a BOM")
+    // No BOM, so never UTF-16: BOM-less UTF-16 decodes with NULs, and text with U+0000 is refused.
+    check(TextEncoding.decode("ab".data(using: .utf16LittleEndian)!) == nil, "encoding: BOM-less UTF-16 is refused")
+    check(TextEncoding.decode(Data("a\0b".utf8)) == nil, "encoding: text containing U+0000 is refused")
+    check(TextEncoding.decode(bytes([0xFF, 0xFE]) + "a\0".data(using: .utf16LittleEndian)!) == nil,
+          "encoding: U+0000 is refused in UTF-16 too")
+    // A lone surrogate (possible in an NSString) is never written, not even as U+FFFD.
+    let lone = NSString(characters: [0x61, 0xD800], length: 2) as String
+    for e in [TextEncoding.utf8, .utf8BOM, .utf16LE, .utf16BE, .windows1252] {
+        check(e.encode(lone) == nil, "encoding: an unpaired surrogate can't be written as \(e)")
+    }
+    check(TextEncoding.windows1252.displayName == "Western (Windows Latin 1)" && TextEncoding.utf8.displayName == "UTF-8",
+          "encoding: display names")
 
     check(TextEncoding.windows1252.encode("Café 👋") == nil, "encoding: an emoji can't be written as Windows-1252")
     check(TextEncoding.windows1252.encode("Café") == bytes([0x43, 0x61, 0x66, 0xE9]),

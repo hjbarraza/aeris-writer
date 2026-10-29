@@ -26,6 +26,8 @@ enum SelfCheck {
             exit(1)
         }
         check(true, "isolation: library file is a temp file, not the real Locations.plist")
+        // Never show the convert alert: record the ask and answer Keep.
+        MarkdownDocument.askToConvert = { _, example, answer in encodingAsks.append(example); answer(false) }
         shellChecks()
         layoutChecks()
         libraryChecks()
@@ -304,10 +306,11 @@ enum SelfCheck {
             try? NSDocumentController.shared.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
                 as? MarkdownDocument
         }
-        /// Saves in place; nil when the save didn't finish in time.
-        func save(_ doc: MarkdownDocument) -> Result<Void, Error>? {
+        /// Saves in place (or to `url` with `op`); nil when the save didn't finish in time.
+        func save(_ doc: MarkdownDocument, to url: URL? = nil,
+                  _ op: NSDocument.SaveOperationType = .saveOperation) -> Result<Void, Error>? {
             var result: Result<Void, Error>?
-            doc.save(to: doc.fileURL!, ofType: doc.fileType!, for: .saveOperation) { error in
+            doc.save(to: url ?? doc.fileURL!, ofType: doc.fileType!, for: op) { error in
                 result = error.map { .failure($0) } ?? .success(())
             }
             _ = wait(timeout: 3) { result != nil }
@@ -353,6 +356,119 @@ enum SelfCheck {
             check(succeeded(save(d)) && (try? Data(contentsOf: url)) == mark + Data("xcafé".utf8),
                   "encoding: UTF-8 \(bom ? "keeps its BOM" : "gains no BOM") after save")
             d.close()
+        }
+
+        // The first edit the encoding can't store asks once; Keep stops asking until the
+        // text is storable again. (The seam answers; no alert is ever shown here.)
+        let cafe = Data([0x63, 0x61, 0x66, 0xE9])  // "café" in Windows-1252
+        let askURL = dir.appending(path: "ask.md")
+        try? cafe.write(to: askURL)
+        if let d = open(askURL) {
+            encodingAsks = []
+            insert("😀", in: d)
+            check(wait(timeout: 2) { encodingAsks.count == 1 } && encodingAsks.first == "😀",
+                  "encoding: an emoji in a Windows-1252 document asks once, naming the emoji")
+            insert("é😀", in: d)
+            check(!wait(timeout: 0.3) { encodingAsks.count > 1 } && d.encoding == .windows1252,
+                  "encoding: after Keep, further emoji don't ask again and nothing converts")
+            d.textStorage.replaceCharacters(in: NSRange(location: 0, length: d.textStorage.length), with: "ok")
+            insert("😀", in: d)
+            check(wait(timeout: 2) { encodingAsks.count == 2 }, "encoding: once storable again, the next emoji asks again")
+            d.close()
+        }
+
+        guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else {
+            check(false, "encoding: close checks skipped, 'Ask to keep changes when closing documents' is on")
+            return
+        }
+        /// Asks the document whether it can close, as the window's close button does.
+        func canClose(_ doc: NSDocument) -> Bool? {
+            let probe = CloseProbe()
+            doc.canClose(withDelegate: probe, shouldClose: #selector(CloseProbe.document(_:shouldClose:contextInfo:)),
+                         contextInfo: nil)
+            _ = wait(timeout: 3) { probe.answer != nil }
+            return probe.answer
+        }
+        func isUTF8(_ url: URL, _ text: String) -> Bool { (try? Data(contentsOf: url)) == Data(text.utf8) }
+
+        // Kept encoding + emoji: close refuses (error cancelled) and the file is untouched;
+        // Convert to UTF-8 makes close save and proceed.
+        let keepURL = dir.appending(path: "keep.md")
+        try? cafe.write(to: keepURL)
+        if let d = try? ErrorAnsweringDocument(contentsOf: keepURL, ofType: "net.daringfireball.markdown") {
+            insert("😀", in: d)
+            _ = wait(timeout: 2) { !encodingAsks.isEmpty }
+            d.updateChangeCount(.changeDone)
+            check(canClose(d) == false && (try? Data(contentsOf: keepURL)) == cafe,
+                  "encoding: kept Windows-1252 + emoji: close is refused and the file is unchanged")
+            let error = d.presented.last as NSError?
+            // NSDocument wraps the error ("could not be autosaved"); the sheet shows our suggestion.
+            check(error?.localizedRecoverySuggestion?.contains("Western (Windows Latin 1)") == true
+                  && error?.localizedRecoveryOptions?.first == "Save as UTF-8",
+                  "encoding: the save error names the encoding and offers Save as UTF-8")
+            d.convertToUTF8()
+            check(canClose(d) == true && isUTF8(keepURL, "😀café"),
+                  "encoding: after Convert to UTF-8, close saves valid UTF-8 with the emoji")
+            d.close()
+        }
+
+        // The error's "Save as UTF-8" recovery converts, and close then proceeds.
+        let recoverURL = dir.appending(path: "recover.md")
+        try? cafe.write(to: recoverURL)
+        if let d = try? ErrorAnsweringDocument(contentsOf: recoverURL, ofType: "net.daringfireball.markdown") {
+            d.recoveryOption = 0
+            insert("😀", in: d)
+            _ = wait(timeout: 2) { !encodingAsks.isEmpty }
+            d.updateChangeCount(.changeDone)
+            check(canClose(d) == true && d.encoding == .utf8 && isUTF8(recoverURL, "😀café"),
+                  "encoding: choosing Save as UTF-8 in the error saves UTF-8 and close proceeds")
+            d.close()
+        }
+
+        // Save As always writes UTF-8 to the new file and never touches the original.
+        let asURL = dir.appending(path: "as-source.md"), asTarget = dir.appending(path: "as-target.md")
+        try? cafe.write(to: asURL)
+        if let d = open(asURL) {
+            check(succeeded(save(d, to: asTarget, .saveAsOperation)) && isUTF8(asTarget, "café")
+                  && (try? Data(contentsOf: asURL)) == cafe && d.encoding == .utf8,
+                  "encoding: Save As writes UTF-8, leaves the original's bytes unchanged, document is now UTF-8")
+            d.close()
+        }
+    }
+
+    /// Examples passed to `MarkdownDocument.askToConvert` during the self-check.
+    nonisolated(unsafe) static var encodingAsks: [String] = []
+
+    final class CloseProbe: NSObject {
+        var answer: Bool?
+        @objc func document(_ doc: NSDocument, shouldClose: Bool, contextInfo: UnsafeMutableRawPointer?) {
+            answer = shouldClose
+        }
+    }
+
+    /// Stands in for the user at the error sheet: records each error, then picks
+    /// `recoveryOption` (nil = Cancel), so no sheet or alert is shown.
+    final class ErrorAnsweringDocument: MarkdownDocument {
+        var recoveryOption: Int?
+        var presented: [Error] = []
+
+        override func presentError(_ error: Error, modalFor window: NSWindow, delegate: Any?,
+                                   didPresent selector: Selector?, contextInfo: UnsafeMutableRawPointer?) {
+            presented.append(error)
+            if let option = recoveryOption, let attempter = (error as NSError).recoveryAttempter as? NSObject {
+                attempter.attemptRecovery(fromError: error, optionIndex: option, delegate: delegate,
+                                          didRecoverSelector: selector, contextInfo: contextInfo)
+            } else if let target = delegate as? NSObject, let selector {
+                typealias DidPresent = @convention(c) (NSObject, Selector, Bool, UnsafeMutableRawPointer?) -> Void
+                unsafeBitCast(target.method(for: selector), to: DidPresent.self)(target, selector, false, contextInfo)
+            }
+        }
+
+        override func presentError(_ error: Error) -> Bool {
+            presented.append(error)
+            guard let option = recoveryOption, let attempter = (error as NSError).recoveryAttempter as? NSObject
+            else { return false }
+            return attempter.attemptRecovery(fromError: error, optionIndex: option)
         }
     }
 

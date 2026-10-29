@@ -28,8 +28,18 @@ struct TextEncodingTests {
         roundTrip(Data([0x4E, 0x6F, 0xEB, 0x6C]), .windows1252, "Noël")
     }
     @Test func validUTF8WinsOverWindows1252() { roundTrip(Data("é".utf8), .utf8, "é") }
-    @Test func utf16NeverGuessedWithoutBOM() {
-        #expect(TextEncoding.decode("ab".data(using: .utf16LittleEndian)!)?.encoding == .utf8)
+    @Test func nulIsRefusedSoUTF16IsNeverGuessedWithoutBOM() {
+        #expect(TextEncoding.decode("ab".data(using: .utf16LittleEndian)!) == nil)
+        #expect(TextEncoding.decode(Data("a\0b".utf8)) == nil)
+        #expect(TextEncoding.decode(Data([0xFF, 0xFE]) + "a\0".data(using: .utf16LittleEndian)!) == nil)
+    }
+    @Test(arguments: [TextEncoding.utf8, .utf8BOM, .utf16LE, .utf16BE, .windows1252])
+    func unpairedSurrogateIsNeverEncoded(_ encoding: TextEncoding) {
+        #expect(encoding.encode(NSString(characters: [0x61, 0xD800], length: 2) as String) == nil)
+    }
+    @Test func displayNames() {
+        #expect(TextEncoding.windows1252.displayName == "Western (Windows Latin 1)")
+        #expect(TextEncoding.utf8.displayName == "UTF-8")
     }
     @Test func unrepresentableTextIsNotEncoded() {
         #expect(TextEncoding.windows1252.encode("Café 👋") == nil)

@@ -10,6 +10,17 @@ import Foundation
 public enum TextEncoding: Equatable, Sendable {
     case utf8, utf8BOM, utf16LE, utf16BE, windows1252
 
+    /// The name shown to the user, e.g. in a save error.
+    public var displayName: String {
+        switch self {
+        case .utf8: "UTF-8"
+        case .utf8BOM: "UTF-8 with BOM"
+        case .utf16LE: "UTF-16 Little Endian"
+        case .utf16BE: "UTF-16 Big Endian"
+        case .windows1252: "Western (Windows Latin 1)"
+        }
+    }
+
     private static let utf8Mark: [UInt8] = [0xEF, 0xBB, 0xBF]
     private static let utf16LEMark: [UInt8] = [0xFF, 0xFE]
     private static let utf16BEMark: [UInt8] = [0xFE, 0xFF]
@@ -23,22 +34,44 @@ public enum TextEncoding: Equatable, Sendable {
             : [.utf8, .windows1252]
         for encoding in candidates {
             if let text = encoding.decodeBody(data), encoding.encode(text) == data {
-                return (text, encoding)
+                // U+0000 means binary or BOM-less UTF-16, not text: refuse rather than guess.
+                return text.utf16.contains(0) ? nil : (text, encoding)
             }
         }
         return nil
     }
 
     /// The file's bytes for `text`, BOM included, or nil when the encoding can't
-    /// represent every character (e.g. an emoji in Windows-1252).
+    /// represent every character (e.g. an emoji in Windows-1252) or the text holds an
+    /// unpaired surrogate (possible in an NSString), which is never written as U+FFFD.
     public func encode(_ text: String) -> Data? {
-        switch self {
+        if Self.hasUnpairedSurrogate(text) { return nil }
+        return switch self {
         case .utf8: Data(text.utf8)
         case .utf8BOM: Data(Self.utf8Mark) + Data(text.utf8)
         case .utf16LE: text.data(using: .utf16LittleEndian).map { Data(Self.utf16LEMark) + $0 }
         case .utf16BE: text.data(using: .utf16BigEndian).map { Data(Self.utf16BEMark) + $0 }
         case .windows1252: text.data(using: .windowsCP1252, allowLossyConversion: false)
         }
+    }
+
+    private static func hasUnpairedSurrogate(_ text: String) -> Bool {
+        // `String.utf16` repairs a bridged NSString's lone surrogates to U+FFFD, so read
+        // the NSString's own code units.
+        let ns = text as NSString
+        var units = [unichar](repeating: 0, count: ns.length)
+        ns.getCharacters(&units, range: NSRange(location: 0, length: ns.length))
+        var expectLow = false
+        for unit in units {
+            if UTF16.isTrailSurrogate(unit) {
+                if !expectLow { return true }
+                expectLow = false
+            } else {
+                if expectLow { return true }
+                expectLow = UTF16.isLeadSurrogate(unit)
+            }
+        }
+        return expectLow
     }
 
     private func decodeBody(_ data: Data) -> String? {
