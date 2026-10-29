@@ -1,5 +1,6 @@
 import AppKit
 import LibraryCore
+import MarkdownCore
 
 /// The table of the file list. Return opens the selected folder and ⌘↑ goes up to the enclosing one.
 final class FileListTableView: NSTableView {
@@ -12,6 +13,91 @@ final class FileListTableView: NSTableView {
         case (126, .command): onEnclosingFolder?()
         default: super.keyDown(with: event)
         }
+    }
+}
+
+/// A file row's view: the name, the date on the right and up to two lines of excerpt.
+final class FileCellView: NSTableCellView {
+    let nameLabel = NSTextField(labelWithString: "")
+    let dateLabel = NSTextField(labelWithString: "")
+    let excerptLabel = NSTextField(wrappingLabelWithString: "")
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        nameLabel.lineBreakMode = .byTruncatingTail
+        dateLabel.font = .systemFont(ofSize: 11)
+        dateLabel.textColor = .secondaryLabelColor
+        excerptLabel.font = .systemFont(ofSize: 12)
+        excerptLabel.textColor = .secondaryLabelColor
+        excerptLabel.maximumNumberOfLines = 2
+        excerptLabel.lineBreakMode = .byTruncatingTail
+        excerptLabel.isSelectable = false
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        dateLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        for sub in [nameLabel, dateLabel, excerptLabel] as [NSView] {
+            sub.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(sub)
+        }
+        textField = nameLabel
+        NSLayoutConstraint.activate([
+            nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+            nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            dateLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameLabel.trailingAnchor, constant: 8),
+            dateLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            dateLabel.firstBaselineAnchor.constraint(equalTo: nameLabel.firstBaselineAnchor),
+            excerptLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 2),
+            excerptLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+            excerptLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// A row; the document open in this window gets a bar at its leading edge, whatever is selected.
+final class FileRowView: NSTableRowView {
+    var showsOpenMarker = false { didSet { if showsOpenMarker != oldValue { needsDisplay = true } } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard showsOpenMarker else { return }
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 4, width: 3, height: bounds.height - 8), xRadius: 1.5, yRadius: 1.5).fill()
+    }
+}
+
+/// Excerpts of the files on screen, read off the main thread and kept until the file's modification
+/// date changes. Only reads user files, never writes them.
+@MainActor final class ExcerptStore {
+    private var cache: [String: (modified: Date, text: String)] = [:]
+    private var pending: Set<String> = []
+    private let queue = DispatchQueue(label: "aeris.excerpts", qos: .utility)
+    /// Called on the main thread with the path of a file whose excerpt just arrived.
+    var onLoaded: (@MainActor (String) -> Void)?
+
+    /// The excerpt for the file as of `modified`, or nil while it is being read.
+    func excerpt(path: String, modified: Date) -> String? {
+        if let hit = cache[path], hit.modified == modified { return hit.text }
+        let key = "\(path)\u{0}\(modified.timeIntervalSinceReferenceDate)"
+        guard pending.insert(key).inserted else { return nil }
+        queue.async {
+            let text = Self.read(path)
+            DispatchQueue.main.async { MainActor.assumeIsolated {
+                self.pending.remove(key)
+                self.cache[path] = (modified, text)
+                self.onLoaded?(path)
+            } }
+        }
+        return nil
+    }
+
+    /// The first 16 KB is more than 200 characters of text need, front matter included.
+    nonisolated private static func read(_ path: String) -> String {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return "" }
+        defer { try? handle.close() }
+        let data = (try? handle.read(upToCount: 16 * 1024)) ?? Data()
+        return Excerpt.make(String(decoding: data, as: UTF8.self))
     }
 }
 
@@ -34,6 +120,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     var onNavigate: (@MainActor () -> Void)?
     /// A programmatic selection is in progress; it never opens anything.
     private var revealing = false
+    /// Canonical path of the document open in this window; its row carries the marker.
+    private var openPath: String?
+    private let excerpts = ExcerptStore()
+    private let dates = RowDateFormatter()
+
+    /// Whether file names keep their extension. Off by default; the menu toggle comes later.
+    static let showExtensionsKey = "ShowFileExtensions"
+    private static let fileRowHeight: CGFloat = 64
 
     /// What the table shows: the folder's children as of the last reload. A disk refresh edits the
     /// folder's children before the list hears of it; row numbers must keep meaning the old rows until then.
@@ -45,6 +139,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     override func loadView() {
         tableView.style = .inset
+        excerpts.onLoaded = { [weak self] path in self?.excerptLoaded(path) }
         tableView.headerView = nil
         tableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
         tableView.dataSource = self
@@ -118,12 +213,40 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         revealing = true
         defer { revealing = false }
         let path = url.map(LibraryListing.canonicalPath)
+        setOpenPath(path)
         guard let row = rows.firstIndex(where: { $0.path == path }) else {
             tableView.deselectAll(nil)
             return
         }
         tableView.selectRowIndexes([row], byExtendingSelection: false)
         tableView.scrollRowToVisible(row)
+    }
+
+    private func setOpenPath(_ path: String?) {
+        guard path != openPath else { return }
+        let old = openPath
+        openPath = path
+        for changed in [old, path].compactMap({ $0 }) {
+            guard let row = rows.firstIndex(where: { $0.path == changed }) else { continue }
+            (tableView.rowView(atRow: row, makeIfNecessary: false) as? FileRowView)?.showsOpenMarker = changed == path
+        }
+    }
+
+    private func excerptLoaded(_ path: String) {
+        guard let row = rows.firstIndex(where: { $0.path == path }),
+              let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? FileCellView,
+              let modified = modificationDate(rows[row]) else { return }
+        cell.excerptLabel.stringValue = excerptText(rows[row], modified: modified)
+    }
+
+    private func modificationDate(_ node: LibraryNode) -> Date? {
+        try? node.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
+    /// The excerpt, "No text" for an empty file, nothing while it is being read.
+    private func excerptText(_ node: LibraryNode, modified: Date) -> String {
+        guard let text = excerpts.excerpt(path: node.path, modified: modified) else { return "" }
+        return text.isEmpty ? "No text" : text
     }
 
     /// A disk refresh changed the tree: reload if the folder on screen changed, and follow it
@@ -199,13 +322,37 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        node(atRow: row)?.isDirectory == false ? Self.fileRowHeight : tableView.rowHeight
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let id = NSUserInterfaceItemIdentifier("row")
+        let view = tableView.makeView(withIdentifier: id, owner: nil) as? FileRowView ?? FileRowView()
+        view.identifier = id
+        view.showsOpenMarker = openPath != nil && node(atRow: row)?.path == openPath
+        return view
+    }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let node = node(atRow: row) else { return nil }
+        if !node.isDirectory { return fileCell(for: node) }
         let id = NSUserInterfaceItemIdentifier("cell")
         let cell = tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView ?? makeCell(id)
-        cell.imageView?.image = NSImage(systemSymbolName: node.isDirectory ? "folder" : "doc.text",
-                                        accessibilityDescription: node.isDirectory ? "Folder" : "Document")
+        cell.imageView?.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "Folder")
         cell.textField?.stringValue = node.name
+        return cell
+    }
+
+    private func fileCell(for node: LibraryNode) -> FileCellView {
+        let id = NSUserInterfaceItemIdentifier("fileCell")
+        let cell = tableView.makeView(withIdentifier: id, owner: nil) as? FileCellView ?? FileCellView()
+        cell.identifier = id
+        let showExtension = UserDefaults.standard.bool(forKey: Self.showExtensionsKey)
+        cell.nameLabel.stringValue = showExtension ? node.name : (node.name as NSString).deletingPathExtension
+        let modified = modificationDate(node)
+        cell.dateLabel.stringValue = modified.map { dates.label(for: $0) } ?? ""
+        cell.excerptLabel.stringValue = modified.map { excerptText(node, modified: $0) } ?? ""
         return cell
     }
 

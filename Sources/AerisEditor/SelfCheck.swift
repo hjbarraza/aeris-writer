@@ -45,6 +45,7 @@ enum SelfCheck {
         encodingChecks()
         externalChangeChecks()
         linkChecks()
+        rowChecks()
         try? FileManager.default.removeItem(at: scratch)
         if failed { print("selfcheck FAILED"); exit(1) }
         print("selfcheck passed")
@@ -1507,6 +1508,72 @@ enum SelfCheck {
         override var navigationType: WKNavigationType { .linkActivated }
     }
     private final class Box<T>: @unchecked Sendable { var value: T; init(_ v: T) { value = v } }
+
+    /// File rows: name, date, excerpt and the open-document marker.
+    @MainActor static func rowChecks() {
+        guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else { return }
+        let fm = FileManager.default
+        let dc = NSDocumentController.shared
+        let loc = scratch.appending(path: "RowLib")
+        try? fm.createDirectory(at: loc.appending(path: "sub"), withIntermediateDirectories: true)
+        let calendar = Calendar.current
+        let now = Date()
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: now)!
+        let older = calendar.date(byAdding: .day, value: -5, to: now)!
+        let files: [(String, String, Date)] = [
+            ("today.md", "---\ntitle: T\n---\n\n# Hello **world**\n\nSee [docs](http://x.y).", now),
+            ("yday.md", "yesterday text", yesterday),
+            ("old.md", "old text", older),
+            ("empty.md", "", now),
+        ]
+        for (name, text, date) in files {
+            let url = loc.appending(path: name)
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+            try? fm.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+        }
+        UserDefaults.standard.removeObject(forKey: FileListViewController.showExtensionsKey)
+        defer { UserDefaults.standard.removeObject(forKey: FileListViewController.showExtensionsKey) }
+        Library.shared.addLocation(loc)
+
+        let doc = try! dc.makeDocument(withContentsOf: loc.appending(path: "old.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        let list = wc.fileList, table = list.tableView
+        func row(_ name: String) -> Int { (0..<table.numberOfRows).first { list.node(atRow: $0)?.name == name }! }
+        func cell(_ name: String) -> FileCellView { table.view(atColumn: 0, row: row(name), makeIfNecessary: true) as! FileCellView }
+        func marked(_ name: String) -> Bool { (table.rowView(atRow: row(name), makeIfNecessary: true) as! FileRowView).showsOpenMarker }
+        let short = DateFormatter(); short.dateStyle = .short; short.timeStyle = .none
+        let time = DateFormatter(); time.dateStyle = .none; time.timeStyle = .short
+
+        check(cell("today.md").nameLabel.stringValue == "today" && cell("old.md").nameLabel.stringValue == "old",
+              "rows: names hide the extension by default")
+        check(cell("today.md").dateLabel.stringValue == time.string(from: now) && cell("yday.md").dateLabel.stringValue == "Yesterday"
+              && cell("old.md").dateLabel.stringValue == short.string(from: older),
+              "rows: today shows a time, yesterday \"Yesterday\", older a short date (\(cell("today.md").dateLabel.stringValue), \(cell("yday.md").dateLabel.stringValue), \(cell("old.md").dateLabel.stringValue))")
+        check(wait(timeout: 5) { cell("today.md").excerptLabel.stringValue == "Hello world See docs." }
+              && wait(timeout: 5) { cell("yday.md").excerptLabel.stringValue == "yesterday text" },
+              "rows: the excerpt arrives off the main thread with Markdown and front matter removed (\(cell("today.md").excerptLabel.stringValue))")
+        check(wait(timeout: 5) { cell("empty.md").excerptLabel.stringValue == "No text" }, "rows: an empty file reads \"No text\"")
+        check(cell("today.md").excerptLabel.maximumNumberOfLines == 2, "rows: the excerpt is at most two lines")
+
+        // Edited on disk: the excerpt follows the new modification date.
+        let todayURL = loc.appending(path: "today.md")
+        try? "changed".write(to: todayURL, atomically: true, encoding: .utf8)
+        try? fm.setAttributes([.modificationDate: now.addingTimeInterval(5)], ofItemAtPath: todayURL.path)
+        table.reloadData()
+        check(wait(timeout: 5) { cell("today.md").excerptLabel.stringValue == "changed" }, "rows: a changed file gets a fresh excerpt")
+
+        UserDefaults.standard.set(true, forKey: FileListViewController.showExtensionsKey)
+        table.reloadData()
+        check(cell("today.md").nameLabel.stringValue == "today.md", "rows: the show-extensions setting keeps the extension")
+
+        // The marker follows the open document, not the selection.
+        check(marked("old.md") && !marked("today.md") && !marked("sub"), "rows: the open document's row carries the marker")
+        table.selectRowIndexes(IndexSet(integer: row("sub")), byExtendingSelection: false)
+        check(marked("old.md") && !marked("sub") && (wc.document as? NSDocument)?.fileURL?.lastPathComponent == "old.md",
+              "rows: selecting another row leaves the marker on the open file")
+        wc.close()
+    }
 
     /// Preview links act like links in a document: scroll, open in Aeris, or hand web/mail to
     /// the system. Nothing here opens anything outside the process.

@@ -59,7 +59,7 @@ public struct TextStats: Equatable, Sendable {
 }
 
 /// Accumulates visible text; blocks are separated by "\n".
-private struct VisibleText: MarkupWalker {
+struct VisibleText: MarkupWalker {
     var text = ""
     var tasksDone = 0
     var tasksTotal = 0
