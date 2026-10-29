@@ -5,7 +5,7 @@ import Foundation
 struct MarkdownCoreTests {
     @Test func parsesHeadingAndParagraph() {
         let html = MarkdownCore.html("# Title\n\nHello **world**.")
-        #expect(html.contains("<h1>Title</h1>"))
+        #expect(html.contains("<h1 id=\"title\">Title</h1>"))
         #expect(html.contains("<strong>world</strong>"))
     }
 

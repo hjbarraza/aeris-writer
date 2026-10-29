@@ -11,7 +11,7 @@ func check(_ cond: Bool, _ label: String) {
 }
 
 let html = MarkdownCore.html("# Title\n\nHello **world**.")
-check(html.contains("<h1>Title</h1>"), "heading renders")
+check(html.contains("<h1 id=\"title\">Title</h1>"), "heading renders")
 check(html.contains("<strong>world</strong>"), "strong renders")
 let page = MarkdownCore.htmlDocument(body: "<p>hi</p>", title: "T <x>")
 check(page.contains("<p>hi</p>") && page.contains("name=\"color-scheme\" content=\"light dark\"")
@@ -97,6 +97,7 @@ runBlockEditChecks()
 runTableEditChecks()
 runFocusRangeChecks()
 runAutocompleteChecks()
+runLinkTargetChecks()
 runRobustnessChecks()
 runLibraryChecks()
 runLibraryRefreshChecks()

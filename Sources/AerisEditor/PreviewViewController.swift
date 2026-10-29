@@ -32,6 +32,10 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
         shownGeneration = generation - 1
     }
 
+    #if DEBUG
+    var webViewForTesting: WKWebView { webView }
+    #endif
+
     weak var document: MarkdownDocument? {
         didSet {
             if let observer { NotificationCenter.default.removeObserver(observer) }
@@ -167,14 +171,38 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
         }
     }
 
-    // The preview never navigates away from the document: links open in the browser.
+    // The preview never navigates away from the document: a link scrolls it, opens another
+    // Markdown file in Aeris, or goes to the system (web and mail only).
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         if navigationAction.navigationType == .linkActivated {
-            if let url = navigationAction.request.url { NSWorkspace.shared.open(url) }
+            if let url = navigationAction.request.url { handleLink(url) }
             decisionHandler(.cancel)
         } else {
             decisionHandler(.allow)
         }
+    }
+
+    /// Opens a Markdown file the user linked to. The window controller sets this; without
+    /// it the document controller opens the file.
+    var openDocument: (URL) -> Void = { url in
+        NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, _ in }
+    }
+    /// Where web and mail links go. Replaceable so a headless check opens nothing.
+    var openExternally: (URL) -> Void = { NSWorkspace.shared.open($0) }
+
+    func handleLink(_ url: URL) {
+        switch LinkAction.decide(url, documentURL: document?.fileURL) {
+        case .scroll(let anchor): scroll(toAnchor: anchor)
+        case .openDocument(let target): openDocument(target)
+        case .system(let target): openExternally(target)
+        case .ignore: break
+        }
+    }
+
+    /// Scrolls the heading with this id to the top; an unknown id does nothing.
+    func scroll(toAnchor id: String) {
+        webView.callAsyncJavaScript("document.getElementById(id)?.scrollIntoView()", arguments: ["id": id],
+                                    in: nil, in: .defaultClient)
     }
 }
