@@ -90,6 +90,7 @@ enum SelfCheck {
         rowChecks()
         restorationChecks()
         lineEndingChecks()
+        anyTextFileChecks()
         hashtagMenuChecks()
         check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
         try? FileManager.default.removeItem(at: scratch)
@@ -775,6 +776,105 @@ enum SelfCheck {
             answer = { [unowned self] ok in
                 typealias ShouldClose = @convention(c) (NSObject, Selector, NSDocument, Bool, UnsafeMutableRawPointer?) -> Void
                 unsafeBitCast(target.method(for: selector), to: ShouldClose.self)(target, selector, self, ok, contextInfo)
+            }
+        }
+    }
+
+    /// M1-13: any file whose bytes are text opens; RTF, binary files and file packages are
+    /// refused with a message and leave no document, window or location behind; opening never
+    /// writes to the file.
+    @MainActor static func anyTextFileChecks() {
+        let fm = FileManager.default
+        let dir = scratch.appending(path: "AnyText")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Packages, chosen in Open: a rich text package and an app bundle.
+        try? fm.createDirectory(at: dir.appending(path: "Letter.rtfd"), withIntermediateDirectories: true)
+        try? Data("{\\rtf1\\ansi hello}".utf8).write(to: dir.appending(path: "Letter.rtfd/TXT.rtf"))
+        try? fm.createDirectory(at: dir.appending(path: "Fake.app/Contents/MacOS"), withIntermediateDirectories: true)
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52])
+        // Control bytes but no NUL: valid UTF-8, still binary.
+        let blob = Data((1...64).map { UInt8($0) })
+        // nil bytes: a package created above.
+        let cases: [(name: String, bytes: Data?, text: String?)] = [
+            ("README", Data("# Read me\nhéllo\n".utf8), "# Read me\nhéllo\n"),
+            ("notes.text", Data("plain".utf8), "plain"),
+            ("empty", Data(), ""),
+            ("tabs.txt", Data("a\tb\u{0C}c\r\n".utf8), "a\tb\u{0C}c\r\n"),
+            ("x.text", png, nil),
+            ("blob.bin", blob, nil),
+            ("letter.rtf", Data("{\\rtf1\\ansi hello}".utf8), nil),
+            ("letter.text", Data("{\\rtf1\\ansi hello}".utf8), nil),
+            ("Letter.rtfd", nil, nil),
+            ("Fake.app", nil, nil),
+        ]
+        let dc = NSDocumentController.shared
+        let tree = Library.shared.tree
+        for c in cases {
+            let url = dir.appending(path: c.name)
+            if let bytes = c.bytes { try? bytes.write(to: url) }
+            let windowsBefore = NSApp.windows.filter(\.isVisible).count
+            let rootsBefore = tree.roots.count
+            var done = false, opened: NSDocument?, failure: Error?
+            // Displayed only when refused: closing the last window would quit the self-check.
+            dc.openDocument(withContentsOf: url, display: c.text == nil) { doc, _, error in opened = doc; failure = error; done = true }
+            _ = wait(timeout: 5) { done }
+            let unchanged = c.bytes.map { (try? Data(contentsOf: url)) == $0 } ?? true
+            if let text = c.text {
+                let doc = opened as? MarkdownDocument
+                check(done && doc?.textStorage.string == text && unchanged,
+                      "any text: \(c.name) opens as text, file untouched" + (failure.map { " (\($0.localizedDescription))" } ?? ""))
+                doc?.close()
+            } else {
+                let message = failure.map { ($0 as NSError).localizedDescription } ?? ""
+                check(done && opened == nil && message.contains("isn’t a plain text file")
+                      && !dc.documents.contains { $0.fileURL?.lastPathComponent == c.name }
+                      && NSApp.windows.filter(\.isVisible).count == windowsBefore && unchanged
+                      && tree.roots.count == rootsBefore,
+                      "any text: \(c.name) is refused with a message, no window or location left behind (got “\(message)”)")
+            }
+        }
+
+        // A README opened as plain text saves in place: same name, no extension added.
+        let readme = dir.appending(path: "README")
+        var done = false, opened: NSDocument?
+        dc.openDocument(withContentsOf: readme, display: false) { doc, _, _ in opened = doc; done = true }
+        _ = wait(timeout: 5) { done }
+        guard let doc = opened as? MarkdownDocument else { return check(false, "any text: README reopens") }
+        doc.textStorage.replaceCharacters(in: NSRange(location: 0, length: doc.textStorage.length), with: "edited\n")
+        doc.updateChangeCount(.changeDone)
+        doc.save(nil)
+        _ = wait(timeout: 5) { !doc.isDocumentEdited }
+        let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+        check(!doc.isDocumentEdited && doc.fileURL?.lastPathComponent == "README" && doc.fileType == "public.plain-text"
+              && (try? Data(contentsOf: readme)) == Data("edited\n".utf8) && !names.contains { $0.hasPrefix("README.") },
+              "any text: an edited README saves in place as plain text, same name, bytes = the edit (\(names.sorted()))")
+        doc.close()
+
+        // A note with a stray vertical tab or ESC (pasted from a word processor) still opens and
+        // saves unedited byte for byte; the same bytes under an unknown extension are refused.
+        let stray = Data("a\u{0B}b\u{1B}c".utf8)
+        for name in ["Note.md", "stray.bin"] {
+            let url = dir.appending(path: name)
+            try? stray.write(to: url)
+            var done = false, opened: NSDocument?, failure: Error?
+            dc.openDocument(withContentsOf: url, display: name == "stray.bin") { doc, _, error in
+                opened = doc; failure = error; done = true
+            }
+            _ = wait(timeout: 5) { done }
+            if name == "Note.md" {
+                var saved = false
+                if let doc = opened {
+                    doc.save(to: url, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+                    _ = wait(timeout: 3) { saved }
+                }
+                check(saved && (try? Data(contentsOf: url)) == stray,
+                      "any text: Note.md with a vertical tab and ESC opens and saves unedited byte for byte"
+                      + (failure.map { " (\($0.localizedDescription))" } ?? ""))
+                opened?.close()
+            } else {
+                let message = failure.map { ($0 as NSError).localizedDescription } ?? ""
+                check(opened == nil && message.contains("isn’t a plain text file"),
+                      "any text: stray.bin with the same bytes is refused (got “\(message)”)")
             }
         }
     }
