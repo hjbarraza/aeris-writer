@@ -716,6 +716,45 @@ enum SelfCheck {
         } else {
             check(false, "line endings: multi.md opens")
         }
+
+        // Changes AppKit makes itself (Replace All, Transformations) are never converted
+        // when they span several ranges or replace existing line breaks.
+        func edit(_ name: String, _ text: String, _ body: (NSTextView) -> Void) -> String? {
+            let url = dir.appending(path: name)
+            try? Data(text.utf8).write(to: url)
+            guard let doc = try? NSDocumentController.shared.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                    as? MarkdownDocument else { return nil }
+            NSDocumentController.shared.addDocument(doc); doc.makeWindowControllers()
+            let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+            body(tv)
+            let out = tv.string
+            doc.close()
+            return out
+        }
+        // Replace All: one multi-range change, applied as NSTextView applies it.
+        let replaced = edit("replace.md", "ab\r\nab") { tv in
+            let ranges = [NSRange(location: 0, length: 2), NSRange(location: 4, length: 2)]
+            guard tv.shouldChangeText(inRanges: ranges.map { NSValue(range: $0) },
+                                      replacementStrings: ["x\ny", "x\ny"]) else { return }
+            for r in ranges.reversed() { tv.textStorage?.replaceCharacters(in: r, with: "x\ny") }
+            tv.didChangeText()
+        }
+        func got(_ s: String?, _ want: String) -> String { s == want ? "" : " (got \(s.debugDescription))" }
+        check(replaced == "x\ny\r\nx\ny", "line endings: Replace All over two ranges replaces exactly those"
+              + got(replaced, "x\ny\r\nx\ny"))
+        let upper = edit("upper.md", "aa\r\nbb\ncc dd ee ff") { tv in
+            tv.selectedRanges = [NSRange(location: 0, length: 5), NSRange(location: 5, length: 3),
+                                 NSRange(location: 13, length: 5)].map { NSValue(range: $0) }
+            tv.uppercaseWord(nil)
+        }
+        check(upper == "AA\r\nBB\nCC dd EE FF", "line endings: Make Upper Case over three selections changes only letters"
+              + got(upper, "AA\r\nBB\nCC dd EE FF"))
+        let mixedUpper = edit("upper1.md", "aa\r\nbb\ncc") { tv in
+            tv.setSelectedRange(NSRange(location: 0, length: 9))
+            tv.uppercaseWord(nil)
+        }
+        check(mixedUpper == "AA\r\nBB\nCC", "line endings: Make Upper Case over a mixed range keeps its endings"
+              + got(mixedUpper, "AA\r\nBB\nCC"))
     }
 
     @MainActor static func editorTextView(_ wc: EditorWindowController) -> NSTextView { wc.editorForTesting.textViewForTesting }

@@ -181,14 +181,23 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
 
     /// Typed, pasted and dropped text takes the document's line ending (its first one;
     /// LF if none), so a CRLF file never gains a lone LF. Existing text is never touched.
-    /// A change over several selections passes unconverted: it is one multi-range change,
-    /// and inserting into its first range would shift the others onto the wrong text.
+    /// Only a one-range change whose replaced text has no line break is converted. The
+    /// trade: a change over several ranges (multiple selections, Replace All) or one that
+    /// replaces existing breaks (Transformations, a paste over lines) goes in unconverted,
+    /// because converting it could shift the other ranges or rewrite existing endings.
+    /// Risking existing text is worse than an inserted lone LF.
     /// The converted insert is its own undo step.
-    func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString text: String?) -> Bool {
-        guard !applyingEdit, !textView.hasMarkedText(), textView.selectedRanges.count == 1, let text,
-              text.utf16.contains(where: { $0 == 0x0A || $0 == 0x0D }) else { return true }
-        let converted = LineEnding.convert(text, to: LineEnding.of(textView.string))
-        guard converted != text else { return true }
+    func textView(_ textView: NSTextView, shouldChangeTextInRanges ranges: [NSValue],
+                  replacementStrings strings: [String]?) -> Bool {
+        func hasBreak(_ s: String) -> Bool { s.utf16.contains { $0 == 0x0A || $0 == 0x0D } }
+        // A paste over several selections arrives one range at a time, hence both counts.
+        guard !applyingEdit, !textView.hasMarkedText(), ranges.count == 1, textView.selectedRanges.count == 1,
+              let strings, strings.count == 1,
+              hasBreak(strings[0]) else { return true }
+        let range = ranges[0].rangeValue
+        guard !hasBreak((textView.string as NSString).substring(with: range)) else { return true }
+        let converted = LineEnding.convert(strings[0], to: LineEnding.of(textView.string))
+        guard converted != strings[0] else { return true }
         textView.breakUndoCoalescing()
         textView.insertText(converted, replacementRange: range)
         textView.breakUndoCoalescing()
