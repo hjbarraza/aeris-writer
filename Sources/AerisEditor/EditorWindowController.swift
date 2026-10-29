@@ -88,8 +88,8 @@ final class EditorWindowController: NSWindowController {
             fileList.showFolder(folder)
             fileList.reveal((document as? NSDocument)?.fileURL)
         }
-        fileList.onStateChange = { [weak self] in self?.window?.invalidateRestorableState() }
-        sidebar.onStateChange = { [weak self] in self?.window?.invalidateRestorableState() }
+        fileList.onStateChange = { [weak self] in self?.libraryViewChanged() }
+        sidebar.onStateChange = { [weak self] in self?.libraryViewChanged() }
         fileList.onNavigate = { [weak self] in self?.fileList.reveal((self?.document as? NSDocument)?.fileURL) }
         presentLinkError = { [weak self] error in
             guard let window = self?.window else { return }
@@ -138,6 +138,52 @@ final class EditorWindowController: NSWindowController {
         fileList.showFolder(target)
         sidebar.reveal(target.url)
         fileList.restoreSelection(path: selectedPath)
+        saveSession()
+    }
+
+    // MARK: Last session
+    // macOS's default "close windows when quitting" drops AppKit's window state on ⌘Q, so the
+    // app also stores the library view and open document of the window that changed last.
+
+    static let sessionKey = "Aeris.LastSession"
+
+    private func libraryViewChanged() {
+        window?.invalidateRestorableState()
+        saveSession()
+    }
+
+    /// Stores this window's folder, selection, expanded organizer folders and document path. A
+    /// window losing its document (closing) or showing nothing yet leaves the stored session alone.
+    private func saveSession() {
+        guard let document = document as? NSDocument, document.fileURL != nil || fileList.folder != nil else { return }
+        var session: [String: Any] = ["expanded": sidebar.expandedFolderPaths]
+        if let path = fileList.folder?.path { session["folder"] = path }
+        if let path = fileList.selectedPath { session["selection"] = path }
+        if let path = document.fileURL?.path { session["document"] = path }
+        AppDefaults.store.set(session, forKey: Self.sessionKey)
+    }
+
+    /// Launch with no window restored: reopens the last document (an untitled one if it is gone)
+    /// with its library view. Never marks the document edited. False if nothing was stored.
+    static func reopenLastSession(display: Bool) -> Bool {
+        guard let session = AppDefaults.store.dictionary(forKey: sessionKey) else { return false }
+        let controller = NSDocumentController.shared
+        var document: NSDocument?
+        if let path = session["document"] as? String, FileManager.default.fileExists(atPath: path) {
+            let url = URL(fileURLWithPath: path)
+            document = try? controller.makeDocument(withContentsOf: url, ofType: controller.typeForContents(of: url))
+        }
+        if document == nil, let type = controller.defaultType {
+            document = try? controller.makeUntitledDocument(ofType: type)
+        }
+        guard let document else { return false }
+        controller.addDocument(document)
+        document.makeWindowControllers()
+        (document.windowControllers.first as? EditorWindowController)?.restoreLibraryView(
+            folderPath: session["folder"] as? String, selectedPath: session["selection"] as? String,
+            expandedPaths: session["expanded"] as? [String] ?? [])
+        if display { document.showWindows() }
+        return true
     }
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
@@ -185,7 +231,7 @@ final class EditorWindowController: NSWindowController {
             }
         }
         fileList.reveal(url)
-        window?.invalidateRestorableState()  // programmatic selection changes count too (M2-6a)
+        libraryViewChanged()  // programmatic selection changes count too (M2-6a)
     }
 
     /// The latest request that arrived while a switch was pending; it opens once that switch

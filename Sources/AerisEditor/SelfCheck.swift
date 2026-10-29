@@ -1685,6 +1685,47 @@ enum SelfCheck {
         check(wc2.fileList.folder === Library.shared.tree.roots.first, "restore: an unresolved location falls back to the first location")
         check(Library.shared.tree.roots.map(\.path) == rootsBefore, "restore: locations were not reordered")
         close(wc1, d1); close(wc2, d2)
+
+        // The app's own store, which a plain ⌘Q keeps: a launch with no window restored reopens the
+        // last document with its library view.
+        let store = AppDefaults.store, key = EditorWindowController.sessionKey
+        store.removeObject(forKey: key)
+        let d3 = try! dc.makeDocument(withContentsOf: urlC, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(d3); d3.makeWindowControllers()
+        let wc3 = d3.windowControllers[0] as! EditorWindowController
+        wc3.fileList.showFolder(node(loc))
+        wc3.fileList.restoreSelection(path: canonical(loc.appending(path: "sub")))
+        wc3.fileList.onStateChange?()  // as the selection change notification does for a folder row
+        let saved = store.dictionary(forKey: key) ?? [:]
+        check(saved["folder"] as? String == canonical(loc) && saved["selection"] as? String == canonical(loc.appending(path: "sub"))
+              && (saved["document"] as? String).map { canonical(URL(fileURLWithPath: $0)) } == canonical(urlC),
+              "restore: the folder, selection and document are stored by the app (\(saved))")
+        let expanded = wc3.sidebar.expandedFolderPaths
+        close(wc3, d3)
+        check(NSDictionary(dictionary: store.dictionary(forKey: key) ?? [:]).isEqual(to: saved),
+              "restore: closing the window keeps the stored session")
+        let opened = Set(dc.documents.map(ObjectIdentifier.init))
+        check(EditorWindowController.reopenLastSession(display: false), "restore: a launch reopens the stored session")
+        let d4 = dc.documents.first { !opened.contains(ObjectIdentifier($0)) }
+        let wc4 = d4?.windowControllers.first as? EditorWindowController
+        check(d4?.fileURL.map(canonical) == canonical(urlC) && d4?.isDocumentEdited == false && d4?.hasUnautosavedChanges == false,
+              "restore: the last document reopens, not edited")
+        check(wc4?.fileList.folder === node(loc) && wc4?.fileList.selectedPath == canonical(loc.appending(path: "sub"))
+              && wc4?.sidebar.expandedFolderPaths == expanded,
+              "restore: the reopened window shows the same folder, selection and organizer expansion")
+        if let wc4, let d4 { wc4.close(); d4.close() }
+
+        // A deleted document and folder: an untitled window at the location's root, no error.
+        store.set(["folder": canonical(loc) + "/gone", "document": canonical(loc) + "/gone/Deleted.md", "expanded": [String]()],
+                  forKey: key)
+        let opened2 = Set(dc.documents.map(ObjectIdentifier.init))
+        check(EditorWindowController.reopenLastSession(display: false), "restore: a missing document still opens a window")
+        let d5 = dc.documents.first { !opened2.contains(ObjectIdentifier($0)) }
+        let wc5 = d5?.windowControllers.first as? EditorWindowController
+        check(d5 != nil && d5?.fileURL == nil && d5?.isDocumentEdited == false && wc5?.fileList.folder === node(loc),
+              "restore: a missing document opens untitled, a deleted folder falls back to its location's root")
+        if let wc5, let d5 { wc5.close(); d5.close() }
+        store.removeObject(forKey: key)
         Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
 

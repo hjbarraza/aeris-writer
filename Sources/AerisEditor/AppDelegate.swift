@@ -28,12 +28,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
     }
 
+    /// Called when no window was restored and no file was opened: the last session reopens
+    /// (M2-6a); with none stored, an untitled document.
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
         #if DEBUG
-        return !CommandLine.arguments.contains("--selfcheck")
-        #else
-        return true
+        if CommandLine.arguments.contains("--selfcheck") { return false }
         #endif
+        return !EditorWindowController.reopenLastSession(display: true)
     }
 
     /// File > Add Location…: pick folders to list in the organizer.
