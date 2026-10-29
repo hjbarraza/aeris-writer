@@ -68,6 +68,11 @@ final class Library {
         for list in fileLists.allObjects { list.libraryRootsDidChange() }
     }
 
+    /// A file's content changed (disk event or a save): every list re-checks the dates and excerpts it shows.
+    func refreshRows() {
+        for list in fileLists.allObjects { list.refreshVisibleRows() }
+    }
+
     /// Disk changes: a moved or deleted root re-resolves every bookmark and re-lists every loaded
     /// folder (so no other change in the batch is lost); anything else re-lists only the loaded
     /// folders involved and tells each file list what changed.
@@ -80,6 +85,7 @@ final class Library {
             return
         }
         let treeChanges = tree.refresh(changes)
+        refreshRows()
         guard !treeChanges.isEmpty else { return }
         for list in fileLists.allObjects { list.apply(treeChanges) }
     }

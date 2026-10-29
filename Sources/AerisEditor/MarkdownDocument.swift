@@ -380,6 +380,7 @@ class MarkdownDocument: NSDocument {
             if error == nil, url.standardizedFileURL == self.fileURL?.standardizedFileURL {
                 self.keepsDeletedFile = false
                 self.writeEditorState()
+                MainActor.assumeIsolated { Library.shared.refreshRows() }
             }
             completionHandler(error)
         }
