@@ -189,7 +189,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   nothing; drop a file → refused; Open… with a folder and a file → folder added, file
   opened; the folder on disk is untouched.
 
-- [ ] **M2-13 — Locations: add, label, remove.** A newly added location becomes the
+- [x] **M2-13 — Locations: add, label, remove.** A newly added location becomes the
   selected organizer row and its contents show. A folder dragged from Finder onto the
   Locations section is added (already present → nothing, no error). Rename Location
   sets a display name only (folder on disk untouched; clearing it restores the folder
@@ -274,7 +274,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
 
 ## Search and navigation
 
-- [ ] **M2-22 — Quick search: files.** ⇧⌘O (Go ▸ Quick Search, toolbar button) opens a
+- [x] **M2-22 — Quick search: files.** ⇧⌘O (Go ▸ Quick Search, toolbar button) opens a
   floating panel over the window. Typing ranks files across all locations by name
   (prefix, then word-start, then substring), each with its folder breadcrumb and the
   match highlighted. Arrows + Return open; Esc closes and returns focus to the editor.
@@ -282,6 +282,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   *Verify:* ⇧⌘O opens the panel, ⌘K still inserts a link; type part of a filename → that
   file first → Return opens it; Esc → focus back in the editor.
   *Ranking:* fuzzy on name and path, best match first, and drop the weakest tail of results instead of listing everything.
+  *Deferred:* the toolbar button, until the app has a toolbar.
 
 - [ ] **M2-23 — Quick search: inside files.** Results gain two groups. **This file**:
   matches in the open document with a snippet, "N more", and a Find and Replace action

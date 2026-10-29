@@ -75,6 +75,7 @@ enum SelfCheck {
         layoutChecks()
         libraryChecks()
         folderDropChecks()
+        locationLabelChecks()
         persistenceChecks()
         openChecks()
         caretAtEndChecks()
@@ -94,6 +95,7 @@ enum SelfCheck {
         pasteAsMarkdownChecks()
         anyTextFileChecks()
         hashtagMenuChecks()
+        quickSearchChecks()
         renumberChecks()
         check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
         try? FileManager.default.removeItem(at: scratch)
@@ -125,6 +127,86 @@ enum SelfCheck {
         check(wc.editorForTesting.completion.isVisible, "add hashtag: the tag list opens")
         wc.editorForTesting.completion.hide()
         doc.close()
+    }
+
+    /// Go > Quick Search (⇧⌘O): ranks files across the locations, Return opens in this window,
+    /// Esc gives the keyboard back to the editor, and ⌘K is still Format > Link.
+    @MainActor static func quickSearchChecks() {
+        let main = MainMenu.make()
+        let go = main.items.first { $0.title == "Go" }?.submenu?.items.first { $0.title.hasPrefix("Quick Search") }
+        check(go?.keyEquivalent == "O" && go?.action == #selector(EditorWindowController.showQuickSearch(_:)),
+              "quick search: Go > Quick Search is bound to shift-command-O")
+        let link = main.items.first { $0.title == "Format" }?.submenu?.items.first { $0.title == "Link" }
+        check(link?.keyEquivalent == "k" && link?.keyEquivalentModifierMask == .command, "quick search: command-K is still Format > Link")
+
+        let fm = FileManager.default
+        let dir = scratch.appending(path: "quicksearch")
+        try? fm.createDirectory(at: dir.appending(path: "Sub"), withIntermediateDirectories: true)
+        for (path, text) in [("Alpha.md", "alpha"), ("Project plan.md", "p"), ("Sub/Plan B.md", "b")] {
+            try? text.write(to: dir.appending(path: path), atomically: true, encoding: .utf8)
+        }
+        Library.shared.addLocation(dir)
+        let dc = NSDocumentController.shared
+        let doc = try! dc.makeDocument(withContentsOf: dir.appending(path: "Alpha.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        wc.window?.orderFront(nil)
+        let tv = editorTextView(wc)
+        wc.window?.makeFirstResponder(tv)
+        let qs = QuickSearchController.shared
+
+        wc.showQuickSearch(nil)
+        check(qs.isShown && qs.panel?.isVisible == true, "quick search: the panel opens over the window")
+        qs.setQuery("proj")
+        check(wait(timeout: 5) { qs.results.first?.candidate.fileName == "Project plan.md" },
+              "quick search: part of a filename -> that file first (\(qs.results.map(\.candidate.fileName)))")
+        qs.setQuery("pla")
+        check(wait(timeout: 5) { qs.results.map(\.candidate.fileName) == ["Plan B.md", "Project plan.md"] },
+              "quick search: prefix before word start (\(qs.results.map(\.candidate.fileName)))")
+        check(qs.results.first?.candidate.breadcrumb == "\(dir.lastPathComponent) \u{203A} Sub", "quick search: results carry the folder breadcrumb")
+        qs.panel?.cancelOperation(nil)
+        check(!qs.isShown && wc.window?.firstResponder === tv, "quick search: Esc closes and the keyboard is back in the editor")
+
+        wc.showQuickSearch(nil)
+        qs.setQuery("project")
+        check(wait(timeout: 5) { qs.results.count == 1 }, "quick search: a second open starts clean")
+        qs.openSelected()
+        check(!qs.isShown && wait(timeout: 5) { (wc.document as? NSDocument)?.fileURL?.lastPathComponent == "Project plan.md" },
+              "quick search: Return opens the file in this window")
+        check(wait(timeout: 5) { wc.window?.firstResponder === editorTextView(wc) }, "quick search: the editor has the keyboard after opening")
+
+        // A slow ranking for older text lands after a newer one: it is dropped, and Return opens the
+        // file ranked for what the field shows (Alpha), not for "pl" or the earlier "pro".
+        wc.showQuickSearch(nil)
+        qs.setQuery("pro")
+        check(wait(timeout: 5) { qs.results.first?.candidate.fileName == "Project plan.md" }, "quick search: library listed for the stale-result check")
+        qs.rankDelayForTesting = { $0 == "pl" ? 0.5 : 0 }
+        qs.setQuery("pl")
+        qs.setQuery("alph")
+        qs.openSelected()
+        check(wait(timeout: 5) { (wc.document as? NSDocument)?.fileURL?.lastPathComponent == "Alpha.md" },
+              "quick search: Return right after typing opens the result for the current text, not an older ranking")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+        check(!qs.isShown && qs.results.first?.candidate.fileName != "Plan B.md", "quick search: the late ranking for older text is dropped")
+        qs.rankDelayForTesting = nil
+
+        // Esc returns the keyboard to the editor even when the sidebar had it.
+        wc.window?.makeFirstResponder(wc.fileList.tableView)
+        wc.showQuickSearch(nil)
+        qs.panel?.cancelOperation(nil)
+        check(wait(timeout: 5) { wc.window?.firstResponder === editorTextView(wc) }, "quick search: Esc focuses the editor, not what had the keyboard")
+
+        // A window that is not on screen shows nothing; a window that closes takes the panel with it.
+        wc.window?.orderOut(nil)
+        wc.showQuickSearch(nil)
+        check(!qs.isShown, "quick search: a hidden window shows no panel")
+        wc.window?.orderFront(nil)
+        wc.showQuickSearch(nil)
+        check(qs.isShown, "quick search: opens again over a visible window")
+        wc.close()
+        check(!qs.isShown, "quick search: closing the window closes the panel")
+        if let opened = wc.document as? NSDocument { opened.close() }
+        Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
 
     static func check(_ ok: Bool, _ label: String) {
@@ -355,6 +437,48 @@ enum SelfCheck {
         func resetSpringLoading() {}
     }
 
+    /// M2-13: rename a location (display name only, persisted, cleared by blank) and remove it with Delete.
+    @MainActor static func locationLabelChecks() {
+        let fm = FileManager.default
+        let folder = scratch.appending(path: "LabelFolder")
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? "x".write(to: folder.appending(path: "a.md"), atomically: true, encoding: .utf8)
+        let wc = EditorWindowController()
+        wc.sidebar.loadViewIfNeeded()
+        let ov = wc.sidebar.outlineView
+        func relaunched() -> Library { Library(store: LocationStore(fileURL: LocationStore.defaultFileURL)) }
+        func shown(_ node: LibraryNode) -> String? {
+            (ov.view(atColumn: 0, row: ov.row(forItem: node), makeIfNecessary: true) as? NSTableCellView)?.textField?.stringValue
+        }
+        let base = Library.shared.tree.roots.count
+
+        wc.sidebar.addLocations([folder])
+        let node = Library.shared.tree.roots.last!
+        let index = Library.shared.tree.roots.count - 1
+        check(Library.shared.tree.roots.count == base + 1 && wc.sidebar.selectedURL.map(LibraryListing.canonicalPath) == LibraryListing.canonicalPath(folder)
+              && listNames(wc) == ["a.md"], "label: a newly added location is selected and its contents show")
+        check(shown(node) == "LabelFolder", "label: a location shows its folder name by default")
+
+        Library.shared.setLabel("Work notes", at: index)
+        check(shown(node) == "Work notes", "label: the row shows the label")
+        check(fm.fileExists(atPath: folder.path) && fm.fileExists(atPath: folder.appending(path: "a.md").path),
+              "label: the folder on disk keeps its name and contents")
+        let again = relaunched()
+        check(again.label(at: again.tree.roots.count - 1) == "Work notes", "label: it survives a relaunch")
+
+        Library.shared.setLabel("   ", at: index)
+        check(shown(node) == "LabelFolder" && relaunched().label(at: index) == nil, "label: clearing restores the folder name")
+
+        // Delete on the selected location removes it; the folder stays.
+        let del = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                                   context: nil, characters: "\u{7F}", charactersIgnoringModifiers: "\u{7F}", isARepeat: false, keyCode: 51)!
+        ov.keyDown(with: del)
+        check(Library.shared.tree.roots.count == base && !locationRows(wc).contains { $0 === node }
+              && relaunched().tree.roots.count == base, "label: Delete removes the selected location")
+        check(fm.fileExists(atPath: folder.appending(path: "a.md").path), "label: the folder on disk is untouched by Delete")
+        wc.close()
+    }
+
     @MainActor static func folderDropChecks() {
         let fm = FileManager.default
         let dropA = scratch.appending(path: "DropA"), dropB = scratch.appending(path: "DropB")
@@ -440,14 +564,14 @@ enum SelfCheck {
         check(relaunched().tree.roots.count == Library.shared.tree.roots.count, "persist: missing location kept in the store")
 
         let items = wc.sidebar.menuItems(forRow: row)
-        check(items.map(\.title) == ["Remove from Library"] && items[0].tag == Library.shared.tree.roots.count - 1,
-              "menu: location row offers Remove from Library")
+        check(items.map(\.title) == ["Rename Location…", "Remove Location"] && items[1].tag == Library.shared.tree.roots.count - 1,
+              "menu: location row offers Rename Location and Remove Location")
         check(wc.sidebar.menuItems(forRow: 0).isEmpty && wc.sidebar.menuItems(forRow: -1).isEmpty,
               "menu: section rows and empty space offer nothing")
         let before = Library.shared.tree.roots.count
-        _ = items[0].target?.perform(items[0].action, with: items[0])
+        _ = items[1].target?.perform(items[1].action, with: items[1])
         check(Library.shared.tree.roots.count == before - 1 && locationRows(wc).count == before - 1,
-              "menu: Remove from Library removes the row")
+              "menu: Remove Location removes the row")
 
         let folderC = scratch.appending(path: "PersistC")
         try? fm.createDirectory(at: folderC, withIntermediateDirectories: true)
