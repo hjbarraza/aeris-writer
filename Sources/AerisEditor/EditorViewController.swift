@@ -42,6 +42,11 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
     var textViewForTesting: NSTextView { textView }
     #endif
 
+    /// Moves the keyboard to the text.
+    func focusText() {
+        view.window?.makeFirstResponder(textView)
+    }
+
     override func loadView() {
         let scroll = NSTextView.scrollableTextView()
         scroll.hasHorizontalScroller = false

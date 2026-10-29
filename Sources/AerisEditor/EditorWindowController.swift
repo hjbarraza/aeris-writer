@@ -7,6 +7,7 @@ final class EditorWindowController: NSWindowController {
     private let editor = EditorViewController()
     private let preview = PreviewViewController()
     let sidebar = SidebarViewController()
+    let fileList = FileListViewController()
     let splitViewController = LibrarySplitViewController()
     private var scrollSync: ScrollSync?
 #if DEBUG
@@ -18,6 +19,10 @@ final class EditorWindowController: NSWindowController {
     /// Defaults key prefix for the window layout (divider positions, sidebar collapse).
     /// The self-check overrides it so it never touches H's real layout.
     @MainActor static var layoutKey = "Aeris.MainSplit"
+
+    /// The split view's autosave name. Four columns store a different layout than the earlier
+    /// three, so it has its own name rather than reading a layout of the wrong shape.
+    @MainActor static var splitAutosaveName: String { layoutKey + ".Columns" }
 
     var isSidebarCollapsed: Bool { splitViewController.splitViewItems[0].isCollapsed }
 
@@ -36,17 +41,23 @@ final class EditorWindowController: NSWindowController {
         sidebarItem.minimumThickness = 160
         sidebarItem.maximumThickness = 400
         sidebarItem.canCollapse = true
+        let listItem = NSSplitViewItem(viewController: fileList)
+        listItem.minimumThickness = 200
+        listItem.maximumThickness = 420
+        listItem.canCollapse = true
         let editorItem = NSSplitViewItem(viewController: editor)
         let previewItem = NSSplitViewItem(viewController: preview)
-        // The sidebar holds its width (only its divider resizes it); the editor and preview
-        // take every other change equally, so they keep their ratio.
+        // The sidebar and the file list hold their widths (only their dividers resize them); the
+        // editor and preview take every other change equally, so they keep their ratio.
         sidebarItem.holdingPriority = NSLayoutConstraint.Priority(rawValue: 280)
+        listItem.holdingPriority = NSLayoutConstraint.Priority(rawValue: 260)
         editorItem.holdingPriority = NSLayoutConstraint.Priority(rawValue: 250)
         previewItem.holdingPriority = NSLayoutConstraint.Priority(rawValue: 250)
         editorItem.minimumThickness = 300
         previewItem.minimumThickness = 300
         let split = splitViewController
         split.addSplitViewItem(sidebarItem)
+        split.addSplitViewItem(listItem)
         split.addSplitViewItem(editorItem)
         split.addSplitViewItem(previewItem)
         split.splitView.isVertical = true
@@ -54,32 +65,58 @@ final class EditorWindowController: NSWindowController {
         window.setContentSize(NSSize(width: 1320, height: 760))
         // AppKit owns divider positions and sidebar collapse (restored from this autosave name).
         let hasSavedLayout = UserDefaults.standard.object(
-            forKey: "NSSplitView Subview Frames \(Self.layoutKey)") != nil
-        split.splitView.autosaveName = Self.layoutKey
+            forKey: "NSSplitView Subview Frames \(Self.splitAutosaveName)") != nil
+        split.splitView.autosaveName = Self.splitAutosaveName
         if !hasSavedLayout {
+            window.contentView?.layoutSubtreeIfNeeded()
+            let divider = split.splitView.dividerThickness
             split.splitView.setPosition(220, ofDividerAt: 0)
-            split.splitView.setPosition(760, ofDividerAt: 1)
+            split.splitView.setPosition(220 + divider + 260, ofDividerAt: 1)
+            split.splitView.setPosition(220 + divider + 260 + divider + 420, ofDividerAt: 2)
         }
         window.center()
         // Ctrl-Tab moves the keyboard between the editor and the sidebar.
         window.autorecalculatesKeyViewLoop = true
         super.init(window: window)
-        sidebar.onOpen = { [weak self] url in
-            self?.replaceDocument(with: url) { result in
-                guard let self, case .failure(let error) = result else { return }
-                if (error as? CocoaError)?.code != .userCancelled, let window = self.window {
-                    window.presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)
-                }
-                // The click didn't open anything: the highlight goes back to this window's document.
-                self.sidebar.reveal((self.document as? NSDocument)?.fileURL, expandingAncestors: false)
-            }
+        sidebar.onOpen = { [weak self] url in self?.open(url, focusEditor: false) }
+        fileList.onOpen = { [weak self] url, focusEditor in self?.open(url, focusEditor: focusEditor) }
+        sidebar.onFolderSelected = { [weak self] folder in
+            guard let self else { return }
+            fileList.showFolder(folder)
+            fileList.reveal((document as? NSDocument)?.fileURL)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(windowDidBecomeKey(_:)),
                                                name: NSWindow.didBecomeKeyNotification, object: window)
     }
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
-        sidebar.reveal((document as? NSDocument)?.fileURL, expandingAncestors: false)
+        reveal((document as? NSDocument)?.fileURL, expandingAncestors: false)
+    }
+
+    /// Opens a library row the user chose (sidebar or file list). A click in the list also moves
+    /// the keyboard to the editor once the document is open.
+    private func open(_ url: URL, focusEditor: Bool) {
+        replaceDocument(with: url) { [weak self] result in
+            guard let self else { return }
+            if case .failure(let error) = result {
+                if (error as? CocoaError)?.code != .userCancelled, let window {
+                    window.presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)
+                }
+                // The click didn't open anything: the highlight goes back to this window's document.
+                return reveal((document as? NSDocument)?.fileURL, expandingAncestors: false)
+            }
+            if focusEditor { editor.focusText() }
+        }
+    }
+
+    /// Highlights `url` in the sidebar and the file list. A document change also brings the list
+    /// to the document's folder; a focus change leaves the list where the user put it.
+    private func reveal(_ url: URL?, expandingAncestors: Bool = true) {
+        sidebar.reveal(url, expandingAncestors: expandingAncestors)
+        if expandingAncestors, let url, let parent = Library.shared.tree.node(atPath: LibraryListing.canonicalPath(url))?.parent {
+            fileList.showFolder(parent)
+        }
+        fileList.reveal(url)
     }
 
     /// The latest request that arrived while a switch was pending; it opens once that switch
@@ -142,14 +179,14 @@ final class EditorWindowController: NSWindowController {
            LibraryListing.canonicalPath(current) == LibraryListing.canonicalPath(queued.url) {
             queuedSwitch = nil
             queued.completion(.success(()))
-            sidebar.reveal(current, expandingAncestors: false)
+            reveal(current, expandingAncestors: false)
             return completion(.success(()))
         }
         // The file was opened elsewhere while the close check ran: use that document, keep this
         // window's (nothing is detached, so nothing can be lost).
         if let existing = new.fileURL.flatMap({ controller.document(for: $0) }) {
             existing.showWindows()
-            if queuedSwitch == nil { sidebar.reveal(old.fileURL, expandingAncestors: false) }
+            if queuedSwitch == nil { reveal(old.fileURL, expandingAncestors: false) }
             completion(.success(()))
             return runQueuedSwitch()
         }
@@ -185,50 +222,97 @@ final class EditorWindowController: NSWindowController {
             scrollSync = (editor.view as? NSScrollView).flatMap { $0.documentView as? NSTextView }
                 .map { ScrollSync(textView: $0, preview: preview) }
             // A queued click already moved the highlight on; resetting it would snap it back.
-            if queuedSwitch == nil { sidebar.reveal((document as? NSDocument)?.fileURL) }
+            if queuedSwitch == nil { reveal((document as? NSDocument)?.fileURL) }
         }
     }
 }
 
 /// Holding priorities alone keep the editor and preview in proportion on window resizes and
-/// on collapse, but on expand AppKit takes the sidebar's width from the editor only. Expand
-/// therefore hands the editor and preview the width back in the proportion they had.
+/// on collapse, but on expand AppKit takes the width of the columns that open from the editor
+/// only. Expand therefore hands the editor and preview the width back in the proportion they had.
+///
+/// Items: 0 organizer (sidebar), 1 file list, 2 editor, 3 preview. The organizer and the list
+/// together are the library.
 final class LibrarySplitViewController: NSSplitViewController {
     /// Toggles still animating, and the editor's share taken before the first of them (frames
     /// mid-animation are not a share), so a quick second press can't skew the split.
     private var togglesRunning = 0
     private var share: CGFloat = 0.5
-    /// The sidebar's width when a toggle chain started open; restored only if presses overlapped
-    /// (which can leave it opening at its minimum).
-    private var sidebarWidth: CGFloat = 0
+    /// The left columns' widths when a toggle chain started; restored only if presses overlapped
+    /// (which can leave a column opening at its minimum).
+    private var leftWidths: [CGFloat] = [0, 0]
     private var overlapped = false
 
+    private var libraryShown: Bool { !splitViewItems[0].isCollapsed || !splitViewItems[1].isCollapsed }
+
+    /// View > Hide Library (⌘⌥S): hides the organizer and the list together, or shows both.
     override func toggleSidebar(_ sender: Any?) {
-        let sidebar = splitViewItems[0].viewController.view
-        let editor = splitViewItems[1].viewController.view, preview = splitViewItems[2].viewController.view
+        let hide = libraryShown
+        toggle {
+            if self.splitViewItems[0].isCollapsed != hide { super.toggleSidebar(sender) }
+            self.splitViewItems[1].animator().isCollapsed = hide
+        }
+    }
+
+    /// View > Hide Organizer: hides or shows only the left column.
+    @objc func toggleOrganizer(_ sender: Any?) {
+        toggle { super.toggleSidebar(sender) }
+    }
+
+    /// Shows the organizer and the list.
+    func showLibrary() {
+        toggle {
+            if self.splitViewItems[0].isCollapsed { super.toggleSidebar(nil) }
+            self.splitViewItems[1].animator().isCollapsed = false
+        }
+    }
+
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        switch item.action {
+        case #selector(toggleSidebar(_:)):
+            (item as? NSMenuItem)?.title = libraryShown ? "Hide Library" : "Show Library"
+            return true
+        case #selector(toggleOrganizer(_:)):
+            (item as? NSMenuItem)?.title = splitViewItems[0].isCollapsed ? "Show Organizer" : "Hide Organizer"
+            return true
+        default:
+            return super.validateUserInterfaceItem(item)
+        }
+    }
+
+    /// Runs `change` (which collapses or expands left columns) animated, then gives the editor and
+    /// preview their proportion back.
+    private func toggle(_ change: @escaping () -> Void) {
+        let left = splitViewItems[0..<2].map(\.viewController.view)
+        let editor = splitViewItems[2].viewController.view, preview = splitViewItems[3].viewController.view
         if togglesRunning == 0 {
             share = editor.frame.width / (editor.frame.width + preview.frame.width)
-            if !splitViewItems[0].isCollapsed { sidebarWidth = sidebar.frame.width }
+            for i in 0..<2 where !splitViewItems[i].isCollapsed { leftWidths[i] = left[i].frame.width }
         }
         togglesRunning += 1
         if togglesRunning >= 2 { overlapped = true }
-        NSAnimationContext.runAnimationGroup({ _ in super.toggleSidebar(sender) }, completionHandler: {
+        NSAnimationContext.runAnimationGroup({ _ in change() }, completionHandler: {
             MainActor.assumeIsolated {
                 self.togglesRunning -= 1
-                // Only the last toggle to finish acts, and only if the sidebar ended up open.
+                // Only the last toggle to finish acts, and only if a left column ended up open.
                 guard self.togglesRunning == 0 else { return }
                 let didOverlap = self.overlapped
                 self.overlapped = false
-                guard !self.splitViewItems[0].isCollapsed else { return }
-                // Only after overlapping presses: a single toggle leaves the width to AppKit
-                // (the user may have dragged it since).
-                if didOverlap, self.sidebarWidth > 0 {
-                    self.splitView.setPosition(self.sidebarWidth, ofDividerAt: 0)
+                guard self.libraryShown else { return }
+                // Only after overlapping presses: a single toggle leaves the widths to AppKit
+                // (the user may have dragged them since).
+                if didOverlap {
+                    if !self.splitViewItems[0].isCollapsed, self.leftWidths[0] > 0 {
+                        self.splitView.setPosition(self.leftWidths[0], ofDividerAt: 0)
+                    }
+                    if !self.splitViewItems[1].isCollapsed, self.leftWidths[1] > 0 {
+                        self.splitView.setPosition(left[0].frame.maxX + self.splitView.dividerThickness + self.leftWidths[1],
+                                                   ofDividerAt: 1)
+                    }
                     self.splitView.layoutSubtreeIfNeeded()
                 }
                 let total = editor.frame.width + preview.frame.width
-                self.splitView.setPosition(sidebar.frame.maxX + self.splitView.dividerThickness + (self.share * total).rounded(),
-                                           ofDividerAt: 1)
+                self.splitView.setPosition(editor.frame.minX + (self.share * total).rounded(), ofDividerAt: 2)
             }
         })
     }
