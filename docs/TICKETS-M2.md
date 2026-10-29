@@ -129,7 +129,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
 
 ## Writing into the library
 
-- [ ] **M2-7a — Tree folders open on a click and come back after relaunch.** In Tree view a
+- [x] **M2-7a — Tree folders open on a click and come back after relaunch.** In Tree view a
   single click on a folder row opens it in place (a second click closes it); the
   disclosure triangle, arrows, Return and double-click keep working. The folders open in
   the file list's tree are part of the stored window state, so a relaunch shows the same

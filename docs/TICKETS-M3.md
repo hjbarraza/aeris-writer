@@ -86,11 +86,15 @@ Order: the preview tickets (M3-9…M3-13) come first, because export reuses thei
   *Verify:* `.pdf` opens in Preview.app; headings, code, table paginate sanely, long code
   blocks and tables don't clip; Page Setup A4 → Letter is reflected in the next export.
 
-- [ ] **M3-4 — Copy matrix.** Edit ▸ Copy as Markdown / HTML / Rich Text, each for
-  selection and whole document. Rich text via `NSAttributedString(html:)` on the
-  export HTML. Pasteboard gets *only* the chosen type (plus plain text).
+- [ ] **M3-4 — Copy matrix.** Edit ▸ Copy as Markdown / HTML / Rich Text / Plain Text, each
+  for the selection, or the whole document when nothing is selected. Rich text via
+  `NSAttributedString(html:)` on the export HTML. Plain Text is the rendered text with all
+  Markdown removed (headings, emphasis, link URLs, list markers kept as readable bullets).
+  Pasteboard gets *only* the chosen type (plus plain text). More important than export
+  (H, 2026-10-29).
   *Verify:* Copy as HTML → paste in a browser form shows markup; Copy as Rich Text →
-  paste in Pages shows formatting; Copy as Markdown → plain source.
+  paste in Pages shows formatting; Copy as Markdown → plain source; Copy as Plain Text →
+  no `#`, `*`, `[]()` left; nothing selected → whole document.
 
 - [ ] **M3-5 — Print.** File ▸ Print: formatted (via the preview web view) and plain
   text (via `NSTextView`); both support print-to-PDF from the system dialog.
