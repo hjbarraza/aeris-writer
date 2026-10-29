@@ -138,7 +138,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   open two nested folders, select a file inside, store and restore the session → same
   folders open, same file selected; a folder deleted since → skipped, no error.
 
-- [ ] **M2-8 — New drafts save themselves into the folder.** With a library folder
+- [x] **M2-8 — New drafts save themselves into the folder.** With a library folder
   shown, File ▸ New (⌘N) opens a draft that belongs to that folder. While untitled the
   window title follows the first line. When the name settles (Return after a non-empty
   first line, or the first autosave after typing pauses) the file is created in the
@@ -153,6 +153,14 @@ filter field at the bottom. Editor (right), with the preview beside it.
   Return → `X/My Post.md` exists, no dialog; second draft with the same line → `My Post
   2.md`; change the first line after the first save → file name unchanged; ⌘N then
   close without typing → no file, no prompt.
+
+- [ ] **M2-8b — Draft polish.** Drafts are saved with the extension visible in Finder (not
+  hidden); quitting or closing right after the Return that names a draft waits for that
+  save instead of leaving an empty file and a save prompt; with the `txt` setting the
+  document's type is plain text; the tab bar "+" makes a draft (M2-26).
+  *Verify:* a new draft's file shows ".md" in Finder (hasHiddenExtension false); Return then
+  ⌘Q in the same turn → the file holds the text, no prompt; "+" in the tab bar → a draft in
+  the current folder.
 
 - [ ] **M2-9 — Untitled documents named from their first line.** For a document that
   is not a library draft (⌥⌘N, or no folder shown): the window title follows the first
