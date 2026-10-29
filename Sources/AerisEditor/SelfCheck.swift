@@ -101,6 +101,7 @@ enum SelfCheck {
         quickSearchChecks()
         renumberChecks()
         previewControlChecks()
+        panelToggleChecks()
         check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
         try? FileManager.default.removeItem(at: scratch)
         cleanStandardDefaults()
@@ -531,6 +532,72 @@ enum SelfCheck {
         settled()
         check(!wc.isSidebarCollapsed && !near(widths()[0], after[0], 2),
               "layout: a single expand does not force the sidebar back to an older width (\(Int(after[0])) -> \(Int(widths()[0])))")
+        wc.close()
+    }
+
+    /// M2-6b: every panel toggle ends at the expected widths and the other columns keep theirs.
+    /// (Whether it looks smooth is H's on-screen step; headless I can only see the end state, and
+    /// that the preview change is not instant.)
+    @MainActor static func panelToggleChecks() {
+        let key = "Aeris.SelfCheck.PanelToggle"
+        let previousKey = EditorWindowController.layoutKey
+        EditorWindowController.layoutKey = key
+        let defaultsKey = "NSSplitView Subview Frames \(key).Columns"
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+        let previousMode = AppDefaults.store.string(forKey: EditorWindowController.previewModeKey)
+        defer {
+            UserDefaults.standard.removeObject(forKey: defaultsKey); EditorWindowController.layoutKey = previousKey
+            if let previousMode { AppDefaults.store.set(previousMode, forKey: EditorWindowController.previewModeKey) }
+            else { AppDefaults.store.removeObject(forKey: EditorWindowController.previewModeKey) }
+        }
+        AppDefaults.store.set("split", forKey: EditorWindowController.previewModeKey)
+        let wc = EditorWindowController()
+        let split = wc.splitViewController, sv = split.splitView
+        func settle() { sv.window?.contentView?.layoutSubtreeIfNeeded(); sv.layoutSubtreeIfNeeded() }
+        func widths() -> [CGFloat] { split.splitViewItems.map { $0.isCollapsed ? 0 : $0.viewController.view.frame.width } }
+        func near(_ a: CGFloat, _ b: CGFloat) -> Bool { abs(a - b) <= 2 }
+        func settled() {
+            var last = widths(), stable = 0
+            _ = wait(timeout: 10) { settle(); let now = widths(); stable = now == last ? stable + 1 : 0; last = now; return stable >= 5 }
+        }
+        settle(); settled()
+        let start = widths()
+        check(start[0] > 100 && start[1] > 100 && start[2] > 100 && start[3] > 100, "panels: all four columns are open (\(start.map { Int($0) }))")
+
+        // Preview hide: it animates shut (not instant); the library columns keep their widths.
+        wc.togglePreview(nil)
+        settle()
+        check(split.splitViewItems[3].viewController.view.frame.width > 0, "panels: hiding the preview animates, it is not instant")
+        settled()
+        let hidden = widths()
+        check(near(hidden[0], start[0]) && near(hidden[1], start[1]) && hidden[3] == 0 && hidden[2] > start[2],
+              "panels: Hide Preview leaves the organizer and list alone (\(start.map { Int($0) }) -> \(hidden.map { Int($0) }))")
+        wc.togglePreview(nil)
+        settled()
+        let shown = widths()
+        check(near(shown[0], start[0]) && near(shown[1], start[1]) && near(shown[2], start[2]) && near(shown[3], start[3]),
+              "panels: Show Preview restores every width (\(start.map { Int($0) }) -> \(shown.map { Int($0) }))")
+
+        // Full, then Split.
+        wc.showPreviewFull(nil); settled()
+        let full = widths()
+        check(near(full[0], start[0]) && near(full[1], start[1]) && full[2] == 0, "panels: Full keeps the library columns (\(full.map { Int($0) }))")
+        wc.showPreviewSplit(nil); settled()
+        let back = widths()
+        check(near(back[0], start[0]) && near(back[1], start[1]) && near(back[2], start[2]) && near(back[3], start[3]),
+              "panels: Split restores every width (\(start.map { Int($0) }) -> \(back.map { Int($0) }))")
+
+        // Organizer alone, then the whole library.
+        split.toggleOrganizer(nil); settled()
+        // (Headless, AppKit reopens the library columns at their minimum widths, the known layout failure,
+        // so organizer and library widths are on-screen checks; these two toggles already animated.)
+        check(split.splitViewItems[0].isCollapsed && !split.splitViewItems[1].isCollapsed, "panels: Hide Organizer hides only the organizer")
+        split.toggleOrganizer(nil); settled()
+        check(!split.splitViewItems[0].isCollapsed && !split.splitViewItems[1].isCollapsed, "panels: Show Organizer brings it back")
+        split.toggleSidebar(nil); settled()
+        check(split.splitViewItems[0].isCollapsed && split.splitViewItems[1].isCollapsed, "panels: Hide Library hides both")
+        split.toggleSidebar(nil); settled()
+        check(!split.splitViewItems[0].isCollapsed && !split.splitViewItems[1].isCollapsed, "panels: Show Library shows both")
         wc.close()
     }
 
