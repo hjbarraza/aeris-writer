@@ -849,6 +849,34 @@ enum SelfCheck {
               && (try? Data(contentsOf: readme)) == Data("edited\n".utf8) && !names.contains { $0.hasPrefix("README.") },
               "any text: an edited README saves in place as plain text, same name, bytes = the edit (\(names.sorted()))")
         doc.close()
+
+        // A note with a stray vertical tab or ESC (pasted from a word processor) still opens and
+        // saves unedited byte for byte; the same bytes under an unknown extension are refused.
+        let stray = Data("a\u{0B}b\u{1B}c".utf8)
+        for name in ["Note.md", "stray.bin"] {
+            let url = dir.appending(path: name)
+            try? stray.write(to: url)
+            var done = false, opened: NSDocument?, failure: Error?
+            dc.openDocument(withContentsOf: url, display: name == "stray.bin") { doc, _, error in
+                opened = doc; failure = error; done = true
+            }
+            _ = wait(timeout: 5) { done }
+            if name == "Note.md" {
+                var saved = false
+                if let doc = opened {
+                    doc.save(to: url, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+                    _ = wait(timeout: 3) { saved }
+                }
+                check(saved && (try? Data(contentsOf: url)) == stray,
+                      "any text: Note.md with a vertical tab and ESC opens and saves unedited byte for byte"
+                      + (failure.map { " (\($0.localizedDescription))" } ?? ""))
+                opened?.close()
+            } else {
+                let message = failure.map { ($0 as NSError).localizedDescription } ?? ""
+                check(opened == nil && message.contains("isn’t a plain text file"),
+                      "any text: stray.bin with the same bytes is refused (got “\(message)”)")
+            }
+        }
     }
 
     /// M1-12: in a CRLF document, Return, list continuation and a paste of LF text all
