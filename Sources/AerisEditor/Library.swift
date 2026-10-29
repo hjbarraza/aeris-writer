@@ -14,10 +14,27 @@ final class Library {
     /// Watches every root; rebuilt whenever the roots change.
     private var watcher: FolderWatcher?
 
+    /// Shows an error to the user (an alert); replaced in self-checks.
+    var reportError: (_ message: String, _ detail: String) -> Void = { message, detail in
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.runModal()
+    }
+
     init(store: LocationStore) {
         self.store = store
         store.load()
         reload()
+        if store.loadFailed {
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.reportError("The list of library locations could not be read.",
+                                      "The file was left as it is and copied to a .backup-<time> file next to it before any change replaces it.")
+                }
+            }
+        }
     }
 
 #if DEBUG
@@ -38,9 +55,27 @@ final class Library {
             guard try store.add(url) else { return }
         } catch {
             NSLog("Aeris: could not save location %@: %@", url.path, "\(error)")
+            failedAdds.append((url.lastPathComponent, error.localizedDescription))
+            if failedAdds.count == 1 {
+                // One alert per user action (a drop of several folders), shown after the caller returns.
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated { self?.reportFailedAdds() }
+                }
+            }
             return
         }
         reload()
+    }
+
+    private var failedAdds: [(name: String, reason: String)] = []
+
+    private func reportFailedAdds() {
+        let failed = failedAdds
+        failedAdds = []
+        guard let first = failed.first else { return }
+        let names = failed.map(\.name).joined(separator: ", ")
+        reportError(failed.count == 1 ? "The location could not be added." : "The locations could not be added.",
+                    "Saving the list of locations failed for \(names): \(first.reason) The list is unchanged.")
     }
 
     /// Removes the location at `index` (a root row) from the library; the folder on disk is untouched.
@@ -49,6 +84,7 @@ final class Library {
             try store.remove(at: index)
         } catch {
             NSLog("Aeris: could not remove location %d: %@", index, "\(error)")
+            reportError("The location could not be removed.", "Saving the list of locations failed: \(error.localizedDescription) The list is unchanged.")
             return
         }
         reload()
@@ -65,6 +101,7 @@ final class Library {
             try store.setLabel(label, at: index)
         } catch {
             NSLog("Aeris: could not save location label %d: %@", index, "\(error)")
+            reportError("The name could not be saved.", "Saving the list of locations failed: \(error.localizedDescription) The list is unchanged.")
             return
         }
         for sidebar in sidebars.allObjects { sidebar.libraryRootsDidChange() }

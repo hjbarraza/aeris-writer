@@ -46,6 +46,79 @@ enum SelfCheck {
     nonisolated(unsafe) private static var lastCheck = "start"
     private static let lastCheckLock = NSLock()
 
+    /// M2-14: a failed save of the location list shows an alert and leaves the list unchanged;
+    /// an unreadable file is kept, never overwritten by an empty list.
+    @MainActor static func libraryErrorChecks() {
+        let fm = FileManager.default
+        let dir = scratch.appending(path: "ErrDir")
+        let folder = scratch.appending(path: "ErrFolder")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = dir.appending(path: "Locations.plist")
+        let lib = Library(store: LocationStore(fileURL: file))
+        var alerts: [String] = []
+        lib.reportError = { message, _ in alerts.append(message) }
+
+        lib.addLocation(folder)
+        check(lib.tree.roots.count == 1 && alerts.isEmpty, "library errors: a normal add saves with no alert")
+
+        // Read-only folder: the atomic write cannot create its temp file.
+        let other = scratch.appending(path: "ErrFolder2")
+        let third = scratch.appending(path: "ErrFolder3")
+        try? fm.createDirectory(at: other, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: third, withIntermediateDirectories: true)
+        try? fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        let before = try? Data(contentsOf: file)
+        lib.addLocation(other)
+        lib.addLocation(third)
+        check(alerts.isEmpty, "library errors: a failed add shows its alert after the caller returns, not inside it")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        check(alerts.count == 1, "library errors: a drop of two failing folders shows one alert (\(alerts.count))")
+        lib.setLabel("Nope", at: 0)
+        lib.removeLocation(at: 0)
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+        check(alerts.count == 3, "library errors: a failed rename and remove each show an alert (\(alerts.count))")
+        check(lib.tree.roots.count == 1 && lib.label(at: 0) == nil, "library errors: the in-memory list is unchanged after failed saves")
+        check((try? Data(contentsOf: file)) == before, "library errors: the file on disk is unchanged after failed saves")
+
+        // An unreadable file is kept under a timestamped backup and not silently replaced; the launch alert is shown.
+        func backups() -> [URL] {
+            ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []).filter { $0.lastPathComponent.hasPrefix("Locations.plist.backup-") }
+        }
+        let bad = Data("not a plist".utf8)
+        try? bad.write(to: file)
+        alerts = []
+        let lib2 = Library(store: LocationStore(fileURL: file))
+        lib2.reportError = { message, _ in alerts.append(message) }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        check(alerts == ["The list of library locations could not be read."], "library errors: an unreadable list file shows the launch alert")
+        lib2.addLocation(folder)
+        check(lib2.tree.roots.count == 1 && backups().count == 1 && (try? Data(contentsOf: backups()[0])) == bad,
+              "library errors: an unreadable list file is copied to a timestamped backup before it is replaced")
+
+        // A second corruption keeps the first backup.
+        let first = backups()
+        try? bad.write(to: file)
+        Thread.sleep(forTimeInterval: 1.1)
+        let lib3 = Library(store: LocationStore(fileURL: file))
+        lib3.reportError = { _, _ in }
+        lib3.addLocation(folder)
+        check(backups().count == 2 && first.allSatisfy { backups().contains($0) }, "library errors: a second backup does not replace the first")
+
+        // The bad file was deleted before the first save: no backup, the add works, no add alert.
+        try? bad.write(to: file)
+        let lib4 = Library(store: LocationStore(fileURL: file))
+        alerts = []
+        lib4.reportError = { message, _ in alerts.append(message) }
+        try? fm.removeItem(at: file)
+        let count = backups().count
+        lib4.addLocation(folder)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        check(lib4.tree.roots.count == 1 && fm.fileExists(atPath: file.path) && backups().count == count
+              && alerts == ["The list of library locations could not be read."],
+              "library errors: a bad file deleted before the save adds fine, with no backup and no add alert (\(alerts))")
+    }
+
     @MainActor static func run() -> Never {
         // Watchdog: a run that hangs reports where and exits instead of waiting forever.
         DispatchQueue.global().asyncAfter(deadline: .now() + 240) {
@@ -76,6 +149,7 @@ enum SelfCheck {
         libraryChecks()
         folderDropChecks()
         locationLabelChecks()
+        libraryErrorChecks()
         persistenceChecks()
         openChecks()
         caretAtEndChecks()
