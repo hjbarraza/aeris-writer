@@ -336,6 +336,8 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
                 window.tabbingMode = asTab ? .preferred : .disallowed
                 if asTab, let host { host.addTabbedWindow(window, ordered: .above) }
                 window.makeKeyAndOrderFront(nil)
+                // Shown on its own; from now on Window > Merge All Windows may gather it.
+                if !asTab { window.tabbingMode = .preferred }
             }
         }
     }
