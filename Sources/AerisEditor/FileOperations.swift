@@ -35,6 +35,20 @@ enum FileOperations {
         if let window { alert.beginSheetModal(for: window) } else { alert.runModal() }
     }
 
+    /// Warns before a rename that would take the item out of the list; `answer` gets the index of the
+    /// button chosen (0 is the default). A seam so a headless check shows nothing.
+    @MainActor static var askRename: (_ message: String, _ buttons: [String], _ window: NSWindow?, _ answer: @escaping @MainActor (Int) -> Void) -> Void = { message, buttons, window, answer in
+        let alert = NSAlert()
+        alert.messageText = message
+        buttons.forEach { alert.addButton(withTitle: $0) }
+        let index = { (response: NSApplication.ModalResponse) in response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue }
+        if let window {
+            alert.beginSheetModal(for: window) { answer(index($0)) }
+        } else {
+            answer(index(alert.runModal()))
+        }
+    }
+
     private static let queue = DispatchQueue(label: "aeris.fileoperations", qos: .userInitiated)
 
     /// Runs `work` off the main thread; `done` gets its outcome on the main thread.

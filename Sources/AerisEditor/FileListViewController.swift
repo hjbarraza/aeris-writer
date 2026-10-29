@@ -8,8 +8,8 @@ final class FileListTableView: NSTableView {
     var onEnclosingFolder: (@MainActor () -> Void)?
     /// A ⌘-click or ⌥⌘-click on a row; true if it was taken (the click then selects nothing).
     var onModifiedClick: (@MainActor (_ row: Int, NSEvent.ModifierFlags) -> Bool)?
-    /// The right-click menu for a row.
-    var menuProvider: (@MainActor (_ row: Int) -> [NSMenuItem])?
+    /// The right-click menu for a row (-1: empty space).
+    var menuProvider: (@MainActor (_ row: Int) -> NSMenu?)?
 
     override func mouseDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection([.command, .option, .shift, .control])   // Caps Lock and Fn don't count
@@ -19,14 +19,7 @@ final class FileListTableView: NSTableView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        let items = menuProvider?(row(at: convert(event.locationInWindow, from: nil))) ?? []
-        guard !items.isEmpty else { return super.menu(for: event) }
-        // A file row: the tab items, then the list's Sort By / View Options items.
-        let menu = NSMenu()
-        items.forEach(menu.addItem)
-        menu.addItem(.separator())
-        FileListMenu.shared.makeItems().forEach(menu.addItem)
-        return menu
+        menuProvider?(row(at: convert(event.locationInWindow, from: nil))) ?? super.menu(for: event)
     }
     /// Right and Left arrows on a folder row (Tree navigation expands and collapses it).
     var onExpand: (@MainActor () -> Bool)?
@@ -229,7 +222,7 @@ final class RowInfo: NSObject {
 /// button left of the title and ⌘↑ go back up. Rows are the folder's own `LibraryNode`
 /// children, so the live refresh that edits the tree updates this list too.
 final class FileListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
-                                    NSMenuDelegate, NSMenuItemValidation, NSTextFieldDelegate {
+                                    NSMenuItemValidation, NSTextFieldDelegate {
     let tableView = FileListTableView()
     let titleLabel = NSTextField(labelWithString: "")
     let upButton = NSButton(image: NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Enclosing Folder")!,
@@ -285,16 +278,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.action = #selector(rowClicked(_:))
         tableView.doubleAction = #selector(rowDoubleClicked(_:))
         tableView.onModifiedClick = { [weak self] row, flags in self?.modifiedClick(row: row, flags: flags) ?? false }
-        tableView.menuProvider = { [weak self] row in self?.contextMenuItems(forRow: row) ?? [] }
+        tableView.menuProvider = { [weak self] row in self?.contextMenu(forClickedRow: row) }
         tableView.onReturn = { [weak self] in self?.openSelectedFolder() }
         tableView.onEnclosingFolder = { [weak self] in self?.goUp() }
         tableView.onExpand = { [weak self] in self?.expandSelectedFolder(true) ?? false }
         tableView.onCollapse = { [weak self] in self?.expandSelectedFolder(false) ?? false }
         tableView.allowsMultipleSelection = true
-        let contextMenu = NSMenu()
-        contextMenu.delegate = self  // filled for the clicked row in menuNeedsUpdate
-        tableView.menu = contextMenu
-        menuNeedsUpdate(contextMenu)
+        // A right-click builds its menu for the clicked row (menuProvider); this is the empty-space one.
+        tableView.menu = contextMenu(forClickedRow: -1)
         NotificationCenter.default.addObserver(self, selector: #selector(optionsChanged), name: FileListSettings.didChange, object: nil)
         sortBar.target = self
         sortBar.action = #selector(sortBarClicked(_:))
@@ -357,6 +348,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         loadViewIfNeeded()
         let node = node?.isDirectory == true ? node : nil
         if node != nil, node === folder { return }
+        finishRename(commit: true)  // the edited row is about to go
         folder = node
         node?.loadChildren()
         rebuildRows()
@@ -469,15 +461,17 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     private func reloadRows(onlyIfOrderChanged: Bool = false) {
         // A reload would take away the name being edited; it runs once the rename ends.
         if renamingNode != nil { reloadAfterRename = true; return }
-        let selected = node(atRow: tableView.selectedRow)
+        // Every selected row, by path, so a multi-selection survives the reload.
+        let selected = Set(tableView.selectedRowIndexes.compactMap { node(atRow: $0)?.path })
         let old = rows
         rebuildRows()
         if onlyIfOrderChanged, old.count == rows.count, zip(old, rows).allSatisfy({ $0 === $1 }) { return }
         let wasRevealing = revealing
         revealing = true
         tableView.reloadData()
-        if let selected, let row = rows.firstIndex(where: { $0 === selected }) {
-            tableView.selectRowIndexes([row], byExtendingSelection: false)
+        let kept = IndexSet(rows.indices.filter { selected.contains(rows[$0].path) })
+        if !kept.isEmpty {
+            tableView.selectRowIndexes(kept, byExtendingSelection: false)
         } else {
             // The highlighted file is gone: no neighbour inherits its row.
             tableView.deselectAll(nil)
@@ -711,13 +705,17 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         return clicked.isDirectory ? clicked : clicked.parent
     }
 
-    /// The context menu for a right-click on `row` (-1: the empty area).
+    /// The one right-click menu of the list, for `row` (-1: the empty area): a file row's tab items,
+    /// the file commands, then Sort By / View Options.
     func contextMenu(forClickedRow row: Int) -> NSMenu {
         let clicked = node(atRow: row)
         let selection = tableView.selectedRowIndexes
         let nodes = clicked == nil ? [] : selection.contains(row) ? selection.compactMap(node(atRow:)) : [clicked!]
         let targets = Targets(nodes: nodes, clicked: clicked)
         let menu = NSMenu()
+        let tabItems = contextMenuItems(forRow: row)
+        tabItems.forEach(menu.addItem)
+        if !tabItems.isEmpty { menu.addItem(.separator()) }
         func add(_ title: String, _ action: Selector) {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
@@ -743,21 +741,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         return menu
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        guard menu === tableView.menu else { return }
-        let fresh = contextMenu(forClickedRow: tableView.clickedRow)
-        menu.removeAllItems()
-        for item in fresh.items {
-            fresh.removeItem(item)
-            menu.addItem(item)
-        }
-    }
-
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         let t = targets(item)
+        // From the File menu: nothing while the list is hidden.
+        if !(item.representedObject is Targets), Self.fileActions.contains(item.action ?? Selector(("none"))),
+           view.isHiddenOrHasHiddenAncestor { return false }
         switch item.action {
         case #selector(newFile(_:)), #selector(newFolder(_:)): return destination(t) != nil
-        case #selector(newFolderWithSelection(_:)): return t.nodes.count > 1
+        case #selector(newFolderWithSelection(_:)): return t.nodes.count > 1 && t.nodes.allSatisfy { $0.parent === t.nodes[0].parent }
         case #selector(renameItem(_:)): return t.nodes.count == 1
         case #selector(duplicateItems(_:)), #selector(trashItems(_:)), #selector(showItemsInFinder(_:)): return !t.nodes.isEmpty
         default: return true
@@ -782,7 +773,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     @objc func newFolderWithSelection(_ sender: Any?) {
         let nodes = targets(sender).nodes
-        guard nodes.count > 1, let parent = nodes[0].parent else { return }
+        guard nodes.count > 1, let parent = nodes[0].parent, nodes.allSatisfy({ $0.parent === parent }) else { return }
         let dir = parent.url, urls = nodes.map(\.url)
         FileOperations.run({
             let folder = FileOperations.freeURL(in: dir, base: "New Folder With Items", ext: "")
@@ -791,17 +782,25 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             outcome.failures = FileOperations.each(urls) { try FileOperations.move($0, to: folder.appending(path: $0.lastPathComponent)); return nil }.failures
             return outcome
         }) { [weak self] outcome in
-            self?.finish(outcome, failure: "Some items could not be moved to the new folder.",
-                         changed: [parent] + nodes.compactMap(\.parent), select: true, rename: true)
+            guard let self else { return }
+            if let folder = outcome.made.first.map(LibraryListing.canonicalPath) {
+                for node in nodes where !outcome.failures.contains(where: { $0.url == node.url }) {
+                    followMove(from: node.path, to: folder + "/" + node.name)
+                }
+            }
+            finish(outcome, failure: "Some items could not be moved to the new folder.", changed: [parent], select: true, rename: true)
         }
     }
 
     @objc func duplicateItems(_ sender: Any?) {
         let nodes = targets(sender).nodes
-        FileOperations.run({ [urls = nodes.map(\.url)] in
+        // Only a file's name is split at its extension: folder "v1.2" becomes "v1.2 copy".
+        FileOperations.run({ [urls = nodes.map(\.url), folders = Set(nodes.filter(\.isDirectory).map(\.url))] in
             FileOperations.each(urls) { url in
+                let isFolder = folders.contains(url)
                 let copy = FileOperations.freeURL(in: url.deletingLastPathComponent(),
-                                                  base: url.deletingPathExtension().lastPathComponent + " copy", ext: url.pathExtension)
+                                                  base: (isFolder ? url : url.deletingPathExtension()).lastPathComponent + " copy",
+                                                  ext: isFolder ? "" : url.pathExtension)
                 try FileOperations.copy(url, to: copy)
                 return copy
             }
@@ -901,18 +900,54 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             reloadAfterRename = false
             reloadRows()
         }
-        guard commit, !typed.isEmpty, typed != node.name, let parent = node.parent else { return }
-        guard !typed.contains("/") else {
+        guard commit, !typed.isEmpty, typed != node.name else { return }
+        warnBeforeHiding(node, typed) { [weak self] name in self?.rename(node, to: name) }
+    }
+
+    /// Finder's warnings before a name that takes the item out of the list: a leading dot hides it,
+    /// and a file extension the library does not list drops it. `rename` gets the name to use.
+    private func warnBeforeHiding(_ node: LibraryNode, _ typed: String, rename: @escaping @MainActor (String) -> Void) {
+        let old = (node.name as NSString).pathExtension, new = (typed as NSString).pathExtension
+        func checkExtension() {
+            let listed = LibraryListing.fileExtensions
+            guard !node.isDirectory, listed.contains(old.lowercased()), !listed.contains(new.lowercased()) else { return rename(typed) }
+            let message = new.isEmpty
+                ? "Are you sure you want to remove the extension “.\(old)”? The file will no longer appear in the list."
+                : "Are you sure you want to change the extension from “.\(old)” to “.\(new)”? The file will no longer appear in the list."
+            let base = new.isEmpty ? typed : (typed as NSString).deletingPathExtension
+            FileOperations.askRename(message, ["Use “.\(old)”", "Keep “\(new.isEmpty ? typed : "." + new)”"], view.window) { choice in
+                if choice == 0 { rename(base + "." + old) } else if choice == 1 { rename(typed) }
+            }
+        }
+        guard typed.hasPrefix("."), !node.name.hasPrefix(".") else { return checkExtension() }
+        FileOperations.askRename("Are you sure you want to use a name that begins with a dot “.”? The item will be hidden and leave the list.",
+                                 ["Cancel", "Use “.”"], view.window) { choice in
+            if choice == 1 { checkExtension() }
+        }
+    }
+
+    private func rename(_ node: LibraryNode, to name: String) {
+        guard name != node.name, let parent = node.parent else { return }
+        guard !name.contains("/") else {
             let error = CocoaError(.fileWriteInvalidFileName, userInfo: [NSLocalizedDescriptionKey: "A name can’t contain “/”."])
             return FileOperations.presentFailures("“\(node.name)” could not be renamed.", [.init(url: node.url, error: error)], view.window)
         }
-        let source = node.url, target = source.deletingLastPathComponent().appending(path: typed)
-        let wasOpen = openPath == node.path
+        let source = node.url, target = source.deletingLastPathComponent().appending(path: name)
         FileOperations.run({ FileOperations.each([source]) { try FileOperations.move($0, to: target); return target } }) { [weak self] outcome in
             guard let self else { return }
-            if wasOpen, let moved = outcome.made.first { setOpenPath(LibraryListing.canonicalPath(moved)) }
+            if let moved = outcome.made.first { followMove(from: node.path, to: LibraryListing.canonicalPath(moved)) }
             finish(outcome, failure: "“\(node.name)” could not be renamed.", changed: [parent], select: true)
         }
+    }
+
+    /// An item moved from `old` to `new`: the open-document marker and the folders opened inline follow
+    /// it, also when it is a folder holding them.
+    private func followMove(from old: String, to new: String) {
+        func moved(_ path: String) -> String? {
+            path == old ? new : path.hasPrefix(old + "/") ? new + path.dropFirst(old.count) : nil
+        }
+        expanded = Set(expanded.map { moved($0) ?? $0 })
+        if let open = openPath, let path = moved(open) { setOpenPath(path) }
     }
 
     // MARK: NSTableViewDataSource / Delegate
