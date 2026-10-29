@@ -67,37 +67,46 @@ final class FileRowView: NSTableRowView {
     }
 }
 
-/// Excerpts of the files on screen, read off the main thread and kept until the file's modification
-/// date changes. Only reads user files, never writes them.
-@MainActor final class ExcerptStore {
-    private var cache: [String: (modified: Date, text: String)] = [:]
-    private var pending: Set<String> = []
-    private let queue = DispatchQueue(label: "aeris.excerpts", qos: .utility)
-    /// Called on the main thread with the path of a file whose excerpt just arrived.
+/// What a file row shows besides its name: the modification date and the excerpt
+/// (nil when the file can't be read as text).
+final class RowInfo: NSObject {
+    let modified: Date?
+    let excerpt: String?
+    init(modified: Date?, excerpt: String?) { self.modified = modified; self.excerpt = excerpt }
+}
+
+/// Row info of the files on screen. The stat and the read happen off the main thread; the result
+/// is kept (bounded) until the modification date changes. Only reads user files, never writes them.
+@MainActor final class RowInfoStore {
+    private let cache = NSCache<NSString, RowInfo>()
+    private var inFlight: Set<String> = []
+    private var again: Set<String> = []
+    private let queue = DispatchQueue(label: "aeris.rowinfo", qos: .utility)
+    /// Called on the main thread with the path of a file whose info just changed.
     var onLoaded: (@MainActor (String) -> Void)?
 
-    /// The excerpt for the file as of `modified`, or nil while it is being read.
-    func excerpt(path: String, modified: Date) -> String? {
-        if let hit = cache[path], hit.modified == modified { return hit.text }
-        let key = "\(path)\u{0}\(modified.timeIntervalSinceReferenceDate)"
-        guard pending.insert(key).inserted else { return nil }
+    init() { cache.countLimit = 5000 }
+
+    /// What is known about `path` so far, possibly stale.
+    func info(path: String) -> RowInfo? { cache.object(forKey: path as NSString) }
+
+    /// Checks the file in the background; `onLoaded` fires only if its date changed or it is new.
+    func refresh(path: String) {
+        guard inFlight.insert(path).inserted else { again.insert(path); return }
+        let known: Date?? = info(path: path).map { $0.modified }
         queue.async {
-            let text = Self.read(path)
+            let modified = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            let fresh = known.map { $0 == modified } ?? false
+            let excerpt = fresh ? nil : Excerpt.ofFile(atPath: path)
             DispatchQueue.main.async { MainActor.assumeIsolated {
-                self.pending.remove(key)
-                self.cache[path] = (modified, text)
-                self.onLoaded?(path)
+                self.inFlight.remove(path)
+                if !fresh {
+                    self.cache.setObject(RowInfo(modified: modified, excerpt: excerpt), forKey: path as NSString)
+                    self.onLoaded?(path)
+                }
+                if self.again.remove(path) != nil { self.refresh(path: path) }
             } }
         }
-        return nil
-    }
-
-    /// The first 16 KB is more than 200 characters of text need, front matter included.
-    nonisolated private static func read(_ path: String) -> String {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return "" }
-        defer { try? handle.close() }
-        let data = (try? handle.read(upToCount: 16 * 1024)) ?? Data()
-        return Excerpt.make(String(decoding: data, as: UTF8.self))
     }
 }
 
@@ -122,7 +131,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     private var revealing = false
     /// Canonical path of the document open in this window; its row carries the marker.
     private var openPath: String?
-    private let excerpts = ExcerptStore()
+    private let infos = RowInfoStore()
     private let dates = RowDateFormatter()
 
     /// Whether file names keep their extension. Off by default; the menu toggle comes later.
@@ -139,7 +148,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     override func loadView() {
         tableView.style = .inset
-        excerpts.onLoaded = { [weak self] path in self?.excerptLoaded(path) }
+        infos.onLoaded = { [weak self] path in self?.infoLoaded(path) }
         tableView.headerView = nil
         tableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
         tableView.dataSource = self
@@ -232,21 +241,26 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         }
     }
 
-    private func excerptLoaded(_ path: String) {
+    /// The date and excerpt of a file changed on disk: look again at the rows on screen. A disk event
+    /// or a save of the open document calls this; the store only re-reads files whose date moved.
+    func refreshVisibleRows() {
+        let visible = tableView.rows(in: tableView.visibleRect)
+        for row in visible.location..<(visible.location + visible.length) where rows.indices.contains(row) && !rows[row].isDirectory {
+            infos.refresh(path: rows[row].path)
+        }
+    }
+
+    private func infoLoaded(_ path: String) {
         guard let row = rows.firstIndex(where: { $0.path == path }),
-              let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? FileCellView,
-              let modified = modificationDate(rows[row]) else { return }
-        cell.excerptLabel.stringValue = excerptText(rows[row], modified: modified)
+              let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? FileCellView else { return }
+        show(infos.info(path: path), in: cell)
     }
 
-    private func modificationDate(_ node: LibraryNode) -> Date? {
-        try? node.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-    }
-
-    /// The excerpt, "No text" for an empty file, nothing while it is being read.
-    private func excerptText(_ node: LibraryNode, modified: Date) -> String {
-        guard let text = excerpts.excerpt(path: node.path, modified: modified) else { return "" }
-        return text.isEmpty ? "No text" : text
+    /// The date, and the excerpt: "No text" for an empty file, nothing for an unreadable one
+    /// or while it is being read.
+    private func show(_ info: RowInfo?, in cell: FileCellView) {
+        cell.dateLabel.stringValue = info?.modified.map { dates.label(for: $0) } ?? ""
+        cell.excerptLabel.stringValue = info?.excerpt.map { $0.isEmpty ? "No text" : $0 } ?? ""
     }
 
     /// A disk refresh changed the tree: reload if the folder on screen changed, and follow it
@@ -350,9 +364,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         cell.identifier = id
         let showExtension = UserDefaults.standard.bool(forKey: Self.showExtensionsKey)
         cell.nameLabel.stringValue = showExtension ? node.name : (node.name as NSString).deletingPathExtension
-        let modified = modificationDate(node)
-        cell.dateLabel.stringValue = modified.map { dates.label(for: $0) } ?? ""
-        cell.excerptLabel.stringValue = modified.map { excerptText(node, modified: $0) } ?? ""
+        show(infos.info(path: node.path), in: cell)
+        infos.refresh(path: node.path)
         return cell
     }
 
