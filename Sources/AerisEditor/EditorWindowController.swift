@@ -441,7 +441,9 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
     /// Format and View commands reach the editor even when the preview has focus
     /// (the editor is not in the preview's responder chain; this window controller is).
     override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
-        EditorViewController.commandActions.contains(action) ? editor : super.supplementalTarget(forAction: action, sender: sender)
+        // File commands act on the list, and only while the list is on screen.
+        if FileListViewController.fileActions.contains(action) { return splitViewController.splitViewItems[1].isCollapsed ? nil : fileList }
+        return EditorViewController.commandActions.contains(action) ? editor : super.supplementalTarget(forAction: action, sender: sender)
     }
 
     override var document: AnyObject? {
