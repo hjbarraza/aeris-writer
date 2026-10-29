@@ -18,9 +18,6 @@ class MarkdownDocument: NSDocument {
     /// The file's encoding, detected on read; new documents are UTF-8 without a BOM.
     private(set) var encoding: TextEncoding = .utf8
 
-    /// The encoding of the write in progress: the file's own for saves to its file,
-    /// UTF-8 for a new file (Save As, Save To, a duplicate's first save).
-    private var writeEncoding: TextEncoding?
     /// The user chose to keep the encoding although the text can't be stored in it;
     /// cleared once the text is storable again, so the next such edit asks again.
     private var keepsUnstorableEncoding = false
@@ -48,32 +45,6 @@ class MarkdownDocument: NSDocument {
         keepsUnstorableEncoding = false
     }
 
-    /// Set by the "Save as UTF-8" error recovery, after which NSDocument closes without
-    /// retrying the failed save; `canClose` saves first instead.
-    fileprivate var saveBeforeClosing = false
-    private var closeAnswer: CloseAnswer?
-
-    override func canClose(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?,
-                           contextInfo: UnsafeMutableRawPointer?) {
-        nonisolated(unsafe) let delegate = delegate, contextInfo = contextInfo
-        func forward(_ ok: Bool) {
-            guard let target = delegate as? NSObject, let selector = shouldCloseSelector else { return }
-            typealias ShouldClose = @convention(c) (NSObject, Selector, NSDocument, Bool, UnsafeMutableRawPointer?) -> Void
-            unsafeBitCast(target.method(for: selector), to: ShouldClose.self)(target, selector, self, ok, contextInfo)
-        }
-        let answer = CloseAnswer { [self] ok in
-            closeAnswer = nil
-            guard ok, saveBeforeClosing, let url = fileURL, let type = fileType else { return forward(ok) }
-            saveBeforeClosing = false
-            // An explicit write: after the recovery NSDocument counts the change as saved,
-            // so a plain autosave would find nothing to do.
-            save(to: url, ofType: type, for: .autosaveInPlaceOperation) { forward($0 == nil) }
-        }
-        closeAnswer = answer  // NSDocument doesn't retain the delegate.
-        super.canClose(withDelegate: answer, shouldClose: #selector(CloseAnswer.document(_:shouldClose:contextInfo:)),
-                       contextInfo: nil)
-    }
-
     override class var autosavesInPlace: Bool { true }
 
     // Reads must run on the main thread; read(from:ofType:) relies on it.
@@ -84,7 +55,21 @@ class MarkdownDocument: NSDocument {
     }
 
     override func data(ofType typeName: String) throws -> Data {
-        let target = writeEncoding ?? encoding
+        try data(in: encoding)
+    }
+
+    /// Decided per write from its own operation, so overlapping saves can't mix encodings:
+    /// a new file (Save As, Save To, a duplicate's first save) is UTF-8; every other write
+    /// keeps the document's encoding.
+    override func write(to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType,
+                        originalContentsURL: URL?) throws {
+        let newFile = saveOperation == .saveAsOperation || saveOperation == .saveToOperation
+        // Main thread: canAsynchronouslyWrite is not overridden (false).
+        let data = try MainActor.assumeIsolated { try data(in: newFile ? .utf8 : encoding) }
+        try data.write(to: url)
+    }
+
+    private func data(in target: TextEncoding) throws -> Data {
         let text = textStorage.string
         guard let data = target.encode(text) else {
             // Never drop characters the file's encoding can't hold: fail the save instead,
@@ -168,11 +153,7 @@ class MarkdownDocument: NSDocument {
         to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType,
         completionHandler: @escaping (Error?) -> Void
     ) {
-        // A new file is always UTF-8; only a save to the document's own file keeps its encoding.
-        let newFile = saveOperation == .saveAsOperation || url.standardizedFileURL != fileURL?.standardizedFileURL
-        writeEncoding = newFile ? .utf8 : encoding
         super.save(to: url, ofType: typeName, for: saveOperation) { error in
-            self.writeEncoding = nil
             // After Save As the document is the new UTF-8 file.
             if error == nil, saveOperation == .saveAsOperation { self.convertToUTF8() }
             // Only saves to the document's own file (not Export, not autosave-elsewhere).
@@ -232,9 +213,10 @@ class MarkdownDocument: NSDocument {
     }
 }
 
-/// The "Save as UTF-8" option of an encoding save error: converts the document. NSDocument
-/// calls only the synchronous variant and does not retry the failed save, so the document
-/// is marked to save before it closes (see `MarkdownDocument.canClose`).
+/// The "Save as UTF-8" option of an encoding save error: converts the document, then
+/// reports NOT recovered. NSDocument treats a recovery as a completed save without writing
+/// anything; reporting failure keeps the document edited, so the next autosave or save
+/// writes UTF-8 and a close or quit is simply asked again.
 private final class SaveAsUTF8Recovery: NSObject {
     weak var document: MarkdownDocument?
 
@@ -242,11 +224,8 @@ private final class SaveAsUTF8Recovery: NSObject {
 
     override func attemptRecovery(fromError error: Error, optionIndex recoveryOptionIndex: Int) -> Bool {
         guard recoveryOptionIndex == 0, let document else { return false }
-        MainActor.assumeIsolated {
-            document.convertToUTF8()
-            document.saveBeforeClosing = true
-        }
-        return true
+        MainActor.assumeIsolated { document.convertToUTF8() }
+        return false
     }
 
     override func attemptRecovery(fromError error: Error, optionIndex recoveryOptionIndex: Int, delegate: Any?,
@@ -255,14 +234,5 @@ private final class SaveAsUTF8Recovery: NSObject {
         guard let target = delegate as? NSObject, let selector = didRecoverSelector else { return }
         typealias DidRecover = @convention(c) (NSObject, Selector, Bool, UnsafeMutableRawPointer?) -> Void
         unsafeBitCast(target.method(for: selector), to: DidRecover.self)(target, selector, recovered, contextInfo)
-    }
-}
-
-/// Receives NSDocument's close answer so `MarkdownDocument.canClose` can act on it first.
-private final class CloseAnswer: NSObject {
-    let handle: (Bool) -> Void
-    init(_ handle: @escaping (Bool) -> Void) { self.handle = handle }
-    @objc func document(_ doc: NSDocument, shouldClose: Bool, contextInfo: UnsafeMutableRawPointer?) {
-        handle(shouldClose)
     }
 }

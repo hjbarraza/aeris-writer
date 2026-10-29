@@ -412,7 +412,8 @@ enum SelfCheck {
             d.close()
         }
 
-        // The error's "Save as UTF-8" recovery converts, and close then proceeds.
+        // The error's "Save as UTF-8" recovery converts but counts as not saved: the close
+        // that hit the error stays open, and the next close writes UTF-8 and proceeds.
         let recoverURL = dir.appending(path: "recover.md")
         try? cafe.write(to: recoverURL)
         if let d = try? ErrorAnsweringDocument(contentsOf: recoverURL, ofType: "net.daringfireball.markdown") {
@@ -420,8 +421,43 @@ enum SelfCheck {
             insert("😀", in: d)
             _ = wait(timeout: 2) { !encodingAsks.isEmpty }
             d.updateChangeCount(.changeDone)
-            check(canClose(d) == true && d.encoding == .utf8 && isUTF8(recoverURL, "😀café"),
-                  "encoding: choosing Save as UTF-8 in the error saves UTF-8 and close proceeds")
+            check(canClose(d) == false && d.encoding == .utf8 && d.isDocumentEdited
+                  && (try? Data(contentsOf: recoverURL)) == cafe,
+                  "encoding: Save as UTF-8 in the close error converts, keeps the document edited, doesn't close")
+            check(canClose(d) == true && isUTF8(recoverURL, "😀café"),
+                  "encoding: the next close writes UTF-8 with the emoji and proceeds")
+            d.close()
+        }
+
+        // ⌘S, error, "Save as UTF-8": NSDocument must not count that as saved (else Quit
+        // would leave the old bytes); the document stays edited and the next save writes UTF-8.
+        let cmdSURL = dir.appending(path: "cmd-s.md")
+        try? cafe.write(to: cmdSURL)
+        if let d = try? ErrorAnsweringDocument(contentsOf: cmdSURL, ofType: "net.daringfireball.markdown") {
+            d.recoveryOption = 0
+            insert("😀", in: d)
+            _ = wait(timeout: 2) { !encodingAsks.isEmpty }
+            d.updateChangeCount(.changeDone)
+            d.save(withDelegate: nil, didSave: nil, contextInfo: nil)
+            _ = wait(timeout: 3) { !d.presented.isEmpty }
+            _ = wait(timeout: 0.3) { false }
+            check(!d.presented.isEmpty && d.isDocumentEdited && d.hasUnautosavedChanges
+                  && (try? Data(contentsOf: cmdSURL)) == cafe,
+                  "encoding: after ⌘S + Save as UTF-8 the document is still edited (nothing claimed saved)")
+            check(succeeded(save(d)) && isUTF8(cmdSURL, "😀café"), "encoding: the next save writes UTF-8 with the emoji")
+            d.close()
+        }
+
+        // An autosave to the document's own file during a Save As elsewhere keeps the file's
+        // encoding: the encoding is decided per write, not per document.
+        let ownURL = dir.appending(path: "own.md"), otherURL = dir.appending(path: "other.md")
+        let nestedURL = dir.appending(path: "own-autosave.md")
+        try? cafe.write(to: ownURL)
+        if let d = try? NestedWriteDocument(contentsOf: ownURL, ofType: "net.daringfireball.markdown") {
+            d.nestedURL = nestedURL
+            _ = save(d, to: otherURL, .saveAsOperation)
+            check(isUTF8(otherURL, "café") && (try? Data(contentsOf: nestedURL)) == cafe,
+                  "encoding: an in-place autosave overlapping a Save As still writes Windows-1252")
             d.close()
         }
 
@@ -443,6 +479,20 @@ enum SelfCheck {
         var answer: Bool?
         @objc func document(_ doc: NSDocument, shouldClose: Bool, contextInfo: UnsafeMutableRawPointer?) {
             answer = shouldClose
+        }
+    }
+
+    /// During its Save As write, also performs an in-place autosave write (to `nestedURL`,
+    /// standing in for the original file), as an overlapping autosave would.
+    final class NestedWriteDocument: MarkdownDocument {
+        nonisolated(unsafe) var nestedURL: URL?
+        override func write(to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType,
+                            originalContentsURL: URL?) throws {
+            if saveOperation == .saveAsOperation, let nested = nestedURL {
+                nestedURL = nil
+                try write(to: nested, ofType: typeName, for: .autosaveInPlaceOperation, originalContentsURL: fileURL)
+            }
+            try super.write(to: url, ofType: typeName, for: saveOperation, originalContentsURL: originalContentsURL)
         }
     }
 
