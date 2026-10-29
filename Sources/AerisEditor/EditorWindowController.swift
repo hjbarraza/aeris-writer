@@ -184,6 +184,7 @@ final class EditorWindowController: NSWindowController {
             }
         }
         fileList.reveal(url)
+        window?.invalidateRestorableState()  // programmatic selection changes count too (M2-6a)
     }
 
     /// The latest request that arrived while a switch was pending; it opens once that switch
