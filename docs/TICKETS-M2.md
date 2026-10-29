@@ -94,7 +94,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   "Yesterday"; select another row → open marker stays on the open file; a 2 000-file
   folder scrolls smoothly.
 
-- [ ] **M2-6a — Relaunch returns to where you were.** On relaunch each restored window
+- [x] **M2-6a — Relaunch returns to where you were.** On relaunch each restored window
   shows the same folder in the file list it showed at quit, with the same file
   selected, and the organizer keeps which folders were expanded. Works after a plain ⌘Q
   with macOS's default "close windows when quitting" setting: the state is stored by the
