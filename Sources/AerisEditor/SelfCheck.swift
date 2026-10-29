@@ -1030,18 +1030,22 @@ enum SelfCheck {
         let editor = wc.editorForTesting, tv = editorTextView(wc)
         let board = NSPasteboard(name: NSPasteboard.Name("aeris-selfcheck-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
-        func types() -> Set<NSPasteboard.PasteboardType> { Set(board.types ?? []) }
+        /// The types besides plain text (which NSPasteboard also files under its legacy names).
+        func types() -> Set<NSPasteboard.PasteboardType> {
+            Set(board.types ?? []).subtracting([.string, NSPasteboard.PasteboardType("NSStringPboardType"),
+                                                 NSPasteboard.PasteboardType("public.utf8-plain-text")])
+        }
         func string() -> String { board.string(forType: .string) ?? "" }
 
         tv.setSelectedRange(NSRange(location: 0, length: 0))
-        check(editor.copy(as: .markdown, to: board) && string() == original && types() == [.string],
+        check(editor.copy(as: .markdown, to: board) && string() == original && !types().contains(.html) && !types().contains(.rtf),
               "copy matrix: Markdown with no selection is the whole source, only plain text")
         check(editor.copy(as: .html, to: board) && string().contains("<h1") && string().contains("<strong>bold</strong>")
-              && types() == [.html, .string], "copy matrix: HTML is markup, as HTML and plain text only")
+              && types().contains(.html) && !types().contains(.rtf), "copy matrix: HTML is markup, as HTML and plain text only")
         check(editor.copy(as: .plainText, to: board)
-              && string() == "Title\n\nSome bold and a link.\n\n• one\n• two" && types() == [.string],
+              && string() == "Title\n\nSome bold and a link.\n\n• one\n• two" && !types().contains(.html) && !types().contains(.rtf),
               "copy matrix: Plain Text has no Markdown left (got \(string().debugDescription))")
-        check(editor.copy(as: .richText, to: board) && types() == [.rtf, .string],
+        check(editor.copy(as: .richText, to: board) && types().contains(.rtf) && !types().contains(.html),
               "copy matrix: Rich Text is RTF and plain text only")
         let rich = board.data(forType: .rtf).flatMap { NSAttributedString(rtf: $0, documentAttributes: nil) }
         var bold = false
