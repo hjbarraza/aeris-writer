@@ -114,7 +114,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   *Verify:* self-check: each toggle ends at the expected widths and restores them when
   toggled back. On screen: toggle each panel → smooth, no flicker.
 
-- [ ] **M2-7 — Sort bar and view options.** Sort by Date Modified, Date Created, Name,
+- [x] **M2-7 — Sort bar and view options.** Sort by Date Modified, Date Created, Name,
   Extension; Newest/Oldest First (dates) or A→Z/Z→A (name, extension); Folders on Top;
   Show Date (Modified / Created / None); Show Excerpts; Navigation: **Tree** (folders
   expand inline in the list) or **List** (clicking a folder drills into it, back

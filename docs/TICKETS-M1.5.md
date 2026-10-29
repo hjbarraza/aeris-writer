@@ -190,7 +190,7 @@ dimming and centring together. Then start M2.
   *Verify:* caret inside `[x](https://example.com)` → ⌘-Return opens the browser; hold ⌘
   over the link → pointer changes; click without ⌘ → caret moves, nothing opens.
 
-- [ ] **M1.5-23 — Renumber ordered lists.** Return in the middle of an ordered list renumbers
+- [x] **M1.5-23 — Renumber ordered lists.** Return in the middle of an ordered list renumbers
   the items below it, so a list never shows duplicate numbers; deleting an item renumbers too.
   Empty list items and markers are plain text only: never insert invisible placeholder
   characters into the document.

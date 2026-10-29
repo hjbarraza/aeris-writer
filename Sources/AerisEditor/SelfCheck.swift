@@ -94,6 +94,7 @@ enum SelfCheck {
         anyTextFileChecks()
         hashtagMenuChecks()
         quickSearchChecks()
+        renumberChecks()
         check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
         try? FileManager.default.removeItem(at: scratch)
         cleanStandardDefaults()
@@ -1091,6 +1092,42 @@ enum SelfCheck {
         }
         check(mixedUpper == "AA\r\nBB\nCC", "line endings: Make Upper Case over a mixed range keeps its endings"
               + got(mixedUpper, "AA\r\nBB\nCC"))
+    }
+
+    /// M1.5-23: Return in the middle of an ordered list renumbers the items below;
+    /// deleting an item's line renumbers them back, one undo restores; the saved
+    /// file has no zero-width characters.
+    @MainActor static func renumberChecks() {
+        let url = scratch.appending(path: "Renumber/list.md")
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? Data("1. a\n2. b\n3. c".utf8).write(to: url)
+        let dc = NSDocumentController.shared
+        guard let doc = try? dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                as? MarkdownDocument else { return check(false, "renumber: list.md opens") }
+        // Each command's edit is its own top-level undo group (headless, an event group never closes).
+        doc.undoManager?.groupsByEvent = false
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+        func got(_ want: String) -> String { tv.string == want ? "" : " (got \(tv.string.debugDescription))" }
+        tv.setSelectedRange(NSRange(location: 4, length: 0))
+        tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        check(tv.string == "1. a\n2. \n3. b\n4. c" && tv.selectedRange() == NSRange(location: 8, length: 0),
+              "renumber: Return after the first item renumbers the items below" + got("1. a\n2. \n3. b\n4. c"))
+        tv.setSelectedRange(NSRange(location: 5, length: 4))   // line 2 with its line break
+        tv.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+        check(tv.string == "1. a\n2. b\n3. c", "renumber: deleting line 2 renumbers the items below" + got("1. a\n2. b\n3. c"))
+        tv.undoManager?.undo()
+        check(tv.string == "1. a\n2. \n3. b\n4. c", "renumber: one undo restores the deleted item and its numbers"
+              + got("1. a\n2. \n3. b\n4. c"))
+        tv.undoManager?.redo()
+        var saved = false
+        doc.save(to: url, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+        _ = wait(timeout: 3) { saved }
+        let disk = String(decoding: (try? Data(contentsOf: url)) ?? Data(), as: UTF8.self)
+        let zeroWidth: Set<Unicode.Scalar> = ["\u{200B}", "\u{200C}", "\u{200D}", "\u{2060}", "\u{FEFF}"]
+        check(saved && disk == "1. a\n2. b\n3. c" && !disk.unicodeScalars.contains(where: zeroWidth.contains),
+              "renumber: the saved file is the plain list, no zero-width characters (got \(disk.debugDescription))")
+        doc.close()
     }
 
     @MainActor static func editorTextView(_ wc: EditorWindowController) -> NSTextView { wc.editorForTesting.textViewForTesting }
