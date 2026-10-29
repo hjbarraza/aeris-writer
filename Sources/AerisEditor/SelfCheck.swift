@@ -47,6 +47,7 @@ enum SelfCheck {
         encodingChecks()
         externalChangeChecks()
         linkChecks()
+        linkMenuChecks()
         navigationChecks()
         rowChecks()
         restorationChecks()
@@ -2045,6 +2046,216 @@ enum SelfCheck {
               && errors.count == 1, "links: an existing .md opens in the same window")
 
         wc.close()
+    }
+
+    /// M1-18: the preview's own link menu. Builds the menu for each link kind and runs every item.
+    @MainActor static func linkMenuChecks() {
+        let dir = scratch.appending(path: "linkmenu")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let main = dir.appending(path: "Main.md")
+        for name in ["Tab", "Win", "Same"] { try? "\(name) doc".write(to: dir.appending(path: "\(name).md"), atomically: true, encoding: .utf8) }
+        let filler = (0..<60).map { "Paragraph \($0)." }.joined(separator: "\n\n")
+        try? "[T](Tab.md) [W](Win.md) [S](Same.md) [A](#second) [Web](https://example.com/a) [M](mailto:a@b.c) [P](pic.png)\n\n# First\n\n\(filler)\n\n## Second\n\n\(filler)\n"
+            .write(to: main, atomically: true, encoding: .utf8)
+        let dc = NSDocumentController.shared
+        let doc = try! dc.makeDocument(withContentsOf: main, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        let preview = wc.previewForTesting, web = preview.webViewForTesting
+        wc.window?.setContentSize(NSSize(width: 1320, height: 400))
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+
+        var external: [URL] = [], opened: [URL] = [], revealed: [URL] = []
+        preview.openExternally = { external.append($0) }
+        preview.openDocument = { opened.append($0) }
+        preview.revealInFinder = { revealed.append($0) }
+        let pb = NSPasteboard(name: NSPasteboard.Name("aeris.selfcheck.\(UUID().uuidString)"))
+        preview.pasteboard = pb
+
+        func eval(_ js: String) -> Any? {
+            let out = Box<Any?>(nil), done = Box(false)
+            web.evaluateJavaScript(js) { value, _ in out.value = value; done.value = true }
+            _ = wait(timeout: 3) { done.value }
+            return out.value
+        }
+        func link(_ href: String) -> URL { LinkAction.resolve(href, documentURL: main)! }
+        func item(_ items: [NSMenuItem], _ title: String) -> NSMenuItem? { items.first { $0.title == title } }
+        func run(_ items: [NSMenuItem], _ title: String) {
+            guard let i = item(items, title), let target = i.target, let action = i.action else { return }
+            _ = target.perform(action, with: i)
+        }
+        check(wait(timeout: 10) { (eval("!!document.getElementById('second')") as? Bool) == true }, "linkmenu: page ready")
+
+        // Titles for each link kind.
+        let note = preview.menuItems(for: link("Same.md"))
+        check(note.map(\.title) == ["Open", "Open in New Tab", "Open in New Window", "Reveal in Finder", "Copy Link"],
+              "linkmenu: note link items \(note.map(\.title))")
+        check(preview.menuItems(for: URL(string: "https://example.com/a")!).map(\.title) == ["Open in Browser", "Copy Link"],
+              "linkmenu: web link items")
+        check(preview.menuItems(for: URL(string: "mailto:a@b.c")!).map(\.title) == ["Open in Mail", "Copy Link"],
+              "linkmenu: mail link items")
+        check(preview.menuItems(for: link("#second")).map(\.title) == ["Jump to Section", "Copy Link"],
+              "linkmenu: anchor link items")
+        check(preview.menuItems(for: link("pic.png")).map(\.title) == ["Copy Link"], "linkmenu: other link: Copy Link only")
+        check(note.allSatisfy { $0.action != nil && $0.target != nil }, "linkmenu: every item has a target and action")
+
+        // The hit test finds a link under a point and none elsewhere.
+        let spot = Box<URL?>(nil), spotDone = Box(false)
+        eval("(() => { const r = document.querySelector('a[href=\"Tab.md\"]').getBoundingClientRect(); window.__p = [r.x + r.width / 2, r.y + r.height / 2]; })()")
+        if let p = eval("window.__p") as? [Double], p.count == 2 {
+            web.link(at: NSPoint(x: p[0], y: p[1])) { spot.value = $0; spotDone.value = true }
+            _ = wait(timeout: 3) { spotDone.value }
+        }
+        check(spot.value == link("Tab.md"), "linkmenu: hit test returns the absolute URL of the link under the pointer (\(String(describing: spot.value)))")
+        let none = Box<URL?>(URL(string: "x:")), noneDone = Box(false)
+        web.link(at: NSPoint(x: 5, y: 395)) { none.value = $0; noneDone.value = true }
+        _ = wait(timeout: 3) { noneDone.value }
+        check(none.value == nil, "linkmenu: hit test on plain page returns nil")
+
+        // WebKit's items: link items go, Copy / Look Up stay for text, nothing else survives on a link.
+        func webkitMenu() -> NSMenu {
+            let m = NSMenu()
+            for n in ["OpenLink", "OpenLinkInNewWindow", "DownloadLinkedFile", "CopyLink", "Copy", "LookUp", "OpenImageInNewWindow",
+                      "DownloadImage", "CopyImage", "Reload", "SomethingNew"] {
+                let i = NSMenuItem(title: n, action: nil, keyEquivalent: ""); i.identifier = NSUserInterfaceItemIdentifier("WKMenuItemIdentifier" + n)
+                m.addItem(i)
+            }
+            m.addItem(NSMenuItem(title: "NoIdentifier", action: nil, keyEquivalent: ""))  // Services-like: nil identifier
+            return m
+        }
+        let m1 = webkitMenu()
+        web.reshape(m1, link: link("Same.md"))
+        let t1 = m1.items.filter { !$0.isSeparatorItem }.map(\.title)
+        check(t1 == ["Open", "Open in New Tab", "Open in New Window", "Reveal in Finder", "Copy Link", "Copy", "LookUp"],
+              "linkmenu: on a link, WebKit's link/download items are gone, Copy and Look Up kept \(t1)")
+        let m2 = webkitMenu()
+        web.reshape(m2, link: nil)
+        let t2 = m2.items.map(\.title)
+        check(t2 == ["Copy", "LookUp"], "linkmenu: off a link only Copy and Look Up stay \(t2)")
+
+        // The real menu path: willOpenMenu with an event at a point (right-click and Control-click both end there).
+        func event(at p: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: .rightMouseDown, location: web.convert(p, to: nil), modifierFlags: [], timestamp: 0,
+                               windowNumber: wc.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        let linkPoint = (eval("window.__p") as? [Double]).map { NSPoint(x: $0[0], y: $0[1]) } ?? .zero
+        let blank = NSPoint(x: 5, y: 395)
+        let mA = webkitMenu(), mB = webkitMenu()
+        web.willOpenMenu(mA, with: event(at: linkPoint))   // older click, on the link
+        web.willOpenMenu(mB, with: event(at: blank))        // newer click, elsewhere, before A's answer
+        _ = wait(timeout: 1) { false }
+        check(!mA.items.contains { $0.title == "Open in New Tab" } && !mB.items.contains { $0.title == "Open in New Tab" },
+              "linkmenu: a hit-test answer for an older menu opening is dropped, never put on another click's menu")
+        let mC = webkitMenu()
+        web.willOpenMenu(mC, with: event(at: linkPoint))
+        check(wait(timeout: 3) { mC.items.contains { $0.title == "Open in New Tab" } }, "linkmenu: willOpenMenu adds the link items for its own event")
+        let titlesC = mC.items.filter { !$0.isSeparatorItem }.map(\.title)
+        check(titlesC == ["Open", "Open in New Tab", "Open in New Window", "Reveal in Finder", "Copy Link", "Copy", "LookUp"],
+              "linkmenu: willOpenMenu menu is exactly our items plus allow-listed WebKit items \(titlesC)")
+
+        // A link with no selection: WebKit's menu is link items only, all dropped. Never empty on the way.
+        let mD = NSMenu()
+        for n in ["OpenLink", "OpenLinkInNewWindow", "DownloadLinkedFile", "CopyLink"] {
+            let i = NSMenuItem(title: n, action: nil, keyEquivalent: ""); i.identifier = NSUserInterfaceItemIdentifier("WKMenuItemIdentifier" + n)
+            mD.addItem(i)
+        }
+        web.willOpenMenu(mD, with: event(at: linkPoint))
+        var everEmpty = mD.items.isEmpty
+        let placeholderFirst = mD.items.map(\.title) == ["Link"] && mD.items[0].isEnabled == false
+        _ = wait(timeout: 3) { everEmpty = everEmpty || mD.items.isEmpty; return mD.items.contains { $0.title == "Open in New Tab" } }
+        check(placeholderFirst && !everEmpty, "linkmenu: a link-only menu holds a disabled placeholder, never empty, while the hit test runs")
+        check(mD.items.map(\.title) == ["Open", "Open in New Tab", "Open in New Window", "Reveal in Finder", "Copy Link"],
+              "linkmenu: the answer replaces the placeholder with our items \(mD.items.map(\.title))")
+        let mE = NSMenu()
+        web.willOpenMenu(mE, with: event(at: blank))
+        _ = wait(timeout: 0.5) { false }
+        check(mE.items.map(\.title) == ["Link"] && !mE.items[0].isEnabled, "linkmenu: no link and nothing to keep leaves a disabled placeholder, not an empty menu")
+
+        // What WebKit really builds: log its identifiers; nothing outside the allow-list may survive.
+        let realEvent = event(at: linkPoint)
+        let real = web.menu(for: realEvent)
+        let realIDs = real?.items.map { $0.identifier?.rawValue ?? "nil:\($0.title)" } ?? []
+        print("info - linkmenu: real WebKit menu(for:) items before willOpenMenu: \(realIDs)")
+        if let real {
+            web.willOpenMenu(real, with: realEvent)
+            check(wait(timeout: 3) { real.items.contains { $0.title == "Open in New Tab" } }, "linkmenu: real WebKit menu gets our link items")
+            let survivors = real.items.filter { $0.identifier != nil }.map { $0.identifier!.rawValue }
+            print("info - linkmenu: real WebKit menu identifiers after reshape: \(survivors)")
+            check(survivors.allSatisfy { PreviewWebView.keptIdentifiers.contains($0) }, "linkmenu: nothing outside the allow-list survives a real menu")
+        } else {
+            print("info - linkmenu: web.menu(for:) returned nil headlessly; real identifiers not obtainable")
+        }
+
+        // Run every item.
+        run(note, "Open")
+        check(opened == [dir.appending(path: "Same.md").standardizedFileURL] || opened.map(\.lastPathComponent) == ["Same.md"],
+              "linkmenu: Open asks this window to open the note")
+        run(note, "Reveal in Finder")
+        check(revealed.map(\.lastPathComponent) == ["Same.md"], "linkmenu: Reveal in Finder reveals the note")
+        run(note, "Copy Link")
+        check(pb.string(forType: .string) == link("Same.md").absoluteString && pb.string(forType: .string)?.hasPrefix("file:///") == true,
+              "linkmenu: Copy Link puts the absolute URL on the pasteboard")
+        let web2 = preview.menuItems(for: URL(string: "https://example.com/a")!)
+        run(web2, "Open in Browser"); run(web2, "Copy Link")
+        check(external == [URL(string: "https://example.com/a")!] && pb.string(forType: .string) == "https://example.com/a",
+              "linkmenu: Open in Browser hands to the system; Copy Link copies it")
+        let mail2 = preview.menuItems(for: URL(string: "mailto:a@b.c")!)
+        run(mail2, "Open in Mail")
+        check(external.last == URL(string: "mailto:a@b.c")!, "linkmenu: Open in Mail hands to the system")
+        let anchor = preview.menuItems(for: link("#second"))
+        run(anchor, "Jump to Section")
+        check(wait(timeout: 5) { (eval("window.scrollY") as? Double ?? 0) > 100 }, "linkmenu: Jump to Section scrolls the preview")
+        run(anchor, "Copy Link")
+        check(pb.string(forType: .string)?.hasSuffix("#second") == true, "linkmenu: anchor Copy Link copies the absolute URL")
+
+        // Open in New Tab: same window, one more tab. Open in New Window: a second window.
+        let windowsBefore = Set(NSApp.windows.map(ObjectIdentifier.init))
+        run(note, "Open in New Tab")
+        let tabbed = wait(timeout: 3) { wc.window?.tabbedWindows?.count == 2 }
+        let tabDoc = dc.document(for: dir.appending(path: "Same.md"))
+        check(tabbed && tabDoc != nil && wc.window?.tabbedWindows?.contains { $0 === tabDoc?.windowControllers.first?.window } == true,
+              "linkmenu: Open in New Tab adds one tab to this window (\(wc.window?.tabbedWindows?.count ?? 0) tabs)")
+        let winNote = preview.menuItems(for: link("Win.md"))
+        run(winNote, "Open in New Window")
+        _ = wait(timeout: 3) { dc.document(for: dir.appending(path: "Win.md"))?.windowControllers.first?.window != nil }
+        let winDoc = dc.document(for: dir.appending(path: "Win.md"))
+        let newWindow = winDoc?.windowControllers.first?.window
+        check(newWindow != nil && newWindow !== wc.window && newWindow?.tabbedWindows == nil && wc.window?.tabbedWindows?.count == 2
+              && !windowsBefore.contains(ObjectIdentifier(newWindow!)),
+              "linkmenu: Open in New Window makes a separate window, not a tab (\(String(describing: newWindow)) tabs \(String(describing: newWindow?.tabbedWindows?.count)) host \(String(describing: wc.window?.tabbedWindows?.count)) mode \(String(describing: newWindow?.tabbingMode.rawValue)))")
+        // Already open: no duplicate.
+        let docCount = dc.documents.count
+        run(winNote, "Open in New Window"); run(note, "Open in New Tab")
+        check(dc.documents.count == docCount && wc.window?.tabbedWindows?.count == 2,
+              "linkmenu: a document already open is brought forward, not opened twice")
+
+        // Failures are shown, not swallowed; a double click opens one window.
+        var shown: [Error] = []
+        preview.presentError = { shown.append($0) }
+        let missing = preview.menuItems(for: link("Gone.md"))
+        run(missing, "Open in New Tab"); run(missing, "Open in New Window"); run(missing, "Reveal in Finder")
+        check(shown.count == 3, "linkmenu: a missing note shows an error for New Tab, New Window and Reveal (\(shown.count))")
+        let locked = dir.appending(path: "Locked.md")
+        try? "x".write(to: locked, atomically: true, encoding: .utf8)
+        chmod(locked.path, 0o000)
+        run(preview.menuItems(for: link("Locked.md")), "Open in New Tab")
+        check(wait(timeout: 3) { shown.count == 4 }, "linkmenu: an unreadable note shows an error instead of doing nothing")
+        chmod(locked.path, 0o644)
+        try? "twice".write(to: dir.appending(path: "Twice.md"), atomically: true, encoding: .utf8)
+        let twice = preview.menuItems(for: link("Twice.md"))
+        let docsBefore = dc.documents.count
+        run(twice, "Open in New Window"); run(twice, "Open in New Window")
+        _ = wait(timeout: 3) { dc.document(for: dir.appending(path: "Twice.md")) != nil }
+        _ = wait(timeout: 0.5) { false }
+        check(dc.documents.count == docsBefore + 1
+              && dc.document(for: dir.appending(path: "Twice.md"))?.windowControllers.count == 1,
+              "linkmenu: a double click opens one window for the document")
+        dc.document(for: dir.appending(path: "Twice.md"))?.close()
+        check(preview.menuItems(for: URL(string: "about:blank")!).isEmpty,
+              "linkmenu: no Copy Link for a meaningless about: URL (relative link in an unsaved document)")
+
+        // Close the extras; the last window stays open, because closing it quits the app.
+        winDoc?.close(); tabDoc?.close()
     }
 }
 #endif
