@@ -257,6 +257,8 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
         case .ignore:
             break
         }
+        // A relative link in an unsaved document resolves to a meaningless about: URL: nothing to copy.
+        if action == .ignore, url.scheme?.lowercased() == "about" { return items }
         items.append(BlockMenuItem("Copy Link") { [weak self] in
             self?.pasteboard.clearContents()
             self?.pasteboard.setString(url.absoluteString, forType: .string)
@@ -264,14 +266,22 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
         return items
     }
 
-    private func fail(missing url: URL) {
-        let error = CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
-        if let window = view.window {
+    /// Shows a menu action's error. Replaceable so a headless check shows no sheet.
+    lazy var presentError: (Error) -> Void = { [weak self] error in
+        if let window = self?.view.window {
             window.presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)
         } else {
             NSApp.presentError(error)
         }
     }
+
+    private func fail(missing url: URL) {
+        presentError(CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: url.path]))
+    }
+
+    /// Files being opened by "Open in New Tab/Window" that have not finished: a second click
+    /// must not open a second window for the same document.
+    private var pendingOpens: Set<URL> = []
 
     private func reveal(_ file: URL) {
         guard FileManager.default.fileExists(atPath: file.path) else { return fail(missing: file) }
@@ -284,10 +294,16 @@ final class PreviewViewController: NSViewController, WKNavigationDelegate {
         guard FileManager.default.fileExists(atPath: file.path) else { return fail(missing: file) }
         let dc = NSDocumentController.shared
         if let doc = dc.document(for: file) { doc.showWindows(); return }
+        let key = file.standardizedFileURL
+        guard pendingOpens.insert(key).inserted else { return }
         let host = view.window
-        dc.openDocument(withContentsOf: file, display: false) { doc, _, _ in
+        dc.openDocument(withContentsOf: file, display: false) { [weak self] doc, _, error in
             MainActor.assumeIsolated {
-                guard let doc else { return }
+                self?.pendingOpens.remove(key)
+                guard let doc else {
+                    self?.presentError(error ?? CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: file.path]))
+                    return
+                }
                 doc.makeWindowControllers()
                 guard let window = doc.windowControllers.first?.window else { return }
                 window.tabbingMode = asTab ? .preferred : .disallowed

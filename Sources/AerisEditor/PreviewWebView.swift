@@ -2,18 +2,20 @@ import AppKit
 import WebKit
 
 /// The preview's web view. WebKit's own link menu items (Open Link in New Window, Download
-/// Linked File, ...) can't work in a locked-down preview, so on a right-click the link under
-/// the pointer is found first (a hit test in the app's own content world; page scripts stay
-/// off) and the menu is then rebuilt: our items for a link, WebKit's Copy / Look Up / Services
-/// for selected text, nothing that opens or downloads.
+/// Linked File, ...) can't work in a locked-down preview, so every context menu (right-click
+/// and Control-click alike) is rebuilt: only allow-listed WebKit items survive (Copy, Look Up,
+/// ... for selected text) and, when the pointer is on a link, our items go on top. The link is
+/// found with a hit test in the app's own content world; page scripts stay off.
 final class PreviewWebView: WKWebView {
     /// Our menu items for a link (absolute URL as the page resolves it).
     var linkMenuItems: (URL) -> [NSMenuItem] = { _ in [] }
-    /// The link the menu being opened belongs to.
-    private var contextLink: URL?
 
-    /// WebKit item identifiers worth keeping when text is selected.
-    private static let keptIdentifiers = ["Copy", "LookUp", "Translate", "Speak", "Search"]
+    /// WebKit item identifiers we keep, exact. Anything else, including items with no
+    /// identifier, is dropped: the menu fails closed.
+    static let keptIdentifiers: Set<String> = [
+        "WKMenuItemIdentifierCopy", "WKMenuItemIdentifierLookUp", "WKMenuItemIdentifierTranslate",
+        "WKMenuItemIdentifierSpeechMenu", "WKMenuItemIdentifierSearchWeb", "WKMenuItemIdentifierShareMenu",
+    ]
 
     /// The absolute `href` of the link at `point` (view coordinates), if any.
     func link(at point: NSPoint, completion: @escaping (URL?) -> Void) {
@@ -25,40 +27,37 @@ final class PreviewWebView: WKWebView {
         }
     }
 
-    override func rightMouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        link(at: point) { [weak self] url in
-            self?.showMenu(for: url, event: event)
-        }
-    }
+    /// Bumped on every menu opening; a hit test answering for an older one is dropped.
+    private(set) var menuGeneration = 0
 
-    private func showMenu(for url: URL?, event: NSEvent) {
-        contextLink = url
-        super.rightMouseDown(with: event)
-    }
-
+    /// Right-click and Control-click both end here. The menu is filtered at once; the link under
+    /// this event's own location is looked up after, and its items are added to the open menu
+    /// when the answer arrives (an NSMenu updates live), if no newer menu has opened since.
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
-        reshape(menu, link: contextLink)
-        contextLink = nil
+        reshape(menu, link: nil)
+        menuGeneration += 1
+        let generation = menuGeneration
+        link(at: convert(event.locationInWindow, from: nil)) { [weak self, weak menu] url in
+            guard let self, let menu, let url, generation == menuGeneration else { return }
+            addLinkItems(url, to: menu)
+        }
     }
 
-    /// Rewrites WebKit's menu in place. Exposed for the self-check.
+    /// Puts our items for `link` at the top of a menu already filtered by `reshape`.
+    func addLinkItems(_ link: URL, to menu: NSMenu) {
+        let items = linkMenuItems(link)
+        guard !items.isEmpty else { return }
+        for (i, item) in items.enumerated() { menu.insertItem(item, at: i) }
+        if menu.items.count > items.count { menu.insertItem(.separator(), at: items.count) }
+    }
+
+    /// Rewrites WebKit's menu in place: only exact allow-listed identifiers survive.
     func reshape(_ menu: NSMenu, link: URL?) {
-        func name(_ item: NSMenuItem) -> String {
-            (item.identifier?.rawValue ?? "").replacingOccurrences(of: "WKMenuItemIdentifier", with: "")
-        }
-        let blocked = ["Link", "Download", "Image", "Frame", "Reload", "GoBack", "GoForward", "Inspect", "Media", "Video", "Audio"]
-        let kept = menu.items.filter { item in
-            let n = name(item)
-            if item.isSeparatorItem { return false }
-            if link != nil { return Self.keptIdentifiers.contains(where: n.contains) && !n.contains("Link") }
-            return !blocked.contains(where: n.contains)
-        }
+        let kept = menu.items.filter { Self.keptIdentifiers.contains($0.identifier?.rawValue ?? "") }
         menu.removeAllItems()
-        var items = link.map(linkMenuItems) ?? []
-        if !items.isEmpty && !kept.isEmpty { items.append(.separator()) }
-        for item in items + kept { menu.addItem(item) }
+        for item in kept { menu.addItem(item) }
+        if let link { addLinkItems(link, to: menu) }
     }
 }
 

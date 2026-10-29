@@ -2115,10 +2115,12 @@ enum SelfCheck {
         // WebKit's items: link items go, Copy / Look Up stay for text, nothing else survives on a link.
         func webkitMenu() -> NSMenu {
             let m = NSMenu()
-            for n in ["OpenLink", "OpenLinkInNewWindow", "DownloadLinkedFile", "CopyLink", "Copy", "LookUp", "OpenImageInNewWindow", "DownloadImage", "Reload"] {
+            for n in ["OpenLink", "OpenLinkInNewWindow", "DownloadLinkedFile", "CopyLink", "Copy", "LookUp", "OpenImageInNewWindow",
+                      "DownloadImage", "CopyImage", "Reload", "SomethingNew"] {
                 let i = NSMenuItem(title: n, action: nil, keyEquivalent: ""); i.identifier = NSUserInterfaceItemIdentifier("WKMenuItemIdentifier" + n)
                 m.addItem(i)
             }
+            m.addItem(NSMenuItem(title: "NoIdentifier", action: nil, keyEquivalent: ""))  // Services-like: nil identifier
             return m
         }
         let m1 = webkitMenu()
@@ -2130,6 +2132,41 @@ enum SelfCheck {
         web.reshape(m2, link: nil)
         let t2 = m2.items.map(\.title)
         check(t2 == ["Copy", "LookUp"], "linkmenu: off a link only Copy and Look Up stay \(t2)")
+
+        // The real menu path: willOpenMenu with an event at a point (right-click and Control-click both end there).
+        func event(at p: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: .rightMouseDown, location: web.convert(p, to: nil), modifierFlags: [], timestamp: 0,
+                               windowNumber: wc.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        let linkPoint = (eval("window.__p") as? [Double]).map { NSPoint(x: $0[0], y: $0[1]) } ?? .zero
+        let blank = NSPoint(x: 5, y: 395)
+        let mA = webkitMenu(), mB = webkitMenu()
+        web.willOpenMenu(mA, with: event(at: linkPoint))   // older click, on the link
+        web.willOpenMenu(mB, with: event(at: blank))        // newer click, elsewhere, before A's answer
+        _ = wait(timeout: 1) { false }
+        check(!mA.items.contains { $0.title == "Open in New Tab" } && !mB.items.contains { $0.title == "Open in New Tab" },
+              "linkmenu: a hit-test answer for an older menu opening is dropped, never put on another click's menu")
+        let mC = webkitMenu()
+        web.willOpenMenu(mC, with: event(at: linkPoint))
+        check(wait(timeout: 3) { mC.items.contains { $0.title == "Open in New Tab" } }, "linkmenu: willOpenMenu adds the link items for its own event")
+        let titlesC = mC.items.filter { !$0.isSeparatorItem }.map(\.title)
+        check(titlesC == ["Open", "Open in New Tab", "Open in New Window", "Reveal in Finder", "Copy Link", "Copy", "LookUp"],
+              "linkmenu: willOpenMenu menu is exactly our items plus allow-listed WebKit items \(titlesC)")
+
+        // What WebKit really builds: log its identifiers; nothing outside the allow-list may survive.
+        let realEvent = event(at: linkPoint)
+        let real = web.menu(for: realEvent)
+        let realIDs = real?.items.map { $0.identifier?.rawValue ?? "nil:\($0.title)" } ?? []
+        print("info - linkmenu: real WebKit menu(for:) items before willOpenMenu: \(realIDs)")
+        if let real {
+            web.willOpenMenu(real, with: realEvent)
+            check(wait(timeout: 3) { real.items.contains { $0.title == "Open in New Tab" } }, "linkmenu: real WebKit menu gets our link items")
+            let survivors = real.items.filter { $0.identifier != nil }.map { $0.identifier!.rawValue }
+            print("info - linkmenu: real WebKit menu identifiers after reshape: \(survivors)")
+            check(survivors.allSatisfy { PreviewWebView.keptIdentifiers.contains($0) }, "linkmenu: nothing outside the allow-list survives a real menu")
+        } else {
+            print("info - linkmenu: web.menu(for:) returned nil headlessly; real identifiers not obtainable")
+        }
 
         // Run every item.
         run(note, "Open")
@@ -2173,6 +2210,31 @@ enum SelfCheck {
         run(winNote, "Open in New Window"); run(note, "Open in New Tab")
         check(dc.documents.count == docCount && wc.window?.tabbedWindows?.count == 2,
               "linkmenu: a document already open is brought forward, not opened twice")
+
+        // Failures are shown, not swallowed; a double click opens one window.
+        var shown: [Error] = []
+        preview.presentError = { shown.append($0) }
+        let missing = preview.menuItems(for: link("Gone.md"))
+        run(missing, "Open in New Tab"); run(missing, "Open in New Window"); run(missing, "Reveal in Finder")
+        check(shown.count == 3, "linkmenu: a missing note shows an error for New Tab, New Window and Reveal (\(shown.count))")
+        let locked = dir.appending(path: "Locked.md")
+        try? "x".write(to: locked, atomically: true, encoding: .utf8)
+        chmod(locked.path, 0o000)
+        run(preview.menuItems(for: link("Locked.md")), "Open in New Tab")
+        check(wait(timeout: 3) { shown.count == 4 }, "linkmenu: an unreadable note shows an error instead of doing nothing")
+        chmod(locked.path, 0o644)
+        try? "twice".write(to: dir.appending(path: "Twice.md"), atomically: true, encoding: .utf8)
+        let twice = preview.menuItems(for: link("Twice.md"))
+        let docsBefore = dc.documents.count
+        run(twice, "Open in New Window"); run(twice, "Open in New Window")
+        _ = wait(timeout: 3) { dc.document(for: dir.appending(path: "Twice.md")) != nil }
+        _ = wait(timeout: 0.5) { false }
+        check(dc.documents.count == docsBefore + 1
+              && dc.document(for: dir.appending(path: "Twice.md"))?.windowControllers.count == 1,
+              "linkmenu: a double click opens one window for the document")
+        dc.document(for: dir.appending(path: "Twice.md"))?.close()
+        check(preview.menuItems(for: URL(string: "about:blank")!).isEmpty,
+              "linkmenu: no Copy Link for a meaningless about: URL (relative link in an unsaved document)")
 
         // Close the extras; the last window stays open, because closing it quits the app.
         winDoc?.close(); tabDoc?.close()
