@@ -46,6 +46,79 @@ enum SelfCheck {
     nonisolated(unsafe) private static var lastCheck = "start"
     private static let lastCheckLock = NSLock()
 
+    /// M2-14: a failed save of the location list shows an alert and leaves the list unchanged;
+    /// an unreadable file is kept, never overwritten by an empty list.
+    @MainActor static func libraryErrorChecks() {
+        let fm = FileManager.default
+        let dir = scratch.appending(path: "ErrDir")
+        let folder = scratch.appending(path: "ErrFolder")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = dir.appending(path: "Locations.plist")
+        let lib = Library(store: LocationStore(fileURL: file))
+        var alerts: [String] = []
+        lib.reportError = { message, _ in alerts.append(message) }
+
+        lib.addLocation(folder)
+        check(lib.tree.roots.count == 1 && alerts.isEmpty, "library errors: a normal add saves with no alert")
+
+        // Read-only folder: the atomic write cannot create its temp file.
+        let other = scratch.appending(path: "ErrFolder2")
+        let third = scratch.appending(path: "ErrFolder3")
+        try? fm.createDirectory(at: other, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: third, withIntermediateDirectories: true)
+        try? fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        let before = try? Data(contentsOf: file)
+        lib.addLocation(other)
+        lib.addLocation(third)
+        check(alerts.isEmpty, "library errors: a failed add shows its alert after the caller returns, not inside it")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        check(alerts.count == 1, "library errors: a drop of two failing folders shows one alert (\(alerts.count))")
+        lib.setLabel("Nope", at: 0)
+        lib.removeLocation(at: 0)
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+        check(alerts.count == 3, "library errors: a failed rename and remove each show an alert (\(alerts.count))")
+        check(lib.tree.roots.count == 1 && lib.label(at: 0) == nil, "library errors: the in-memory list is unchanged after failed saves")
+        check((try? Data(contentsOf: file)) == before, "library errors: the file on disk is unchanged after failed saves")
+
+        // An unreadable file is kept under a timestamped backup and not silently replaced; the launch alert is shown.
+        func backups() -> [URL] {
+            ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []).filter { $0.lastPathComponent.hasPrefix("Locations.plist.backup-") }
+        }
+        let bad = Data("not a plist".utf8)
+        try? bad.write(to: file)
+        alerts = []
+        let lib2 = Library(store: LocationStore(fileURL: file))
+        lib2.reportError = { message, _ in alerts.append(message) }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        check(alerts == ["The list of library locations could not be read."], "library errors: an unreadable list file shows the launch alert")
+        lib2.addLocation(folder)
+        check(lib2.tree.roots.count == 1 && backups().count == 1 && (try? Data(contentsOf: backups()[0])) == bad,
+              "library errors: an unreadable list file is copied to a timestamped backup before it is replaced")
+
+        // A second corruption keeps the first backup.
+        let first = backups()
+        try? bad.write(to: file)
+        Thread.sleep(forTimeInterval: 1.1)
+        let lib3 = Library(store: LocationStore(fileURL: file))
+        lib3.reportError = { _, _ in }
+        lib3.addLocation(folder)
+        check(backups().count == 2 && first.allSatisfy { backups().contains($0) }, "library errors: a second backup does not replace the first")
+
+        // The bad file was deleted before the first save: no backup, the add works, no add alert.
+        try? bad.write(to: file)
+        let lib4 = Library(store: LocationStore(fileURL: file))
+        alerts = []
+        lib4.reportError = { message, _ in alerts.append(message) }
+        try? fm.removeItem(at: file)
+        let count = backups().count
+        lib4.addLocation(folder)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        check(lib4.tree.roots.count == 1 && fm.fileExists(atPath: file.path) && backups().count == count
+              && alerts == ["The list of library locations could not be read."],
+              "library errors: a bad file deleted before the save adds fine, with no backup and no add alert (\(alerts))")
+    }
+
     @MainActor static func run() -> Never {
         // Watchdog: a run that hangs reports where and exits instead of waiting forever.
         DispatchQueue.global().asyncAfter(deadline: .now() + 240) {
@@ -76,6 +149,7 @@ enum SelfCheck {
         libraryChecks()
         folderDropChecks()
         locationLabelChecks()
+        libraryErrorChecks()
         persistenceChecks()
         openChecks()
         caretAtEndChecks()
@@ -95,12 +169,15 @@ enum SelfCheck {
         treeClickChecks()
         lineEndingChecks()
         pasteAsMarkdownChecks()
+        copyMatrixChecks()
         anyTextFileChecks()
         hashtagMenuChecks()
         draftChecks()
         quickSearchChecks()
         renumberChecks()
+        fileOperationChecks()
         previewControlChecks()
+        panelToggleChecks()
         check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
         try? FileManager.default.removeItem(at: scratch)
         cleanStandardDefaults()
@@ -343,6 +420,288 @@ enum SelfCheck {
         for doc in [d1, d2, d3, d5, d6, host] { doc.close() }
     }
 
+    /// File operations from the file list's context menu (M2-10), against a fake Trash in scratch.
+    @MainActor static func fileOperationChecks() {
+        let fm = FileManager.default
+        let dc = NSDocumentController.shared
+        let loc = scratch.appending(path: "FileOps"), trash = scratch.appending(path: "FileOpsTrash")
+        try? fm.createDirectory(at: loc.appending(path: "sub"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: loc.appending(path: "proj"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: trash, withIntermediateDirectories: true)
+        for name in ["open.md", "a.md", "b.md", "c.md", "d.md", "e.md", "locked.md", "x.md", "y.md", "h1.md", "h2.md", "sub/inner.md", "proj/inside.md"] {
+            try? "text \(name)".write(to: loc.appending(path: name), atomically: true, encoding: .utf8)
+        }
+        try? fm.setAttributes([.immutable: true], ofItemAtPath: loc.appending(path: "locked.md").path)
+        defer { try? fm.setAttributes([.immutable: false], ofItemAtPath: loc.appending(path: "locked.md").path) }
+
+        let previousTrash = FileOperations.trashItem, previousInTrash = MarkdownDocument.isInTrash
+        let previousFailures = FileOperations.presentFailures
+        FileOperations.trashItem = { url in
+            let to = trash.appending(path: url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: to)
+            return to
+        }
+        MarkdownDocument.isInTrash = { $0.path.contains("/FileOpsTrash/") }
+        var alerts: [(title: String, names: [String])] = []
+        FileOperations.presentFailures = { title, failures, _ in alerts.append((title, failures.map(\.url.lastPathComponent))) }
+        // Rename warnings: recorded, answered with `renameAnswer` (0 is the default button).
+        let previousAsk = FileOperations.askRename
+        var renameAsks: [(message: String, buttons: [String])] = [], renameAnswer = 0
+        var beforeRenameAnswer: (() -> Void)?
+        FileOperations.askRename = { message, buttons, _, answer in
+            renameAsks.append((message, buttons))
+            beforeRenameAnswer?()
+            answer(renameAnswer)
+        }
+        defer {
+            FileOperations.trashItem = previousTrash; MarkdownDocument.isInTrash = previousInTrash
+            FileOperations.presentFailures = previousFailures; FileOperations.askRename = previousAsk
+        }
+        Library.shared.addLocation(loc)
+        defer { Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1) }
+
+        let doc = try! dc.makeDocument(withContentsOf: loc.appending(path: "open.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        defer { wc.close() }
+        wc.window?.setContentSize(NSSize(width: 1320, height: 700))
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        let list = wc.fileList, table = list.tableView
+        func row(_ path: String, in l: FileListViewController = list) -> Int? {
+            (0..<l.tableView.numberOfRows).first { l.node(atRow: $0)?.url.path(percentEncoded: false).hasSuffix("FileOps/" + path) == true }
+        }
+        func exists(_ path: String) -> Bool { fm.fileExists(atPath: loc.appending(path: path).path) }
+        func listing() -> [String] { ((try? fm.subpathsOfDirectory(atPath: loc.path)) ?? []).sorted() }
+        /// The menu a real right-click on `row` gets (-1: below the last row), through the table's `menu(for:)`.
+        func rightClick(_ row: Int, in l: FileListViewController = list, option: Bool = false) -> NSMenu? {
+            let t = l.tableView
+            let r = t.rect(ofRow: row >= 0 ? row : t.numberOfRows - 1)
+            let point = t.convert(NSPoint(x: r.midX, y: row >= 0 ? r.midY : r.maxY + 6), to: nil)
+            guard let event = NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: option ? .option : [],
+                                                 timestamp: 0, windowNumber: t.window?.windowNumber ?? 0, context: nil,
+                                                 eventNumber: 0, clickCount: 1, pressure: 1) else { return nil }
+            let menu = t.menu(for: event)
+            menu?.update()
+            return menu
+        }
+        /// Right-clicks `paths`' rows (the first is the clicked one; nil is the empty area) and picks `title`.
+        @discardableResult func choose(_ title: String, on paths: [String]?, in l: FileListViewController = list) -> Bool {
+            let rows = (paths ?? []).compactMap { row($0, in: l) }
+            if rows.count > 1 { l.tableView.selectRowIndexes(IndexSet(rows), byExtendingSelection: false) }
+            guard let item = rightClick(rows.first ?? -1, in: l)?.items.first(where: { $0.title == title }), item.isEnabled,
+                  let action = item.action else {
+                check(false, "file ops: the right-click menu offers an enabled “\(title)”")
+                return false
+            }
+            return NSApp.sendAction(action, to: item.target, from: item)
+        }
+        func rename(_ path: String, to typed: String, in l: FileListViewController = list) {
+            choose("Rename", on: [path], in: l)
+            (l.renameField?.currentEditor() as? NSTextView)?.string = typed
+            (l.renameField?.currentEditor() as? NSTextView)?.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        }
+        func editor() -> NSTextView? { list.renameField?.currentEditor() as? NSTextView }
+        func press(_ selector: Selector) { editor()?.doCommand(by: selector) }
+        _ = wait(timeout: 3) { row("sub") != nil }
+        list.restoreSelection(path: LibraryListing.canonicalPath(loc.appending(path: "sub/inner.md")))  // opens "sub" in the tree
+
+        // One right-click menu for every row: tab items on files, then the file commands, then Sort By / View Options.
+        let titles = { (m: NSMenu?) in (m?.items ?? []).filter { !$0.isSeparatorItem }.map(\.title) }
+        let fileMenu = titles(rightClick(row("sub/inner.md") ?? -1)), folderMenu = titles(rightClick(row("sub") ?? -1))
+        let commands = ["New File", "New Folder", "New Folder with Selection", "Rename", "Duplicate", "Move to Trash", "Show in Finder"]
+        check(Array(fileMenu.prefix(2)) == ["Open in New Tab", "Open in New Window"]
+              && commands.allSatisfy(fileMenu.contains) && fileMenu.contains { $0.hasPrefix("Share") } && fileMenu.contains("Sort By") && fileMenu.contains("View Options")
+              && commands.allSatisfy(folderMenu.contains) && !folderMenu.contains("Open in New Tab") && folderMenu.contains("Sort By")
+              && commands.allSatisfy(titles(rightClick(-1)).contains),
+              "file ops: a right-click on a file row, a folder row or empty space gets the file commands and Sort By (file: \(fileMenu))")
+
+        // New File on a file inside a subfolder: the file appears in that subfolder, in rename mode.
+        let before = listing()
+        choose("New File", on: ["sub/inner.md"])
+        check(wait(timeout: 3) { exists("sub/Untitled.md") && list.renamingNode?.name == "Untitled.md" }
+              && editor()?.string == "Untitled.md" && editor()?.selectedRange() == NSRange(location: 0, length: 8),
+              "file ops: New File on a file in a subfolder makes sub/Untitled.md in rename mode, name selected without extension")
+        // Esc restores the old name; the disk is untouched.
+        press(#selector(NSResponder.cancelOperation(_:)))
+        check(list.renamingNode == nil && listing() == (before + ["sub/Untitled.md"]).sorted()
+              && (table.view(atColumn: 0, row: row("sub/Untitled.md") ?? 0, makeIfNecessary: true) as? FileCellView)?.nameLabel.stringValue == "Untitled",
+              "file ops: Esc in rename restores the old name and leaves the disk alone")
+        // Renamed to "" or to the same name: nothing changes.
+        let afterNew = listing()
+        for typed in ["", "Untitled.md"] {
+            choose("Rename", on: ["sub/Untitled.md"])
+            editor()?.string = typed
+            press(#selector(NSResponder.insertNewline(_:)))
+            _ = wait(timeout: 0.5) { false }
+            check(list.renamingNode == nil && listing() == afterNew && alerts.isEmpty, "file ops: rename to \(typed.debugDescription) changes nothing")
+        }
+        // Return commits a real rename.
+        choose("Rename", on: ["sub/Untitled.md"])
+        editor()?.string = "Notes.md"
+        press(#selector(NSResponder.insertNewline(_:)))
+        check(wait(timeout: 3) { exists("sub/Notes.md") && !exists("sub/Untitled.md") && row("sub/Notes.md") != nil },
+              "file ops: Return commits the rename on disk and in the list")
+
+        // A rename never overwrites: the clash is reported and both files stay.
+        choose("Rename", on: ["a.md"])
+        editor()?.string = "b.md"
+        press(#selector(NSResponder.insertNewline(_:)))
+        check(wait(timeout: 3) { alerts.count == 1 } && exists("a.md")
+              && (try? String(contentsOf: loc.appending(path: "b.md"), encoding: .utf8)) == "text b.md",
+              "file ops: renaming onto an existing name reports it and overwrites nothing")
+        alerts.removeAll()
+
+        // Duplicate: "Name copy", then "Name copy 2".
+        choose("Duplicate", on: ["a.md"])
+        check(wait(timeout: 3) { exists("a copy.md") }, "file ops: Duplicate makes “a copy.md”")
+        choose("Duplicate", on: ["a.md"])
+        check(wait(timeout: 3) { exists("a copy 2.md") }, "file ops: a second Duplicate makes “a copy 2.md”")
+
+        // Move to Trash: no prompt.
+        choose("Move to Trash", on: ["b.md"])
+        check(wait(timeout: 3) { !exists("b.md") && fm.fileExists(atPath: trash.appending(path: "b.md").path) } && alerts.isEmpty,
+              "file ops: Move to Trash moves the file to the Trash without asking")
+        // Trash only: no menu offers a permanent delete, Option-alternates included.
+        func allItems(_ menu: NSMenu?) -> [NSMenuItem] {
+            (menu?.items ?? []).flatMap { [$0] + allItems($0.submenu) }
+        }
+        table.selectRowIndexes(IndexSet([row("x.md"), row("y.md")].compactMap { $0 }), byExtendingSelection: false)
+        let menus = [rightClick(row("c.md") ?? -1), rightClick(row("c.md") ?? -1, option: true), rightClick(row("x.md") ?? -1),
+                     rightClick(row("sub") ?? -1, option: true), rightClick(-1), MainMenu.make().item(withTitle: "File")?.submenu]
+        let deleting = menus.flatMap(allItems).filter { item in
+            item.title.lowercased().contains("delete") || item.action.map { NSStringFromSelector($0).lowercased().contains("delete") } == true
+        }
+        check(deleting.isEmpty && !list.responds(to: Selector(("deleteItemsImmediately:"))),
+              "file ops: no menu offers a permanent delete, with or without Option (\(deleting.map(\.title)))")
+        // A live refresh keeps a multi-selection.
+        try? "new".write(to: loc.appending(path: "zz.md"), atomically: true, encoding: .utf8)
+        Library.shared.folderChanged([FolderChange(path: list.folder!.path, mustScanSubDirs: false, rootChanged: false)])
+        let kept = table.selectedRowIndexes.compactMap { list.node(atRow: $0)?.name }.sorted()
+        check(row("zz.md") != nil && kept == ["x.md", "y.md"], "file ops: a live refresh keeps the multi-selection (\(kept))")
+        // New Folder with Selection only when every selected row shares a parent.
+        table.selectRowIndexes(IndexSet([row("sub/inner.md"), row("x.md")].compactMap { $0 }), byExtendingSelection: false)
+        check(rightClick(row("x.md") ?? -1)?.items.first { $0.title == "New Folder with Selection" }?.isEnabled == false,
+              "file ops: New Folder with Selection is disabled for rows from different folders")
+        // Duplicate splits the extension of files only.
+        try? fm.createDirectory(at: loc.appending(path: "v1.2"), withIntermediateDirectories: true)
+        Library.shared.folderChanged([FolderChange(path: list.folder!.path, mustScanSubDirs: false, rootChanged: false)])
+        choose("Duplicate", on: ["v1.2"])
+        check(wait(timeout: 3) { exists("v1.2 copy") } && !exists("v1 copy.2"), "file ops: duplicating folder “v1.2” makes “v1.2 copy”")
+
+        // Rename warnings: a leading dot (hidden) or an extension the library does not list.
+        rename("h1.md", to: ".h1.md")
+        check(wait(timeout: 3) { renameAsks.count == 1 } && renameAsks[0].message.contains("“.”") && exists("h1.md") && !exists(".h1.md"),
+              "file ops: a name starting with a dot warns first; the default keeps the file as it is (\(renameAsks))")
+        rename("h1.md", to: "h1")
+        check(wait(timeout: 3) { renameAsks.count == 2 } && renameAsks[1].buttons == ["Use “.md”", "Keep “h1”"] && exists("h1.md") && !exists("h1"),
+              "file ops: dropping the extension warns; the default “Use .md” keeps the file listed (\(renameAsks))")
+        rename("h2.md", to: "h3")
+        check(wait(timeout: 3) { exists("h3.md") } && renameAsks.count == 3, "file ops: “Use .md” renames with the .md extension")
+        renameAnswer = 1
+        rename("h3.md", to: "h3.rtf")
+        check(wait(timeout: 3) { exists("h3.rtf") } && renameAsks.count == 4 && renameAsks[3].buttons == ["Use “.md”", "Keep “.rtf”"],
+              "file ops: “Keep .rtf” renames as typed after the warning (\(renameAsks))")
+        renameAnswer = 0
+
+        // A folder renamed with a package extension would leave the list: it warns, the default keeps it.
+        rename("v1.2 copy", to: "v1.app")
+        check(wait(timeout: 3) { renameAsks.count == 5 } && renameAsks[4].message.contains("“.app”") && exists("v1.2 copy") && !exists("v1.app"),
+              "file ops: a folder renamed to a package extension warns; the default keeps it (\(renameAsks.last?.message ?? "none"))")
+        // The file goes away while the warning is up: the confirmed rename is reported, not dropped.
+        beforeRenameAnswer = {
+            try? fm.moveItem(at: loc.appending(path: "x.md"), to: scratch.appending(path: "x-moved.md"))
+            Library.shared.folderChanged([FolderChange(path: list.folder!.path, mustScanSubDirs: false, rootChanged: false)])
+        }
+        renameAnswer = 1
+        rename("x.md", to: "x")
+        check(wait(timeout: 3) { alerts.count == 1 } && alerts[0].names == ["x.md"] && !exists("x"),
+              "file ops: a file gone while the warning was up is reported, not silently dropped (\(alerts))")
+        beforeRenameAnswer = nil; renameAnswer = 0; alerts.removeAll()
+
+        // A rename in progress is committed when the list changes folder, and the list stays where the user went.
+        // List navigation: the parent folder does not show sub's rows.
+        FileListSettings.shared.update { $0.navigation = .list }
+        let subNode = Library.shared.tree.node(atPath: LibraryListing.canonicalPath(loc.appending(path: "sub")))
+        list.showFolder(subNode)
+        choose("Rename", on: ["sub/Notes.md"])
+        (list.renameField?.currentEditor() as? NSTextView)?.string = "Notes2.md"
+        list.goUp()
+        let parentFolder = list.folder
+        check(list.renamingNode == nil && parentFolder !== subNode && wait(timeout: 3) { exists("sub/Notes2.md") && !exists("sub/Notes.md") }
+              && !wait(timeout: 0.5) { list.folder !== parentFolder },
+              "file ops: going up during a rename commits it on disk and the list stays in the parent folder (\(list.folder?.name ?? "nil"))")
+        FileListSettings.shared.update { $0.navigation = .tree }
+
+        // File menu commands do nothing while the library column is hidden.
+        let fileItem = wc.splitViewController.splitViewItems[1]
+        fileItem.isCollapsed = true
+        let hiddenTarget = wc.supplementalTarget(forAction: #selector(FileListViewController.newFile(_:)), sender: nil)
+        fileItem.isCollapsed = false
+        check(hiddenTarget == nil && wc.supplementalTarget(forAction: #selector(FileListViewController.newFile(_:)), sender: nil) as AnyObject? === list,
+              "file ops: File menu commands are off while the file list is hidden")
+
+        // The folder holding an open document: renamed, the document and the marker follow; trashed, its window is told.
+        let doc2 = try! dc.makeDocument(withContentsOf: loc.appending(path: "proj/inside.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc2); doc2.makeWindowControllers()
+        let wc2 = doc2.windowControllers[0] as! EditorWindowController
+        wc2.window?.setContentSize(NSSize(width: 1320, height: 700))
+        wc2.window?.contentView?.layoutSubtreeIfNeeded()
+        let list2 = wc2.fileList
+        func marked(_ path: String) -> Bool {
+            row(path, in: list2).flatMap { (list2.tableView.rowView(atRow: $0, makeIfNecessary: true) as? FileRowView)?.showsOpenMarker } == true
+        }
+        list2.showFolder(Library.shared.tree.node(atPath: LibraryListing.canonicalPath(loc)))
+        list2.reveal(doc2.fileURL)
+        check(marked("proj/inside.md"), "file ops: the open document in a folder carries the marker")
+        rename("proj", to: "project", in: list2)
+        check(wait(timeout: 3) { doc2.fileURL?.path.hasSuffix("/project/inside.md") == true } && wait(timeout: 3) { marked("project/inside.md") },
+              "file ops: renaming the open document's folder moves the document and keeps the marker (\(doc2.fileURL?.path ?? "nil"))")
+        choose("Move to Trash", on: ["project"], in: list2)
+        check(wait(timeout: 3) { diskAsks.contains { $0.doc === doc2 && $0.change == .deleted } },
+              "file ops: trashing the open document's folder tells its window")
+        for ask in diskAsks where ask.doc === doc2 { ask.answer(true) }
+        diskAsks.removeAll { $0.doc === doc2 }
+        wc2.close()
+
+        // Trash three files, one locked: one alert lists it, the other two are trashed.
+        choose("Move to Trash", on: ["d.md", "locked.md", "e.md"])
+        check(wait(timeout: 3) { alerts.count == 1 } && alerts[0].names == ["locked.md"] && exists("locked.md")
+              && !exists("d.md") && !exists("e.md"),
+              "file ops: trashing 3 files with one locked shows one alert listing it and trashes the others (\(alerts))")
+        alerts.removeAll()
+
+        // New Folder with Selection.
+        try? "1".write(to: loc.appending(path: "p.md"), atomically: true, encoding: .utf8)
+        try? "2".write(to: loc.appending(path: "q.md"), atomically: true, encoding: .utf8)
+        Library.shared.folderChanged([FolderChange(path: list.folder!.path, mustScanSubDirs: false, rootChanged: false)])
+        choose("New Folder with Selection", on: ["p.md", "q.md"])
+        check(wait(timeout: 3) { exists("New Folder With Items/p.md") && exists("New Folder With Items/q.md") }
+              && wait(timeout: 3) { list.renamingNode?.name == "New Folder With Items" },
+              "file ops: New Folder with Selection moves the rows into a new folder in rename mode")
+        press(#selector(NSResponder.cancelOperation(_:)))
+        // New Folder on the empty area: in the shown folder, in rename mode.
+        choose("New Folder", on: nil)
+        check(wait(timeout: 3) { exists("untitled folder") && list.renamingNode?.name == "untitled folder" },
+              "file ops: New Folder on the empty area makes “untitled folder” in the shown folder, in rename mode")
+        press(#selector(NSResponder.cancelOperation(_:)))
+
+        // Renaming the open file: the editor keeps the document and the title follows.
+        let text = editorTextView(wc).string
+        choose("Rename", on: ["open.md"])
+        editor()?.string = "renamed.md"
+        press(#selector(NSResponder.insertNewline(_:)))
+        check(wait(timeout: 3) { doc.fileURL?.lastPathComponent == "renamed.md" } && wc.document === doc
+              && editorTextView(wc).string == text && doc.displayName?.hasPrefix("renamed") == true && exists("renamed.md") && !exists("open.md"),
+              "file ops: renaming the open file keeps the document and updates its title (\(doc.displayName ?? "nil"))")
+        // Trashing the open file: the document follows it and asks.
+        choose("Move to Trash", on: ["renamed.md"])
+        check(wait(timeout: 3) { diskAsks.contains { $0.doc === doc && $0.change == .deleted } },
+              "file ops: trashing the open file tells its window")
+        for ask in diskAsks where ask.doc === doc { ask.answer(true) }
+        diskAsks.removeAll { $0.doc === doc }
+        check(alerts.isEmpty, "file ops: no unexpected alert (\(alerts))")
+    }
+
     /// Go > Quick Search (⇧⌘O): ranks files across the locations, Return opens in this window,
     /// Esc gives the keyboard back to the editor, and ⌘K is still Format > Link.
     @MainActor static func quickSearchChecks() {
@@ -558,6 +917,72 @@ enum SelfCheck {
         settled()
         check(!wc.isSidebarCollapsed && !near(widths()[0], after[0], 2),
               "layout: a single expand does not force the sidebar back to an older width (\(Int(after[0])) -> \(Int(widths()[0])))")
+        wc.close()
+    }
+
+    /// M2-6b: every panel toggle ends at the expected widths and the other columns keep theirs.
+    /// (Whether it looks smooth is H's on-screen step; headless I can only see the end state, and
+    /// that the preview change is not instant.)
+    @MainActor static func panelToggleChecks() {
+        let key = "Aeris.SelfCheck.PanelToggle"
+        let previousKey = EditorWindowController.layoutKey
+        EditorWindowController.layoutKey = key
+        let defaultsKey = "NSSplitView Subview Frames \(key).Columns"
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+        let previousMode = AppDefaults.store.string(forKey: EditorWindowController.previewModeKey)
+        defer {
+            UserDefaults.standard.removeObject(forKey: defaultsKey); EditorWindowController.layoutKey = previousKey
+            if let previousMode { AppDefaults.store.set(previousMode, forKey: EditorWindowController.previewModeKey) }
+            else { AppDefaults.store.removeObject(forKey: EditorWindowController.previewModeKey) }
+        }
+        AppDefaults.store.set("split", forKey: EditorWindowController.previewModeKey)
+        let wc = EditorWindowController()
+        let split = wc.splitViewController, sv = split.splitView
+        func settle() { sv.window?.contentView?.layoutSubtreeIfNeeded(); sv.layoutSubtreeIfNeeded() }
+        func widths() -> [CGFloat] { split.splitViewItems.map { $0.isCollapsed ? 0 : $0.viewController.view.frame.width } }
+        func near(_ a: CGFloat, _ b: CGFloat) -> Bool { abs(a - b) <= 2 }
+        func settled() {
+            var last = widths(), stable = 0
+            _ = wait(timeout: 10) { settle(); let now = widths(); stable = now == last ? stable + 1 : 0; last = now; return stable >= 5 }
+        }
+        settle(); settled()
+        let start = widths()
+        check(start[0] > 100 && start[1] > 100 && start[2] > 100 && start[3] > 100, "panels: all four columns are open (\(start.map { Int($0) }))")
+
+        // Preview hide: it animates shut (not instant); the library columns keep their widths.
+        wc.togglePreview(nil)
+        settle()
+        check(split.splitViewItems[3].viewController.view.frame.width > 0, "panels: hiding the preview animates, it is not instant")
+        settled()
+        let hidden = widths()
+        check(near(hidden[0], start[0]) && near(hidden[1], start[1]) && hidden[3] == 0 && hidden[2] > start[2],
+              "panels: Hide Preview leaves the organizer and list alone (\(start.map { Int($0) }) -> \(hidden.map { Int($0) }))")
+        wc.togglePreview(nil)
+        settled()
+        let shown = widths()
+        check(near(shown[0], start[0]) && near(shown[1], start[1]) && near(shown[2], start[2]) && near(shown[3], start[3]),
+              "panels: Show Preview restores every width (\(start.map { Int($0) }) -> \(shown.map { Int($0) }))")
+
+        // Full, then Split.
+        wc.showPreviewFull(nil); settled()
+        let full = widths()
+        check(near(full[0], start[0]) && near(full[1], start[1]) && full[2] == 0, "panels: Full keeps the library columns (\(full.map { Int($0) }))")
+        wc.showPreviewSplit(nil); settled()
+        let back = widths()
+        check(near(back[0], start[0]) && near(back[1], start[1]) && near(back[2], start[2]) && near(back[3], start[3]),
+              "panels: Split restores every width (\(start.map { Int($0) }) -> \(back.map { Int($0) }))")
+
+        // Organizer alone, then the whole library.
+        split.toggleOrganizer(nil); settled()
+        // (Headless, AppKit reopens the library columns at their minimum widths, the known layout failure,
+        // so organizer and library widths are on-screen checks; these two toggles already animated.)
+        check(split.splitViewItems[0].isCollapsed && !split.splitViewItems[1].isCollapsed, "panels: Hide Organizer hides only the organizer")
+        split.toggleOrganizer(nil); settled()
+        check(!split.splitViewItems[0].isCollapsed && !split.splitViewItems[1].isCollapsed, "panels: Show Organizer brings it back")
+        split.toggleSidebar(nil); settled()
+        check(split.splitViewItems[0].isCollapsed && split.splitViewItems[1].isCollapsed, "panels: Hide Library hides both")
+        split.toggleSidebar(nil); settled()
+        check(!split.splitViewItems[0].isCollapsed && !split.splitViewItems[1].isCollapsed, "panels: Show Library shows both")
         wc.close()
     }
 
@@ -1222,6 +1647,103 @@ enum SelfCheck {
                       "any text: stray.bin with the same bytes is refused (got “\(message)”)")
             }
         }
+    }
+
+    /// M3-4: the Copy matrix puts one format (plus plain text) on a private pasteboard, for the
+    /// selection or, with nothing selected, the whole document; the document is never changed.
+    @MainActor static func copyMatrixChecks() {
+        let dir = scratch.appending(path: "CopyMatrix")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "c.md")
+        let original = "# Title\n\nSome **bold** and [a link](http://x.example).\n\n- one\n- two\n"
+        try? Data(original.utf8).write(to: url)
+        let dc = NSDocumentController.shared
+        guard let doc = try? dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                as? MarkdownDocument else { check(false, "copy matrix: opens"); return }
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        let editor = wc.editorForTesting, tv = editorTextView(wc)
+        let board = NSPasteboard(name: NSPasteboard.Name("aeris-selfcheck-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        /// The types besides plain text (which NSPasteboard also files under its legacy names).
+        func types() -> Set<NSPasteboard.PasteboardType> {
+            Set(board.types ?? []).subtracting([.string, NSPasteboard.PasteboardType("NSStringPboardType"),
+                                                 NSPasteboard.PasteboardType("public.utf8-plain-text")])
+        }
+        func string() -> String { board.string(forType: .string) ?? "" }
+
+        tv.setSelectedRange(NSRange(location: 0, length: 0))
+        check(editor.copy(as: .markdown, to: board) && string() == original && !types().contains(.html) && !types().contains(.rtf),
+              "copy matrix: Markdown with no selection is the whole source, only plain text")
+        check(editor.copy(as: .html, to: board) && string().contains("<h1") && string().contains("<strong>bold</strong>")
+              && types().contains(.html) && !types().contains(.rtf), "copy matrix: HTML is markup, as HTML and plain text only")
+        check(editor.copy(as: .plainText, to: board)
+              && string() == "Title\n\nSome bold and a link.\n\n• one\n• two" && !types().contains(.html) && !types().contains(.rtf),
+              "copy matrix: Plain Text has no Markdown left (got \(string().debugDescription))")
+        check(editor.copy(as: .richText, to: board) && types().contains(.rtf) && !types().contains(.html),
+              "copy matrix: Rich Text is RTF and plain text only")
+        let rich = board.data(forType: .rtf).flatMap { NSAttributedString(rtf: $0, documentAttributes: nil) }
+        var bold = false
+        rich?.enumerateAttribute(.font, in: NSRange(location: 0, length: rich?.length ?? 0)) { value, _, _ in
+            if let f = value as? NSFont, f.fontDescriptor.symbolicTraits.contains(.bold) { bold = true }
+        }
+        check(bold && rich?.string.contains("Title") == true && rich?.string.contains("**") == false,
+              "copy matrix: Rich Text carries bold formatting, not asterisks")
+
+        let sel = (original as NSString).range(of: "**bold**")
+        tv.setSelectedRange(sel)
+        check(editor.copy(as: .markdown, to: board) && string() == "**bold**", "copy matrix: Markdown copies the selection")
+        check(editor.copy(as: .plainText, to: board) && string() == "bold", "copy matrix: Plain Text copies the selection")
+        check(editor.copy(as: .html, to: board) && (string() == "<p><strong>bold</strong></p>\n"
+              || string() == "<p><strong>bold</strong></p>"), "copy matrix: HTML of the selection (got \(string().debugDescription))")
+        // A discontiguous selection copies every range, joined by the document's line ending.
+        let ns = original as NSString
+        tv.setSelectedRanges([NSValue(range: ns.range(of: "Title")), NSValue(range: ns.range(of: "two"))],
+                             affinity: .downstream, stillSelecting: false)
+        check(editor.copy(as: .markdown, to: board) && string() == "Title\ntwo",
+              "copy matrix: two selected ranges are both copied (got \(string().debugDescription))")
+        check(tv.string == original && doc.textStorage.string == original, "copy matrix: the document is unchanged")
+        doc.close()
+
+        // Front matter is not content for HTML, Rich Text and Plain Text; Markdown stays raw.
+        func open(_ name: String, _ text: String) -> (MarkdownDocument, EditorViewController, NSTextView)? {
+            let u = dir.appending(path: name)
+            try? Data(text.utf8).write(to: u)
+            guard let d = try? dc.makeDocument(withContentsOf: u, ofType: "net.daringfireball.markdown") as? MarkdownDocument
+            else { return nil }
+            dc.addDocument(d); d.makeWindowControllers()
+            let w = d.windowControllers[0] as! EditorWindowController
+            return (d, w.editorForTesting, editorTextView(w))
+        }
+        let fm = "---\ntitle: X\n---\n\n# Hi\n"
+        if let (d2, e2, t2) = open("fm.md", fm) {
+            t2.setSelectedRange(NSRange(location: 0, length: 0))
+            check(e2.copy(as: .markdown, to: board) && string() == fm, "copy matrix: front matter stays in Copy as Markdown")
+            check(e2.copy(as: .html, to: board) && !string().contains("title") && !string().contains("<hr") && string().contains("<h1"),
+                  "copy matrix: front matter is left out of HTML (got \(string().debugDescription))")
+            check(e2.copy(as: .plainText, to: board) && string() == "Hi", "copy matrix: front matter is left out of Plain Text")
+            check(e2.copy(as: .richText, to: board)
+                  && board.data(forType: .rtf).flatMap { NSAttributedString(rtf: $0, documentAttributes: nil) }?.string
+                      .contains("title") == false, "copy matrix: front matter is left out of Rich Text")
+            d2.close()
+        } else { check(false, "copy matrix: front matter file opens") }
+
+        // A large Rich Text copy puts the plain text on at once and the RTF when built, off the main thread.
+        let section = "## Section\n\nSome *emphasis*, **strong** text and a [link](http://x.example). ![i](http://127.0.0.1:9/i.png)\n\n"
+        let big = String(repeating: section, count: EditorViewController.richTextAsyncThreshold / section.utf16.count + 10)
+        if let (d3, e3, _) = open("big.md", big) {
+            let finished = Box(false)
+            let t0 = Date()
+            let started = e3.copy(as: .richText, to: board, done: { finished.value = true })
+            let quick = Date().timeIntervalSince(t0)
+            check(started && !finished.value && board.string(forType: .string)?.isEmpty == false,
+                  "copy matrix: a large Rich Text copy returns before the RTF is built (\(Int(quick * 1000)) ms)")
+            let deadline = Date().addingTimeInterval(60)
+            while !finished.value && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+            check(finished.value && board.data(forType: .rtf) != nil,
+                  "copy matrix: the large copy's RTF arrives (\(Int(Date().timeIntervalSince(t0) * 1000)) ms, source \(big.utf16.count / 1000) KB)")
+            d3.close()
+        } else { check(false, "copy matrix: large file opens") }
     }
 
     /// M1.5-25: Paste as Markdown converts the pasteboard's rich text (a private pasteboard here,

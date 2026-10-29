@@ -197,7 +197,7 @@ dimming and centring together. Then start M2.
   *Verify:* in `1. a / 2. b / 3. c`, Return after `a` → `1. a / 2. / 3. b / 4. c`; delete
   line 2 → `1. a / 2. b / 3. c`; the saved file contains no zero-width characters.
 
-- [ ] **M1.5-24 — Format toggles keep spacing and marker style.** Bold, italic, strike,
+- [x] **M1.5-24 — Format toggles keep spacing and marker style.** Bold, italic, strike,
   highlight and code toggles read the selection as off / on / mixed: off applies the
   marker pair, on removes it, mixed applies it to the unmarked parts. Leading and trailing
   whitespace of the selection stays outside the markers. Toggling off removes only that

@@ -108,7 +108,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   deleted folder falls back to the root. On screen: open a subfolder, expand two
   folders in the organizer, quit, relaunch → same view.
 
-- [ ] **M2-6b — Every panel opens and closes smoothly.** Showing or hiding the organizer,
+- [x] **M2-6b — Every panel opens and closes smoothly.** Showing or hiding the organizer,
   the file list and the preview animates the same way the sidebar toggle does, with no
   jump or flash, and the other columns keep their widths.
   *Verify:* self-check: each toggle ends at the expected widths and restores them when
@@ -169,7 +169,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
 
 ## File operations
 
-- [ ] **M2-10 — File operations.** Context menu on file-list rows and File menu: New
+- [x] **M2-10 — File operations.** Context menu on file-list rows and File menu: New
   File and New Folder (in the right-clicked folder, or the shown folder; the new row
   enters rename mode), New Folder with Selection (several rows selected), Duplicate
   ("Name copy", then "Name copy 2"), Rename (inline; name selected without extension;
@@ -224,7 +224,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   relaunch, clearing restores the folder name; Delete on a location → removed, folder
   untouched.
 
-- [ ] **M2-14 — Library errors are visible.** If saving the library's location list fails,
+- [x] **M2-14 — Library errors are visible.** If saving the library's location list fails,
   show an alert (not only a log line), and keep the in-memory list intact.
   *Verify:* make the library file's folder read-only, add a location → alert shown; list unchanged.
 
@@ -445,4 +445,24 @@ Finder change shows live.
   heading) → the sheet lists all three with sensible suggestions; approve one → only that
   link changes; Approve All → the rest; Cancel → nothing changes; no false positives for
   web links or links inside code.
+
+- [ ] **M2-34 — Pinned documents per folder.** Any file can be pinned in its folder: Pin /
+  Unpin in the file row's context menu (and File ▸ Pin, ⌥⌘P is taken — no shortcut). Pinned
+  files show at the top of that folder's list, above folders and other files, with a pin
+  mark and a thin separator below the pinned group; the sort order applies inside the
+  pinned group and inside the rest. Pins belong to the folder they were made in: each
+  folder (and each library location's root) has its own set, and a file pinned in one
+  folder isn't pinned anywhere else. In Tree view a subfolder's pins sit at the top of
+  that subfolder's rows. Pins travel with the files (git, sync, other Macs): pinning a
+  Markdown note writes `pinned: true` into its front matter (adding a front-matter block if
+  it has none; unpinning removes the key, and the block if it is then empty), touching no
+  other bytes — H's explicit exception to keeping app data out of documents. A note is
+  pinned in the folder it lives in; moving it keeps the pin. Plain-text files can't be
+  pinned (menu item disabled). Favorites (M2-19) stay separate: they show in the sidebar,
+  pins only in the file list (H, 2026-10-29).
+  *Verify:* pin b.md in folder X → it's first in X with the pin mark, whatever the sort;
+  pin c.md too → both on top, sorted among themselves; open subfolder Y → X's pins don't
+  show there; pin in Y → only Y shows it; rename b.md → still pinned; relaunch → pins
+  kept; move b.md to Y → pinned in Y; unpin → front matter back to exactly the original
+  bytes; a .txt file → Pin disabled; the folder on disk has no new files.
 
