@@ -159,3 +159,18 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   content="0;url=https://example.com">` and a `<form action>`: the preview stays on our page
   and makes no network request. `file://host/x.md` → ignored. Unsaved doc, ⌘-click
   `other.md#x` → nothing happens.
+
+- [ ] **M1-16 — The self-check never touches the user's app state.** `--selfcheck` runs
+  against its own preferences domain and its own window state, so running it (by hand or by
+  any agent) never changes the user's column widths, collapsed sections, last folder or
+  open documents. It also never hangs: each check that waits has a timeout and reports
+  which check stopped.
+  *Verify:* `defaults export com.aeris.editor` before and after a self-check run → byte
+  identical; a self-check run while the app is open leaves the open app's layout unchanged
+  after its next relaunch.
+
+- [ ] **M1-17 — New documents save as Markdown.** Saving an untitled document offers `.md`
+  by default (not `.txt`); the format pop-up still allows `.markdown` and `.txt`.
+  *Verify:* ⌘N, type, ⌘S → the save panel proposes `Untitled.md`; save → the file on disk
+  ends in `.md`.
+

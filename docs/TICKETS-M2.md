@@ -96,7 +96,10 @@ filter field at the bottom. Editor (right), with the preview beside it.
 
 - [ ] **M2-6a — Relaunch returns to where you were.** On relaunch each restored window
   shows the same folder in the file list it showed at quit, with the same file
-  selected, and the organizer keeps which folders were expanded. Stored per window
+  selected, and the organizer keeps which folders were expanded. Works after a plain ⌘Q
+  with macOS's default "close windows when quitting" setting: the state is stored by the
+  app itself, not left to system window restoration. With no other window to restore, the
+  last open document reopens. Stored per window
   as paths (no bookmarks needed: the location bookmark already resolves the root). A
   folder that no longer exists falls back to its location's root; a location that no
   longer resolves falls back to the first location.
@@ -104,6 +107,12 @@ filter field at the bottom. Editor (right), with the preview beside it.
   state, restore into a fresh controller → same folder, selection, expansion; a
   deleted folder falls back to the root. On screen: open a subfolder, expand two
   folders in the organizer, quit, relaunch → same view.
+
+- [ ] **M2-6b — Every panel opens and closes smoothly.** Showing or hiding the organizer,
+  the file list and the preview animates the same way the sidebar toggle does, with no
+  jump or flash, and the other columns keep their widths.
+  *Verify:* self-check: each toggle ends at the expected widths and restores them when
+  toggled back. On screen: toggle each panel → smooth, no flicker.
 
 - [ ] **M2-7 — Sort bar and view options.** Sort by Date Modified, Date Created, Name,
   Extension; Newest/Oldest First (dates) or A→Z/Z→A (name, extension); Folders on Top;
