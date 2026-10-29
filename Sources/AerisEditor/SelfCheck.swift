@@ -379,8 +379,17 @@ enum SelfCheck {
         table.keyDown(with: key(126, .command))
         check(list.folder === node(loc.appending(path: "Sub")) && list.node(atRow: table.selectedRow)?.name == "Deep",
               "organizer: ⌘↑ goes back up and selects the folder it came from")
+        // The arrow onto top.md above opened it in this window, so going up into its folder highlights it.
         list.upButton.performClick(nil)
-        check(list.folder === node(loc) && list.node(atRow: table.selectedRow)?.name == "Sub", "organizer: the up button goes back up too")
+        check(list.folder === node(loc) && (wc.document as? NSDocument)?.fileURL?.lastPathComponent == "top.md"
+              && highlighted(wc)?.lastPathComponent == "top.md",
+              "organizer: the up button goes back up and highlights the open document there (\(listNames(wc)), row \(table.selectedRow))")
+        selectRow(named: "Sub")
+        table.keyDown(with: key(36, [], "\r"))
+        check(wc.sidebar.outlineView.target === wc.sidebar && wc.sidebar.outlineView.action != nil,
+              "organizer: a click on the organizer reaches it")
+        wc.sidebar.locationClicked(row: ov.row(forItem: node(loc)))
+        check(list.folder === node(loc), "organizer: clicking the selected location brings the list back to its top")
 
         // Revealing a document in a subfolder: location in the organizer, folder and row in the list.
         let inner = try! dc.makeDocument(withContentsOf: loc.appending(path: "Sub/Deep/inner.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
@@ -403,6 +412,15 @@ enum SelfCheck {
         ov.expandItem(tags)
         check((UserDefaults.standard.stringArray(forKey: defaultsKeys[0]) ?? []).isEmpty, "organizer: expanding Tags again is saved")
         wc2.close()
+
+        // Revealing a document expands a collapsed Locations without forgetting the collapse.
+        let locations = sections().first { $0.kind == .locations }!
+        ov.collapseItem(locations)
+        wc.sidebar.reveal(loc.appending(path: "top.md"))
+        check(UserDefaults.standard.stringArray(forKey: defaultsKeys[0]) == ["locations"],
+              "organizer: revealing into a collapsed Locations keeps the collapse saved")
+        UserDefaults.standard.removeObject(forKey: defaultsKeys[0])
+        ov.expandItem(locations)
 
         // Hiding sections: the View > Organizer submenu, live in open windows, kept for new ones.
         let organizerMenu = MainMenu.make().item(withTitle: "View")?.submenu?.item(withTitle: "Organizer")?.submenu
@@ -500,6 +518,44 @@ enum SelfCheck {
         try? fm.removeItem(at: urlD)
         Library.shared.folderChanged([FolderChange(path: canonical(loc)!, mustScanSubDirs: false, rootChanged: false)])
         check(!names().contains("D.md"), "columns: a file deleted on disk leaves the list")
+
+        // A file created or deleted above the highlighted row: the highlight and what it opens stay on that file.
+        let realOpen = list.onOpen
+        var opened: [String?] = []
+        list.onOpen = { url, _ in opened.append(canonical(url)) }
+        func refresh() { Library.shared.folderChanged([FolderChange(path: canonical(loc)!, mustScanSubDirs: false, rootChanged: false)]) }
+        func opensHighlighted(_ url: URL) -> Bool {
+            opened = []
+            table.sendAction(table.action, to: table.target)
+            list.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification, object: table))
+            return opened == [canonical(url), canonical(url)]
+        }
+        let urlAB = loc.appending(path: "AB.md")
+        list.reveal(urlB)
+        try? "ab".write(to: urlAB, atomically: true, encoding: .utf8)
+        refresh()
+        check(names().firstIndex(of: "AB.md").map { $0 < rowOf(urlB) } == true && canonical(highlighted(wc)) == canonical(urlB),
+              "columns: a file created above the highlighted row keeps the highlight on it")
+        check(opensHighlighted(urlB), "columns: after a create above it, click and arrow open the highlighted file (\(opened))")
+        try? fm.removeItem(at: urlAB)
+        refresh()
+        check(!names().contains("AB.md") && canonical(highlighted(wc)) == canonical(urlB),
+              "columns: a file deleted above the highlighted row keeps the highlight on it")
+        check(opensHighlighted(urlB), "columns: after a delete above it, click and arrow open the highlighted file (\(opened))")
+
+        // The highlighted file deleted or renamed away: nothing stays highlighted.
+        let urlE = loc.appending(path: "E.md"), urlF = loc.appending(path: "F.md")
+        try? "epsilon".write(to: urlE, atomically: true, encoding: .utf8)
+        refresh()
+        list.reveal(urlE)
+        try? fm.moveItem(at: urlE, to: urlF)
+        refresh()
+        check(names().contains("F.md") && table.selectedRow == -1, "columns: renaming the highlighted file away clears the highlight")
+        list.reveal(urlF)
+        try? fm.removeItem(at: urlF)
+        refresh()
+        check(!names().contains("F.md") && table.selectedRow == -1, "columns: deleting the highlighted file clears the highlight")
+        list.onOpen = realOpen
 
         // Hiding: Hide Organizer keeps the list and editor; ⌘⌥S hides the list with the organizer.
         let menu = MainMenu.make().item(withTitle: "View")?.submenu

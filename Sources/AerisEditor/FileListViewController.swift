@@ -140,6 +140,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.reloadData()
         if let selected, let row = rows.firstIndex(where: { $0 === selected }) {
             tableView.selectRowIndexes([row], byExtendingSelection: false)
+        } else {
+            // The highlighted file is gone: no neighbour inherits its row.
+            tableView.deselectAll(nil)
         }
         revealing = false
     }
@@ -154,11 +157,13 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     // MARK: Walking folders
 
-    /// Shows `folder`'s parent (a location has none), then selects the folder it came from.
+    /// Shows `folder`'s parent (a location has none), then highlights the open document if it is
+    /// there, otherwise the folder it came from.
     func goUp() {
         guard let came = folder, let parent = came.parent else { return }
         showFolder(parent)
-        if let row = rows.firstIndex(where: { $0 === came }) {
+        onNavigate?()
+        if tableView.selectedRow < 0, let row = rows.firstIndex(where: { $0 === came }) {
             revealing = true
             tableView.selectRowIndexes([row], byExtendingSelection: false)
             tableView.scrollRowToVisible(row)

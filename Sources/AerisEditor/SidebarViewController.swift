@@ -87,6 +87,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.outlineTableColumn = column
         outlineView.dataSource = self
         outlineView.delegate = self
+        outlineView.target = self
+        outlineView.action = #selector(outlineClicked(_:))
         let menu = NSMenu()
         menu.delegate = self
         outlineView.menu = menu
@@ -181,7 +183,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             return
         }
         while let parent = node.parent { node = parent }
+        // Opening Locations to show the row is not the user expanding it: their collapse stays saved.
+        restoring = true
         outlineView.expandItem(OrganizerSection.all[0])
+        restoring = false
         let row = outlineView.row(forItem: node)
         guard row >= 0 else { outlineView.deselectAll(nil); return }
         outlineView.selectRowIndexes([row], byExtendingSelection: false)
@@ -240,6 +245,16 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !revealing, let node = outlineView.item(atRow: outlineView.selectedRow) as? LibraryNode else { return }
         onFolderSelected?(node)
+    }
+
+    /// A click on a location row, even the selected one, brings the list back to the location's top.
+    func locationClicked(row: Int) {
+        guard let node = outlineView.item(atRow: row) as? LibraryNode else { return }
+        onFolderSelected?(node)
+    }
+
+    @objc private func outlineClicked(_ sender: Any?) {
+        locationClicked(row: outlineView.clickedRow)
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
