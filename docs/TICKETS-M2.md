@@ -187,13 +187,14 @@ filter field at the bottom. Editor (right), with the preview beside it.
 ## Index, filter, tags, favorites, smart folders
 
 - [ ] **M2-16 — Library index.** Background index of every Markdown/text file in all
-  locations: name, path, dates, kind, plain text, headings (with level and offset) and
-  hashtags (`MarkdownCore`'s tag extractor). Built off the main thread on launch,
-  updated incrementally from the M2-3 watcher, saved to Caches so relaunch is fast.
-  Pure query API in `LibraryCore`, tested with a fixture folder.
-  *Verify:* `mdcheck` cases: index a fixture folder → expected files, headings, tags;
-  change one file → only that entry updates; a 5 000-file library indexes without
-  blocking typing.
+  locations: name, path, dates, kind, plain text, headings (with level and offset),
+  hashtags (`MarkdownCore`'s tag extractor) and outgoing references (links, wikilinks
+  with their alias, images) with whether each target resolves to a file. Built off the
+  main thread on launch, updated incrementally from the M2-3 watcher, saved to Caches so
+  relaunch is fast. Pure query API in `LibraryCore`, tested with a fixture folder.
+  *Verify:* `mdcheck` cases: index a fixture folder → expected files, headings, tags,
+  references (including an aliased wikilink and an unresolved link); change one file →
+  only that entry updates; a 5 000-file library indexes without blocking typing.
 
 - [ ] **M2-17 — Filter field.** A field at the bottom of the file list (View ▸ Search
   Library, ⌥⌘F focuses it) filters the current view by name and content (index). Filter
@@ -266,13 +267,14 @@ filter field at the bottom. Editor (right), with the preview beside it.
 
 - [ ] **M2-24 — Completions and wikilinks across the library.** The completion list
   (M1.5-7) offers tags and files from the whole library index, not just the current
-  folder. `[[Name]]` opens the matching library file from the editor (⌘-click,
-  ⌘-Return) and the preview; a leading `/` is relative to the location root. A setting
-  picks how new wikilinks and file links are written: shortest unique name, relative
-  path, or path from the location root.
+  folder. `[[Name]]` and `[[Name|shown text]]` (alias after a pipe) open the matching
+  library file from the editor (⌘-click, ⌘-Return) and the preview; the alias is what
+  the preview shows, the target is what resolves; a leading `/` is relative to the
+  location root. A setting picks how new wikilinks and file links are written: shortest
+  unique name, relative path, or path from the location root.
   *Verify:* type `[[` → files from other folders listed; ⌘-click `[[Other Note]]` in a
-  different folder → opens it; with "relative path" chosen, completing a file inserts
-  `../sub/file.md`.
+  different folder → opens it; `[[Other Note|see this]]` previews as "see this" and opens
+  the same file; with "relative path" chosen, completing a file inserts `../sub/file.md`.
 
 - [ ] **M2-25 — Navigation history.** **Document history:** Go ▸ Back ⌃⌘← / Forward
   ⌃⌘→, plus arrows by the document title; press-and-hold on an arrow lists the history.
@@ -314,6 +316,42 @@ filter field at the bottom. Editor (right), with the preview beside it.
   classic document → explanation, nothing inserted.
 
 ---
+
+- [ ] **M2-29 — Linked from and Mentions.** A panel for the open file (View ▸ Show
+  Links, in the inspector area) with two lists, both from the M2-16 index. **Linked
+  from:** every file that links to this one by wikilink or relative link, each with an
+  excerpt around the link; click opens that file at the match. **Mentions:** files whose
+  name appears in this file's text as plain, unlinked prose (never the file itself), each
+  with an excerpt and the match highlighted; a "Make link" button wraps the match as a
+  wikilink in this file as one undoable edit. Lists update within 2 s of a change on disk.
+  Nothing is written to any file unless Make link is pressed.
+  *Verify:* A links to B → open B → A listed with excerpt; remove the link in A → A gone
+  within 2 s; type B's name in prose in C → C appears under Mentions; Make link → the
+  text becomes `[[B]]`, C moves to Linked from, ⌘Z restores; `mdcheck` cases for the
+  index queries.
+
+- [ ] **M2-30 — Go to heading.** Go ▸ Go to Heading (⌘⇧J): a fuzzy-search sheet over the
+  headings of the current file, with a switch to search the whole library. Results show
+  `File title` for current-file hits and `File#Heading` for library hits, with the
+  matched letters emphasised; Return jumps to the heading (opening the file if needed),
+  Esc closes. Fuzzy scoring in `LibraryCore`, tested.
+  *Verify:* in a doc with an "Introduction" heading, type "intro" → it is first, Return
+  scrolls there and moves the caret; switch to Library, type "plan" → heading in another
+  file listed as `Other#Plan`, Return opens that file at it; `mdcheck` cases for scoring
+  and ranking.
+
+- [ ] **M2-31 — Import: Word documents and zip archives.** File ▸ Import… and dropping a
+  `.docx` or `.zip` onto a library folder. A Word document becomes a new `.md` in the
+  chosen folder (headings, paragraphs, bold and italic, links, bullet and numbered lists,
+  tables as pipe tables, images copied beside it); the original is never modified and an
+  existing file is never overwritten (name clash gets a suffix). A zip is extracted into
+  a new folder named after the archive; unsafe paths (`..`, absolute) are refused. Our
+  own converter, offline; the Word conversion lives in `MarkdownCore`, tested. Per-item
+  failures are reported in one sheet (M2-10).
+  *Verify:* import a sample `.docx` with a heading, a list, a table and an image →
+  `.md` with matching structure and the image file next to it, source untouched; drop a
+  zip with 3 notes → a folder with 3 files; a zip containing `../evil.md` → that entry
+  refused and reported; `mdcheck` cases for the Word conversion.
 
 Exit criteria for M2: the window shows organizer | file list | editor; add a folder →
 browse its files with excerpts and dates, sort and filter them; ⌘N in a folder, type a

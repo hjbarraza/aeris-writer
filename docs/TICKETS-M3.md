@@ -109,9 +109,10 @@ Order: the preview tickets (M3-9…M3-13) come first, because export reuses thei
   *Verify:* archive unzips to the original folder.
 
 - [ ] **M3-14 — Title page, headers and footers for print and PDF.** Settings: an
-  optional title page (title from the first heading, author name from settings, date),
-  a header (document title) and a footer (page number "n / total"). Apply to Print and
-  PDF export, not the live preview.
+  optional title page (title from the document title, author name from the document's
+  author or else settings, date), a header (document title) and a footer (page number
+  "n / total"). The header and footer band heights are settings and can be overridden per
+  document by front matter (M3-16). Apply to Print and PDF export, not the live preview.
   *Verify:* enable all three → exported PDF page 1 is the title page, every other page
   has the title on top and "n / total" at the bottom; disable → plain pages.
 
@@ -122,6 +123,43 @@ Order: the preview tickets (M3-9…M3-13) come first, because export reuses thei
   *Verify:* right-click a closed file ▸ Export… ▸ PDF → PDF written, no editor window
   opened; Print ▸ Plain Text prints the source; Copy ▸ Markdown pastes the whole file;
   Copy ▸ Aeris Link pasted into Terminal `open "…"` opens the file.
+
+- [ ] **M3-16 — Front matter.** A leading `---` … `---` (or closing `...`) block of
+  `key: value` lines is recognised as metadata. Keys compare case-, punctuation- and
+  hyphen-insensitively (`Header Height`, `header-height`, `Header_Height` are one key); a
+  value may continue on following lines indented two spaces. The editor draws the block
+  de-emphasised; the preview and exports leave it out of the body. `title` is the export
+  title (HTML `<title>`, PDF title, publishing title) and `author` the PDF author; with no
+  `title` the file name is used. `header-height` and `footer-height` override the band
+  heights of M3-14. Aeris never creates or changes a front matter block unless the user
+  runs an explicit command (M5-7 is the only one planned). Parser in `MarkdownCore`,
+  tested.
+  *Verify:* `mdcheck` cases: block with `---`/`...` closers, folded value, key
+  normalisation; file with a block → editor shows it in secondary colour, preview shows
+  only the body; export PDF with `title: A` and `author: B` → document properties show A
+  and B, without `title` → the file name; `footer-height: 60` → taller footer band; open
+  and close the file → `.md` bytes unchanged.
+
+- [ ] **M3-17 — Variables.** `{{key}}` in the body is replaced in the preview and in
+  every export by the value of the matching front matter key (same key normalisation as
+  M3-16); a missing key renders as empty text; the source file is unchanged. Lookup order:
+  the document's own keys, then a user-editable list of global values (Preferences ▸
+  Markdown: add, edit, remove key/value pairs, stored in app preferences, never in a
+  file). Can be switched off in M4-9's syntax settings.
+  *Verify:* `title: A` and body `{{title}}` → preview and PDF show A; add global
+  `company: X` → `{{company}}` shows X in any document; a document key of the same name
+  wins; `{{nope}}` renders nothing; switch off → literal text shows; `mdcheck` cases.
+
+- [ ] **M3-18 — Citations and reference links.** Inline citation `[@key]` (optional
+  locator, `[@key, p. 4]`) with a definition line `[@key]: text` anywhere in the
+  document. In the preview and exports a citation becomes a parenthetical link to its
+  definition; a citation with no definition is visibly marked as missing. Reference-style
+  links (`[text][label]` with `[label]: url "title"`) render as links, and the editor
+  dims definition lines and markers. Citations can be switched off in M4-9's syntax
+  settings. The syntax is ours, documented in the PRD. Parsing in `MarkdownCore`, tested.
+  *Verify:* one defined and one undefined citation → one working link, one marked;
+  `[text][docs]` with a definition links correctly; switch citations off → literal
+  text; `mdcheck` cases.
 
 Exit criteria for M3: the preview hides, goes full size, and syncs both ways; a fixture
 with highlight, footnotes, maths, a callout and a TOC renders in the preview with Wi-Fi

@@ -74,7 +74,9 @@ Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` gre
   *Verify:* enable with scope = sentence → only the caret's sentence is full-contrast. *(built 2026-10-29, verified headlessly; awaiting UI check.)*
 
 - [ ] **M1.5-10 — Spellcheck & text size.** Continuous spellcheck on by default
-  (standard `NSTextView` checking); ⌘+ / ⌘− / ⌘0 text size, persisted.
+  (standard `NSTextView` checking); ⌘+ / ⌘− / ⌘0 change the text size, persisted. Interim
+  behaviour: M4-12 replaces the free point size with a stepped scale and these shortcuts
+  then move one step.
   *Verify:* misspelled word underlined; ⌘+ enlarges; relaunch keeps size. *(built 2026-10-29, verified headlessly; awaiting UI check.)*
 
 Exit criteria for M1.5: write a doc using only menu/shortcut commands — headings,
@@ -144,12 +146,21 @@ dimming and centring together. Then start M2.
   *Verify:* `mdcheck` cases for inline-math toggling; Insert Date on 2026-10-29 →
   `2026-10-29`; Add Hashtag mid-word → ` #` and the tag list opens.
 
-- [ ] **M1.5-18 — Line commands.** Format ▸ Indent (⌘]) and Outdent (⌘[) for any lines
-  (lists keep their marker rules from M1.5-3); Move Line Up / Down (⌥⌘↑ / ⌥⌘↓) for the
-  caret line or selected lines, caret and selection following; Edit ▸ Move to Previous /
-  Next Sentence. Range maths in `MarkdownCore`, tested.
-  *Verify:* Move Line Down on line 2 of 3 swaps lines 2 and 3, caret stays on the moved
-  text; Indent on a plain paragraph line → indented; ⌘Z undoes each; `mdcheck` cases.
+- [ ] **M1.5-18 — Line commands and structural move.** Format ▸ Indent (⌘]) and Outdent
+  (⌘[) for any lines (lists keep their marker rules from M1.5-3); Edit ▸ Move to Previous /
+  Next Sentence. Move Line Up / Down (⌥⌘↑ / ⌥⌘↓) moves the caret line or selected lines,
+  caret and selection following, and is structure-aware: on a list item it moves the item
+  together with all its nested children as one unit, recomputing depth, marker and
+  numbering so nesting stays valid and ordered lists renumber from their start number; a
+  paragraph, code block or heading section moves whole; inside a block quote the `>`
+  prefix is kept; at the edge of a container the item stops (it never leaves its list or
+  quote). The commands are disabled when no move is possible. Range maths in
+  `MarkdownCore`, tested.
+  *Verify:* plain lines: Move Line Down on line 2 of 3 swaps lines 2 and 3, caret stays on
+  the moved text. Ordered list `1. a / 2. b (with child) / 3. c`: Move Down on `b` →
+  `1. a / 2. c / 3. b` with `b`'s child still under it; Move Up on the first item is
+  disabled; in a quote each moved line keeps `> `; Indent on a plain paragraph line →
+  indented; ⌘Z undoes each; `mdcheck` cases.
 
 - [ ] **M1.5-19 — Tab key and indentation settings.** Settings: indent with tabs or
   spaces, tab width, indent width, list indentation (to the marker's width or the indent
@@ -185,3 +196,22 @@ dimming and centring together. Then start M2.
   characters into the document.
   *Verify:* in `1. a / 2. b / 3. c`, Return after `a` → `1. a / 2. / 3. b / 4. c`; delete
   line 2 → `1. a / 2. b / 3. c`; the saved file contains no zero-width characters.
+
+- [ ] **M1.5-24 — Format toggles keep spacing and marker style.** Bold, italic, strike,
+  highlight and code toggles read the selection as off / on / mixed: off applies the
+  marker pair, on removes it, mixed applies it to the unmarked parts. Leading and trailing
+  whitespace of the selection stays outside the markers. Toggling off removes only that
+  span's markers, and an existing marker style (`_x_`, `__x__`) is preserved instead of
+  being rewritten to `*`. Logic in `MarkdownCore`, tested.
+  *Verify:* select ` word ` (with spaces) → ⌘B gives ` **word** `; `_x_` selected, ⌘I
+  removes the underscores and ⌘I again writes the marker chosen in M4-9; a selection
+  half in bold applies bold to the rest; `mdcheck` cases for each.
+
+- [ ] **M1.5-25 — Paste as Markdown from rich text.** Edit ▸ Paste as Markdown (and a
+  setting to make plain Paste do it for rich-text sources) converts rich text on the
+  pasteboard to Markdown: paragraphs, bullet and numbered lists (nesting kept), tables
+  (as pipe tables with a header row), links, bold and italic. Plain-text pastes are never
+  altered. Conversion in `MarkdownCore`, tested.
+  *Verify:* copy a 2×2 table from a web page → Paste as Markdown writes a pipe table;
+  copy a nested list from a rich-text app → `- ` / `1. ` list with matching nesting; plain
+  paste of plain text is byte-identical; ⌘Z undoes the paste in one step; `mdcheck` cases.

@@ -23,10 +23,10 @@ file per milestone. Run `scripts/status.sh` to see progress and validate the gat
 |---|---|---|---|---|---|
 | M1 | Core editor | Open, edit, style, preview, save a real `.md` | [TICKETS-M1](TICKETS-M1.md) | open a `.md` → edit with live styling → live preview → save: bytes clean, cursor restored on reopen | |
 | M1.5 | Editor commands | Every editing command and writing behaviour: formatting, lists, tables, stats, completions, one Focus Mode (dimming + centring), line commands, auto-pairing | [TICKETS-M1.5](TICKETS-M1.5.md) | write a doc using only menu/shortcut commands: headings, lists, task list, table (size asked), link, image, footnote; stats correct for doc and selection; Focus Mode dims and centres in one toggle | |
-| M2 | Library | Three-column window (organizer \| file list \| editor) over on-disk folders: excerpts, sort, filter, self-saving drafts, file ops, favorites, tags, smart folders, quick search inside files, history, tabs | [TICKETS-M2](TICKETS-M2.md) | add a folder → browse files with excerpts and dates; ⌘N in a folder saves itself there, no dialog; rename/trash/Get Info from the list; `#tag` in Tags; smart folder + Recents filter; ⇧⌘O finds text inside a file and jumps to it; Back/Forward; Finder change shows live | |
-| M3 | Preview & export | Complete preview (show/hide, full size, two-way sync, extended syntax incl. maths, offline), then Markdown / HTML / PDF export, copy matrix, print — also from the library | [TICKETS-M3](TICKETS-M3.md) | extended-syntax fixture renders with Wi-Fi off; preview syncs both ways; export the same doc to `.md`, `.html`, `.pdf` and open each in another app; copy-as-HTML pastes into a browser; print preview renders; Export… from the library menu | |
-| M4 | Polish | Prefs, themes (per document), style check, syntax settings, URL scheme with consent | [TICKETS-M4](TICKETS-M4.md) | `aeris://open?path=…` opens a file after the consent prompt; style check highlights adverbs; theme switch persists per document | |
-| M5 | Optional | Authorship analytics (Human/AI/Reference %), annotations, transclusion | [TICKETS-M5](TICKETS-M5.md) | only if M1–M4 are done; see file | |
+| M2 | Library | Three-column window (organizer \| file list \| editor) over on-disk folders: excerpts, sort, filter, self-saving drafts, file ops, favorites, tags, smart folders, quick search inside files, backlinks and go-to-heading, import (Word, zip), history, tabs | [TICKETS-M2](TICKETS-M2.md) | add a folder → browse files with excerpts and dates; ⌘N in a folder saves itself there, no dialog; rename/trash/Get Info from the list; `#tag` in Tags; smart folder + Recents filter; ⇧⌘O finds text inside a file and jumps to it; Back/Forward; Finder change shows live | |
+| M3 | Preview & export | Complete preview (show/hide, full size, two-way sync, extended syntax incl. maths, front matter, variables, citations, offline), then Markdown / HTML / PDF export, copy matrix, print — also from the library | [TICKETS-M3](TICKETS-M3.md) | extended-syntax fixture renders with Wi-Fi off; preview syncs both ways; export the same doc to `.md`, `.html`, `.pdf` and open each in another app; copy-as-HTML pastes into a browser; print preview renders; Export… from the library menu | |
+| M4 | Polish | Prefs, one global theme and typography system (size steps, typefaces, writing systems), installable themes, style check, syntax settings, macOS Versions plus local snapshot history, URL scheme with consent | [TICKETS-M4](TICKETS-M4.md) | `aeris://open?path=…` opens a file after the consent prompt; style check highlights adverbs; global theme and text step persist and apply to preview, export and print; Local History restores an old version | |
+| M5 | Optional | Authorship (hidden, in xattrs; optional embed in front matter), AI conversation paste, analytics, annotations, transclusion incl. CSV | [TICKETS-M5](TICKETS-M5.md) | only if M1–M4 are done; see file | |
 | M6 | Publishing | Push a document as a *draft* to WordPress, Ghost, Micropub, Micro.blog (Medium, Substack P2) | [TICKETS-M6](TICKETS-M6.md) | add a WordPress account (token in Keychain) → Publish → draft appears on the site, nothing public; republish updates the same post | |
 
 **Three-column library and full behaviour set (decided 2026-10-29).** H chose a
@@ -37,6 +37,14 @@ sorting (M2-7) and self-saving drafts (M2-8) — before file ops, index, tags, f
 smart folders, search, history and tabs. Focus Mode is one toggle for dimming and
 centring (M1.5-12 replaces the separate typewriter toggle). Preview completeness moved
 into M3 ahead of export, since export reuses the preview's HTML.
+
+**Decisions of 2026-10-29 (H).** (1) Authorship is hidden by default and lives in
+extended attributes; an explicit Embed Authorship command writes it into front matter
+and Read Embedded Authorship loads it back (M5-0, M5-7); AI chat paste attributes turns
+(M5-6). (2) Backups are both macOS Versions (M4-7) and our own local snapshot history in
+app storage, thinned by age, per-location opt-out, with a restore UI (M4-13, M4-14).
+(3) There is ONE global preview/export theme (M4-8), replacing the per-document plan;
+typography is its own system (M4-12, M4-16, line length in M4-10).
 
 **Publishing goes last (decided 2026-10-28).** The PRD puts it at M4; H moved it to
 the end so the editor, library and export are solid before any network code. Nothing
