@@ -177,7 +177,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   document's extension is `md`; the two `.txt` drafts carry another editor's metadata and
   predate this app's save path. Kept open until H tries ⌘N → ⌘S once.
 
-- [ ] **M1-18 — Our own link menu in the preview.** Right-clicking a link in the preview shows
+- [x] **M1-18 — Our own link menu in the preview.** Right-clicking a link in the preview shows
   Aeris's menu instead of WebKit's, so every item works. A link to a note: Open, Open in
   New Tab, Open in New Window, Reveal in Finder, Copy Link. A web or mail link: Open in
   Browser (or Mail), Copy Link. An `#anchor`: Jump to Section, Copy Link. WebKit's own
