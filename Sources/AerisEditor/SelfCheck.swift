@@ -75,6 +75,7 @@ enum SelfCheck {
         layoutChecks()
         libraryChecks()
         folderDropChecks()
+        locationLabelChecks()
         persistenceChecks()
         openChecks()
         caretAtEndChecks()
@@ -435,6 +436,48 @@ enum SelfCheck {
         func resetSpringLoading() {}
     }
 
+    /// M2-13: rename a location (display name only, persisted, cleared by blank) and remove it with Delete.
+    @MainActor static func locationLabelChecks() {
+        let fm = FileManager.default
+        let folder = scratch.appending(path: "LabelFolder")
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? "x".write(to: folder.appending(path: "a.md"), atomically: true, encoding: .utf8)
+        let wc = EditorWindowController()
+        wc.sidebar.loadViewIfNeeded()
+        let ov = wc.sidebar.outlineView
+        func relaunched() -> Library { Library(store: LocationStore(fileURL: LocationStore.defaultFileURL)) }
+        func shown(_ node: LibraryNode) -> String? {
+            (ov.view(atColumn: 0, row: ov.row(forItem: node), makeIfNecessary: true) as? NSTableCellView)?.textField?.stringValue
+        }
+        let base = Library.shared.tree.roots.count
+
+        wc.sidebar.addLocations([folder])
+        let node = Library.shared.tree.roots.last!
+        let index = Library.shared.tree.roots.count - 1
+        check(Library.shared.tree.roots.count == base + 1 && wc.sidebar.selectedURL.map(LibraryListing.canonicalPath) == LibraryListing.canonicalPath(folder)
+              && listNames(wc) == ["a.md"], "label: a newly added location is selected and its contents show")
+        check(shown(node) == "LabelFolder", "label: a location shows its folder name by default")
+
+        Library.shared.setLabel("Work notes", at: index)
+        check(shown(node) == "Work notes", "label: the row shows the label")
+        check(fm.fileExists(atPath: folder.path) && fm.fileExists(atPath: folder.appending(path: "a.md").path),
+              "label: the folder on disk keeps its name and contents")
+        let again = relaunched()
+        check(again.label(at: again.tree.roots.count - 1) == "Work notes", "label: it survives a relaunch")
+
+        Library.shared.setLabel("   ", at: index)
+        check(shown(node) == "LabelFolder" && relaunched().label(at: index) == nil, "label: clearing restores the folder name")
+
+        // Delete on the selected location removes it; the folder stays.
+        let del = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                                   context: nil, characters: "\u{7F}", charactersIgnoringModifiers: "\u{7F}", isARepeat: false, keyCode: 51)!
+        ov.keyDown(with: del)
+        check(Library.shared.tree.roots.count == base && !locationRows(wc).contains { $0 === node }
+              && relaunched().tree.roots.count == base, "label: Delete removes the selected location")
+        check(fm.fileExists(atPath: folder.appending(path: "a.md").path), "label: the folder on disk is untouched by Delete")
+        wc.close()
+    }
+
     @MainActor static func folderDropChecks() {
         let fm = FileManager.default
         let dropA = scratch.appending(path: "DropA"), dropB = scratch.appending(path: "DropB")
@@ -520,14 +563,14 @@ enum SelfCheck {
         check(relaunched().tree.roots.count == Library.shared.tree.roots.count, "persist: missing location kept in the store")
 
         let items = wc.sidebar.menuItems(forRow: row)
-        check(items.map(\.title) == ["Remove from Library"] && items[0].tag == Library.shared.tree.roots.count - 1,
-              "menu: location row offers Remove from Library")
+        check(items.map(\.title) == ["Rename Location…", "Remove Location"] && items[1].tag == Library.shared.tree.roots.count - 1,
+              "menu: location row offers Rename Location and Remove Location")
         check(wc.sidebar.menuItems(forRow: 0).isEmpty && wc.sidebar.menuItems(forRow: -1).isEmpty,
               "menu: section rows and empty space offer nothing")
         let before = Library.shared.tree.roots.count
-        _ = items[0].target?.perform(items[0].action, with: items[0])
+        _ = items[1].target?.perform(items[1].action, with: items[1])
         check(Library.shared.tree.roots.count == before - 1 && locationRows(wc).count == before - 1,
-              "menu: Remove from Library removes the row")
+              "menu: Remove Location removes the row")
 
         let folderC = scratch.appending(path: "PersistC")
         try? fm.createDirectory(at: folderC, withIntermediateDirectories: true)
