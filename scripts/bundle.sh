@@ -23,5 +23,6 @@ cp Resources/Info.plist "$APP/Contents/Info.plist"
 
 # Ad hoc, but with a designated requirement that names the bundle id rather than this build's
 # cdhash: otherwise every rebuild is a different app to macOS, which then resets its Open Recent list.
-codesign --force --sign - -r='designated => identifier "com.aeris.editor"' "$APP"
+ID=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$APP/Contents/Info.plist")
+codesign --force --sign - -r="designated => identifier \"$ID\"" "$APP"
 echo "$(pwd)/$APP"
