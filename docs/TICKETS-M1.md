@@ -114,6 +114,7 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   text. Ignore → disk unchanged until save, then save writes ours with no error sheet.
   Two quick external writes → one prompt. On screen: edit the file in another editor
   while it is open in Aeris.
+  *Status 2026-10-29: built and verified headlessly; awaiting the on-screen step.*
 
 ## Fixes found in review (2026-10-29)
 
