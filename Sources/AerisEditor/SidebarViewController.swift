@@ -57,8 +57,20 @@ enum OrganizerSettings {
 /// The organizer: a source-list outline with the sections Locations, Favorites, Smart Folders and
 /// Tags, and a "+" bar at the bottom. A location row fills the file list; folders below it are
 /// walked in the list, not here.
+/// The organizer's outline. Delete removes the selected location.
+final class OrganizerOutlineView: NSOutlineView {
+    var onDelete: (@MainActor () -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        switch (event.keyCode, event.modifierFlags.intersection(.deviceIndependentFlagsMask)) {
+        case (51, []), (117, []): onDelete?()
+        default: super.keyDown(with: event)
+        }
+    }
+}
+
 final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
-    let outlineView = NSOutlineView()
+    let outlineView = OrganizerOutlineView()
     private let emptyLabel = NSTextField(wrappingLabelWithString: "Add a folder to see its Markdown files here.")
     /// Set by the window controller: the user selected a location, whose folder the list should show.
     var onFolderSelected: (@MainActor (LibraryNode?) -> Void)?
@@ -89,6 +101,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.outlineTableColumn = column
         outlineView.dataSource = self
         outlineView.delegate = self
+        outlineView.onDelete = { [weak self] in self?.removeSelectedLocation() }
         outlineView.registerForDraggedTypes([.fileURL])
         outlineView.target = self
         outlineView.action = #selector(outlineClicked(_:))
@@ -228,14 +241,17 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     // MARK: Context menu
 
-    /// Right-click on a location row offers "Remove from Library"; other rows get no menu.
+    /// Right-click on a location row offers "Rename Location…" and "Remove Location"; other rows get no menu.
     func menuItems(forRow row: Int) -> [NSMenuItem] {
         guard row >= 0, let node = outlineView.item(atRow: row) as? LibraryNode,
               let index = Library.shared.tree.roots.firstIndex(where: { $0 === node }) else { return [] }
-        let item = NSMenuItem(title: "Remove from Library", action: #selector(removeLocation(_:)), keyEquivalent: "")
-        item.target = self
-        item.tag = index
-        return [item]
+        let rename = NSMenuItem(title: "Rename Location…", action: #selector(renameLocation(_:)), keyEquivalent: "")
+        let remove = NSMenuItem(title: "Remove Location", action: #selector(removeLocation(_:)), keyEquivalent: "")
+        for item in [rename, remove] {
+            item.target = self
+            item.tag = index
+        }
+        return [rename, remove]
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -244,6 +260,35 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     @objc func removeLocation(_ sender: NSMenuItem) {
         Library.shared.removeLocation(at: sender.tag)
+    }
+
+    /// The Delete key: removes the selected location (the folder on disk is untouched).
+    func removeSelectedLocation() {
+        guard let node = outlineView.item(atRow: outlineView.selectedRow) as? LibraryNode,
+              let index = Library.shared.tree.roots.firstIndex(where: { $0 === node }) else { return }
+        Library.shared.removeLocation(at: index)
+    }
+
+    /// The name a location row shows: the user's label, else the folder name.
+    func displayName(of node: LibraryNode) -> String {
+        guard let index = Library.shared.tree.roots.firstIndex(where: { $0 === node }) else { return node.name }
+        return Library.shared.label(at: index) ?? node.name
+    }
+
+    @objc func renameLocation(_ sender: NSMenuItem) {
+        guard Library.shared.tree.roots.indices.contains(sender.tag) else { return }
+        let node = Library.shared.tree.roots[sender.tag]
+        let alert = NSAlert()
+        alert.messageText = "Rename Location"
+        alert.informativeText = "This changes the name shown here only. Leave it empty to show the folder name (\(node.name))."
+        let field = NSTextField(string: displayName(of: node))
+        field.frame = NSRect(x: 0, y: 0, width: 240, height: 22)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Library.shared.setLabel(field.stringValue, at: sender.tag)
     }
 
     // MARK: NSOutlineViewDataSource
@@ -356,7 +401,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             icon.size = NSSize(width: 16, height: 16)
             cell.imageView?.image = icon
             let missing = !FileManager.default.fileExists(atPath: node.path)
-            cell.textField?.stringValue = missing ? node.name + " (missing)" : node.name
+            let shown = displayName(of: node)
+            cell.textField?.stringValue = missing ? shown + " (missing)" : shown
             cell.textField?.textColor = missing ? .secondaryLabelColor : .labelColor
             return cell
         default:

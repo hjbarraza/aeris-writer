@@ -70,10 +70,12 @@ enum SelfCheck {
         MarkdownDocument.askToConvert = { _, example, answer in encodingAsks.append(example); answer(false) }
         // Never show the disk change sheet: record the ask and hold the answer.
         MarkdownDocument.askAboutDiskChange = { doc, change, answer in diskAsks.append((doc, change, answer)) }
+        fileListOptionChecks()
         shellChecks()
         layoutChecks()
         libraryChecks()
         folderDropChecks()
+        locationLabelChecks()
         persistenceChecks()
         openChecks()
         caretAtEndChecks()
@@ -91,7 +93,10 @@ enum SelfCheck {
         rowChecks()
         restorationChecks()
         lineEndingChecks()
+        anyTextFileChecks()
         hashtagMenuChecks()
+        quickSearchChecks()
+        renumberChecks()
         check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
         try? FileManager.default.removeItem(at: scratch)
         cleanStandardDefaults()
@@ -122,6 +127,86 @@ enum SelfCheck {
         check(wc.editorForTesting.completion.isVisible, "add hashtag: the tag list opens")
         wc.editorForTesting.completion.hide()
         doc.close()
+    }
+
+    /// Go > Quick Search (⇧⌘O): ranks files across the locations, Return opens in this window,
+    /// Esc gives the keyboard back to the editor, and ⌘K is still Format > Link.
+    @MainActor static func quickSearchChecks() {
+        let main = MainMenu.make()
+        let go = main.items.first { $0.title == "Go" }?.submenu?.items.first { $0.title.hasPrefix("Quick Search") }
+        check(go?.keyEquivalent == "O" && go?.action == #selector(EditorWindowController.showQuickSearch(_:)),
+              "quick search: Go > Quick Search is bound to shift-command-O")
+        let link = main.items.first { $0.title == "Format" }?.submenu?.items.first { $0.title == "Link" }
+        check(link?.keyEquivalent == "k" && link?.keyEquivalentModifierMask == .command, "quick search: command-K is still Format > Link")
+
+        let fm = FileManager.default
+        let dir = scratch.appending(path: "quicksearch")
+        try? fm.createDirectory(at: dir.appending(path: "Sub"), withIntermediateDirectories: true)
+        for (path, text) in [("Alpha.md", "alpha"), ("Project plan.md", "p"), ("Sub/Plan B.md", "b")] {
+            try? text.write(to: dir.appending(path: path), atomically: true, encoding: .utf8)
+        }
+        Library.shared.addLocation(dir)
+        let dc = NSDocumentController.shared
+        let doc = try! dc.makeDocument(withContentsOf: dir.appending(path: "Alpha.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let wc = doc.windowControllers[0] as! EditorWindowController
+        wc.window?.orderFront(nil)
+        let tv = editorTextView(wc)
+        wc.window?.makeFirstResponder(tv)
+        let qs = QuickSearchController.shared
+
+        wc.showQuickSearch(nil)
+        check(qs.isShown && qs.panel?.isVisible == true, "quick search: the panel opens over the window")
+        qs.setQuery("proj")
+        check(wait(timeout: 5) { qs.results.first?.candidate.fileName == "Project plan.md" },
+              "quick search: part of a filename -> that file first (\(qs.results.map(\.candidate.fileName)))")
+        qs.setQuery("pla")
+        check(wait(timeout: 5) { qs.results.map(\.candidate.fileName) == ["Plan B.md", "Project plan.md"] },
+              "quick search: prefix before word start (\(qs.results.map(\.candidate.fileName)))")
+        check(qs.results.first?.candidate.breadcrumb == "\(dir.lastPathComponent) \u{203A} Sub", "quick search: results carry the folder breadcrumb")
+        qs.panel?.cancelOperation(nil)
+        check(!qs.isShown && wc.window?.firstResponder === tv, "quick search: Esc closes and the keyboard is back in the editor")
+
+        wc.showQuickSearch(nil)
+        qs.setQuery("project")
+        check(wait(timeout: 5) { qs.results.count == 1 }, "quick search: a second open starts clean")
+        qs.openSelected()
+        check(!qs.isShown && wait(timeout: 5) { (wc.document as? NSDocument)?.fileURL?.lastPathComponent == "Project plan.md" },
+              "quick search: Return opens the file in this window")
+        check(wait(timeout: 5) { wc.window?.firstResponder === editorTextView(wc) }, "quick search: the editor has the keyboard after opening")
+
+        // A slow ranking for older text lands after a newer one: it is dropped, and Return opens the
+        // file ranked for what the field shows (Alpha), not for "pl" or the earlier "pro".
+        wc.showQuickSearch(nil)
+        qs.setQuery("pro")
+        check(wait(timeout: 5) { qs.results.first?.candidate.fileName == "Project plan.md" }, "quick search: library listed for the stale-result check")
+        qs.rankDelayForTesting = { $0 == "pl" ? 0.5 : 0 }
+        qs.setQuery("pl")
+        qs.setQuery("alph")
+        qs.openSelected()
+        check(wait(timeout: 5) { (wc.document as? NSDocument)?.fileURL?.lastPathComponent == "Alpha.md" },
+              "quick search: Return right after typing opens the result for the current text, not an older ranking")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+        check(!qs.isShown && qs.results.first?.candidate.fileName != "Plan B.md", "quick search: the late ranking for older text is dropped")
+        qs.rankDelayForTesting = nil
+
+        // Esc returns the keyboard to the editor even when the sidebar had it.
+        wc.window?.makeFirstResponder(wc.fileList.tableView)
+        wc.showQuickSearch(nil)
+        qs.panel?.cancelOperation(nil)
+        check(wait(timeout: 5) { wc.window?.firstResponder === editorTextView(wc) }, "quick search: Esc focuses the editor, not what had the keyboard")
+
+        // A window that is not on screen shows nothing; a window that closes takes the panel with it.
+        wc.window?.orderOut(nil)
+        wc.showQuickSearch(nil)
+        check(!qs.isShown, "quick search: a hidden window shows no panel")
+        wc.window?.orderFront(nil)
+        wc.showQuickSearch(nil)
+        check(qs.isShown, "quick search: opens again over a visible window")
+        wc.close()
+        check(!qs.isShown, "quick search: closing the window closes the panel")
+        if let opened = wc.document as? NSDocument { opened.close() }
+        Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
 
     static func check(_ ok: Bool, _ label: String) {
@@ -352,6 +437,48 @@ enum SelfCheck {
         func resetSpringLoading() {}
     }
 
+    /// M2-13: rename a location (display name only, persisted, cleared by blank) and remove it with Delete.
+    @MainActor static func locationLabelChecks() {
+        let fm = FileManager.default
+        let folder = scratch.appending(path: "LabelFolder")
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? "x".write(to: folder.appending(path: "a.md"), atomically: true, encoding: .utf8)
+        let wc = EditorWindowController()
+        wc.sidebar.loadViewIfNeeded()
+        let ov = wc.sidebar.outlineView
+        func relaunched() -> Library { Library(store: LocationStore(fileURL: LocationStore.defaultFileURL)) }
+        func shown(_ node: LibraryNode) -> String? {
+            (ov.view(atColumn: 0, row: ov.row(forItem: node), makeIfNecessary: true) as? NSTableCellView)?.textField?.stringValue
+        }
+        let base = Library.shared.tree.roots.count
+
+        wc.sidebar.addLocations([folder])
+        let node = Library.shared.tree.roots.last!
+        let index = Library.shared.tree.roots.count - 1
+        check(Library.shared.tree.roots.count == base + 1 && wc.sidebar.selectedURL.map(LibraryListing.canonicalPath) == LibraryListing.canonicalPath(folder)
+              && listNames(wc) == ["a.md"], "label: a newly added location is selected and its contents show")
+        check(shown(node) == "LabelFolder", "label: a location shows its folder name by default")
+
+        Library.shared.setLabel("Work notes", at: index)
+        check(shown(node) == "Work notes", "label: the row shows the label")
+        check(fm.fileExists(atPath: folder.path) && fm.fileExists(atPath: folder.appending(path: "a.md").path),
+              "label: the folder on disk keeps its name and contents")
+        let again = relaunched()
+        check(again.label(at: again.tree.roots.count - 1) == "Work notes", "label: it survives a relaunch")
+
+        Library.shared.setLabel("   ", at: index)
+        check(shown(node) == "LabelFolder" && relaunched().label(at: index) == nil, "label: clearing restores the folder name")
+
+        // Delete on the selected location removes it; the folder stays.
+        let del = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                                   context: nil, characters: "\u{7F}", charactersIgnoringModifiers: "\u{7F}", isARepeat: false, keyCode: 51)!
+        ov.keyDown(with: del)
+        check(Library.shared.tree.roots.count == base && !locationRows(wc).contains { $0 === node }
+              && relaunched().tree.roots.count == base, "label: Delete removes the selected location")
+        check(fm.fileExists(atPath: folder.appending(path: "a.md").path), "label: the folder on disk is untouched by Delete")
+        wc.close()
+    }
+
     @MainActor static func folderDropChecks() {
         let fm = FileManager.default
         let dropA = scratch.appending(path: "DropA"), dropB = scratch.appending(path: "DropB")
@@ -437,14 +564,14 @@ enum SelfCheck {
         check(relaunched().tree.roots.count == Library.shared.tree.roots.count, "persist: missing location kept in the store")
 
         let items = wc.sidebar.menuItems(forRow: row)
-        check(items.map(\.title) == ["Remove from Library"] && items[0].tag == Library.shared.tree.roots.count - 1,
-              "menu: location row offers Remove from Library")
+        check(items.map(\.title) == ["Rename Location…", "Remove Location"] && items[1].tag == Library.shared.tree.roots.count - 1,
+              "menu: location row offers Rename Location and Remove Location")
         check(wc.sidebar.menuItems(forRow: 0).isEmpty && wc.sidebar.menuItems(forRow: -1).isEmpty,
               "menu: section rows and empty space offer nothing")
         let before = Library.shared.tree.roots.count
-        _ = items[0].target?.perform(items[0].action, with: items[0])
+        _ = items[1].target?.perform(items[1].action, with: items[1])
         check(Library.shared.tree.roots.count == before - 1 && locationRows(wc).count == before - 1,
-              "menu: Remove from Library removes the row")
+              "menu: Remove Location removes the row")
 
         let folderC = scratch.appending(path: "PersistC")
         try? fm.createDirectory(at: folderC, withIntermediateDirectories: true)
@@ -461,6 +588,9 @@ enum SelfCheck {
 
     /// The organizer: its sections, hints and settings, and walking folders in the file list.
     @MainActor static func organizerChecks() {
+        // These checks drive folders that open in the list.
+        FileListSettings.shared.update { $0.navigation = .list }
+        defer { FileListSettings.shared.update { $0.navigation = .tree } }
         guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else { return }
         let fm = FileManager.default
         let dc = NSDocumentController.shared
@@ -687,7 +817,8 @@ enum SelfCheck {
         list.reveal(urlB)
         try? "ab".write(to: urlAB, atomically: true, encoding: .utf8)
         refresh()
-        check(names().firstIndex(of: "AB.md").map { $0 < rowOf(urlB) } == true && canonical(highlighted(wc)) == canonical(urlB),
+        // (By date the new file is read in the background, then moves above B.)
+        check(wait(timeout: 3) { names().firstIndex(of: "AB.md").map { $0 < rowOf(urlB) } == true } && canonical(highlighted(wc)) == canonical(urlB),
               "columns: a file created above the highlighted row keeps the highlight on it")
         check(opensHighlighted(urlB), "columns: after a create above it, click and arrow open the highlighted file (\(opened))")
         try? fm.removeItem(at: urlAB)
@@ -776,6 +907,105 @@ enum SelfCheck {
             answer = { [unowned self] ok in
                 typealias ShouldClose = @convention(c) (NSObject, Selector, NSDocument, Bool, UnsafeMutableRawPointer?) -> Void
                 unsafeBitCast(target.method(for: selector), to: ShouldClose.self)(target, selector, self, ok, contextInfo)
+            }
+        }
+    }
+
+    /// M1-13: any file whose bytes are text opens; RTF, binary files and file packages are
+    /// refused with a message and leave no document, window or location behind; opening never
+    /// writes to the file.
+    @MainActor static func anyTextFileChecks() {
+        let fm = FileManager.default
+        let dir = scratch.appending(path: "AnyText")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Packages, chosen in Open: a rich text package and an app bundle.
+        try? fm.createDirectory(at: dir.appending(path: "Letter.rtfd"), withIntermediateDirectories: true)
+        try? Data("{\\rtf1\\ansi hello}".utf8).write(to: dir.appending(path: "Letter.rtfd/TXT.rtf"))
+        try? fm.createDirectory(at: dir.appending(path: "Fake.app/Contents/MacOS"), withIntermediateDirectories: true)
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52])
+        // Control bytes but no NUL: valid UTF-8, still binary.
+        let blob = Data((1...64).map { UInt8($0) })
+        // nil bytes: a package created above.
+        let cases: [(name: String, bytes: Data?, text: String?)] = [
+            ("README", Data("# Read me\nhéllo\n".utf8), "# Read me\nhéllo\n"),
+            ("notes.text", Data("plain".utf8), "plain"),
+            ("empty", Data(), ""),
+            ("tabs.txt", Data("a\tb\u{0C}c\r\n".utf8), "a\tb\u{0C}c\r\n"),
+            ("x.text", png, nil),
+            ("blob.bin", blob, nil),
+            ("letter.rtf", Data("{\\rtf1\\ansi hello}".utf8), nil),
+            ("letter.text", Data("{\\rtf1\\ansi hello}".utf8), nil),
+            ("Letter.rtfd", nil, nil),
+            ("Fake.app", nil, nil),
+        ]
+        let dc = NSDocumentController.shared
+        let tree = Library.shared.tree
+        for c in cases {
+            let url = dir.appending(path: c.name)
+            if let bytes = c.bytes { try? bytes.write(to: url) }
+            let windowsBefore = NSApp.windows.filter(\.isVisible).count
+            let rootsBefore = tree.roots.count
+            var done = false, opened: NSDocument?, failure: Error?
+            // Displayed only when refused: closing the last window would quit the self-check.
+            dc.openDocument(withContentsOf: url, display: c.text == nil) { doc, _, error in opened = doc; failure = error; done = true }
+            _ = wait(timeout: 5) { done }
+            let unchanged = c.bytes.map { (try? Data(contentsOf: url)) == $0 } ?? true
+            if let text = c.text {
+                let doc = opened as? MarkdownDocument
+                check(done && doc?.textStorage.string == text && unchanged,
+                      "any text: \(c.name) opens as text, file untouched" + (failure.map { " (\($0.localizedDescription))" } ?? ""))
+                doc?.close()
+            } else {
+                let message = failure.map { ($0 as NSError).localizedDescription } ?? ""
+                check(done && opened == nil && message.contains("isn’t a plain text file")
+                      && !dc.documents.contains { $0.fileURL?.lastPathComponent == c.name }
+                      && NSApp.windows.filter(\.isVisible).count == windowsBefore && unchanged
+                      && tree.roots.count == rootsBefore,
+                      "any text: \(c.name) is refused with a message, no window or location left behind (got “\(message)”)")
+            }
+        }
+
+        // A README opened as plain text saves in place: same name, no extension added.
+        let readme = dir.appending(path: "README")
+        var done = false, opened: NSDocument?
+        dc.openDocument(withContentsOf: readme, display: false) { doc, _, _ in opened = doc; done = true }
+        _ = wait(timeout: 5) { done }
+        guard let doc = opened as? MarkdownDocument else { return check(false, "any text: README reopens") }
+        doc.textStorage.replaceCharacters(in: NSRange(location: 0, length: doc.textStorage.length), with: "edited\n")
+        doc.updateChangeCount(.changeDone)
+        doc.save(nil)
+        _ = wait(timeout: 5) { !doc.isDocumentEdited }
+        let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+        check(!doc.isDocumentEdited && doc.fileURL?.lastPathComponent == "README" && doc.fileType == "public.plain-text"
+              && (try? Data(contentsOf: readme)) == Data("edited\n".utf8) && !names.contains { $0.hasPrefix("README.") },
+              "any text: an edited README saves in place as plain text, same name, bytes = the edit (\(names.sorted()))")
+        doc.close()
+
+        // A note with a stray vertical tab or ESC (pasted from a word processor) still opens and
+        // saves unedited byte for byte; the same bytes under an unknown extension are refused.
+        let stray = Data("a\u{0B}b\u{1B}c".utf8)
+        for name in ["Note.md", "stray.bin"] {
+            let url = dir.appending(path: name)
+            try? stray.write(to: url)
+            var done = false, opened: NSDocument?, failure: Error?
+            dc.openDocument(withContentsOf: url, display: name == "stray.bin") { doc, _, error in
+                opened = doc; failure = error; done = true
+            }
+            _ = wait(timeout: 5) { done }
+            if name == "Note.md" {
+                var saved = false
+                if let doc = opened {
+                    doc.save(to: url, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+                    _ = wait(timeout: 3) { saved }
+                }
+                check(saved && (try? Data(contentsOf: url)) == stray,
+                      "any text: Note.md with a vertical tab and ESC opens and saves unedited byte for byte"
+                      + (failure.map { " (\($0.localizedDescription))" } ?? ""))
+                opened?.close()
+            } else {
+                let message = failure.map { ($0 as NSError).localizedDescription } ?? ""
+                check(opened == nil && message.contains("isn’t a plain text file"),
+                      "any text: stray.bin with the same bytes is refused (got “\(message)”)")
             }
         }
     }
@@ -906,6 +1136,42 @@ enum SelfCheck {
         }
         check(mixedUpper == "AA\r\nBB\nCC", "line endings: Make Upper Case over a mixed range keeps its endings"
               + got(mixedUpper, "AA\r\nBB\nCC"))
+    }
+
+    /// M1.5-23: Return in the middle of an ordered list renumbers the items below;
+    /// deleting an item's line renumbers them back, one undo restores; the saved
+    /// file has no zero-width characters.
+    @MainActor static func renumberChecks() {
+        let url = scratch.appending(path: "Renumber/list.md")
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? Data("1. a\n2. b\n3. c".utf8).write(to: url)
+        let dc = NSDocumentController.shared
+        guard let doc = try? dc.makeDocument(withContentsOf: url, ofType: "net.daringfireball.markdown")
+                as? MarkdownDocument else { return check(false, "renumber: list.md opens") }
+        // Each command's edit is its own top-level undo group (headless, an event group never closes).
+        doc.undoManager?.groupsByEvent = false
+        dc.addDocument(doc); doc.makeWindowControllers()
+        let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+        func got(_ want: String) -> String { tv.string == want ? "" : " (got \(tv.string.debugDescription))" }
+        tv.setSelectedRange(NSRange(location: 4, length: 0))
+        tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        check(tv.string == "1. a\n2. \n3. b\n4. c" && tv.selectedRange() == NSRange(location: 8, length: 0),
+              "renumber: Return after the first item renumbers the items below" + got("1. a\n2. \n3. b\n4. c"))
+        tv.setSelectedRange(NSRange(location: 5, length: 4))   // line 2 with its line break
+        tv.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+        check(tv.string == "1. a\n2. b\n3. c", "renumber: deleting line 2 renumbers the items below" + got("1. a\n2. b\n3. c"))
+        tv.undoManager?.undo()
+        check(tv.string == "1. a\n2. \n3. b\n4. c", "renumber: one undo restores the deleted item and its numbers"
+              + got("1. a\n2. \n3. b\n4. c"))
+        tv.undoManager?.redo()
+        var saved = false
+        doc.save(to: url, ofType: doc.fileType!, for: .saveOperation) { saved = $0 == nil }
+        _ = wait(timeout: 3) { saved }
+        let disk = String(decoding: (try? Data(contentsOf: url)) ?? Data(), as: UTF8.self)
+        let zeroWidth: Set<Unicode.Scalar> = ["\u{200B}", "\u{200C}", "\u{200D}", "\u{2060}", "\u{FEFF}"]
+        check(saved && disk == "1. a\n2. b\n3. c" && !disk.unicodeScalars.contains(where: zeroWidth.contains),
+              "renumber: the saved file is the plain list, no zero-width characters (got \(disk.debugDescription))")
+        doc.close()
     }
 
     @MainActor static func editorTextView(_ wc: EditorWindowController) -> NSTextView { wc.editorForTesting.textViewForTesting }
@@ -1959,7 +2225,7 @@ enum SelfCheck {
               "restore: the open document is unchanged and not edited")
 
         // Fallbacks never fail: a missing folder shows its location's root; a missing location, the first.
-        wc2.restoreLibraryView(folderPath: canonical(loc) + "/gone/deeper", selectedPath: canonical(urlC), expandedPaths: [])
+        wc2.restoreLibraryView(folderPath: canonical(loc) + "/gone/deeper", selectedPath: canonical(loc) + "/gone/deeper/C.md", expandedPaths: [])
         check(wc2.fileList.folder === node(loc) && wc2.fileList.selectedPath == nil,
               "restore: a deleted folder falls back to its location's root, and a missing file is not selected")
         wc2.restoreLibraryView(folderPath: canonical(loc.appending(path: "sub")), selectedPath: nil, expandedPaths: [])
@@ -2320,6 +2586,161 @@ enum SelfCheck {
 
         for n in ["D", "C", "B"] { doc(n)?.close() }
         fresh?.close()
+    }
+
+    /// M2-7: the file list's sort and view options. Runs first and leaves the options at the old
+    /// behaviour (Name A to Z, folders mixed, List navigation) so the checks below it are unchanged.
+    @MainActor static func fileListOptionChecks() {
+        let fm = FileManager.default
+        let settings = FileListSettings.shared
+        func set(_ change: (inout FileListOptions) -> Void) { settings.update(change) }
+        set { $0 = FileListOptions() }
+        check(settings.options == FileListOptions() && settings.options.sortKey == .dateModified && !settings.options.reversed
+              && !settings.options.foldersOnTop && settings.options.showExcerpts && settings.options.navigation == .tree,
+              "options: defaults are Date Modified, Newest First, folders mixed, excerpts on, Tree")
+
+        func day(_ n: Int) -> Date { Date(timeIntervalSince1970: 1_700_000_000 + Double(n) * 86_400) }
+        let loc = scratch.appending(path: "SortLib")
+        try? fm.createDirectory(at: loc.appending(path: "zdir/sub2"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: loc.appending(path: "adir"), withIntermediateDirectories: true)
+        for (path, text) in [("b.md", "bee"), ("A.txt", "ay"), ("c.markdown", "cee"), ("zdir/inner.md", "in"), ("zdir/z-last.md", "zl")] {
+            try? text.write(to: loc.appending(path: path), atomically: true, encoding: .utf8)
+        }
+        // name: (modified day, created day)
+        let dates: [(String, Int, Int)] = [("b.md", 13, 2), ("A.txt", 11, 6), ("c.markdown", 15, 1), ("zdir", 14, 3), ("adir", 12, 5)]
+        for (name, m, c) in dates {
+            try? fm.setAttributes([.creationDate: day(c)], ofItemAtPath: loc.appending(path: name).path)
+            try? fm.setAttributes([.modificationDate: day(m)], ofItemAtPath: loc.appending(path: name).path)
+        }
+        let canonicalLoc = LibraryListing.canonicalPath(loc)
+        Library.shared.addLocation(loc)
+        let root = Library.shared.tree.node(atPath: canonicalLoc)!
+        let wc = EditorWindowController()
+        wc.sidebar.loadViewIfNeeded()
+        selectLocation(wc, root)
+        let list = wc.fileList, table = list.tableView
+        func names() -> [String] { listNames(wc) }
+        /// Date sorts wait for the background date read.
+        func settle(_ expected: [String]) -> Bool { wait(timeout: 5) { names() == expected } }
+        /// Selects a top-level row without opening it (a file row would open a document and show a window).
+        func select(_ name: String) { list.restoreSelection(path: canonicalLoc + "/" + name) }
+        func cell(_ name: String) -> FileCellView {
+            let row = names().firstIndex(of: name)!
+            return (table.view(atColumn: 0, row: row, makeIfNecessary: false)
+                ?? table.view(atColumn: 0, row: row, makeIfNecessary: true)) as! FileCellView
+        }
+
+        check(settle(["c.markdown", "zdir", "b.md", "adir", "A.txt"]), "sort: default is Date Modified, Newest First (\(names()))")
+        set { $0.reversed = true }
+        check(settle(["A.txt", "adir", "b.md", "zdir", "c.markdown"]), "sort: Oldest First reverses it (\(names()))")
+        set { $0.reversed = false; $0.sortKey = .dateCreated }
+        check(settle(["A.txt", "adir", "zdir", "b.md", "c.markdown"]), "sort: Date Created (\(names()))")
+        set { $0.reversed = true }
+        check(settle(["c.markdown", "b.md", "zdir", "adir", "A.txt"]), "sort: Date Created, Oldest First (\(names()))")
+        set { $0.reversed = false; $0.sortKey = .name }
+        check(settle(["A.txt", "adir", "b.md", "c.markdown", "zdir"]), "sort: Name A to Z (\(names()))")
+        set { $0.reversed = true }
+        check(settle(["zdir", "c.markdown", "b.md", "adir", "A.txt"]), "sort: Name Z to A (\(names()))")
+        set { $0.reversed = false; $0.sortKey = .fileExtension }
+        check(settle(["adir", "zdir", "c.markdown", "b.md", "A.txt"]), "sort: Extension A to Z (\(names()))")
+        set { $0.reversed = true }
+        check(settle(["A.txt", "b.md", "c.markdown", "adir", "zdir"]), "sort: Extension Z to A (\(names()))")
+
+        // Folders on Top, at every level (Tree: open zdir in place).
+        set { $0.reversed = false; $0.sortKey = .dateModified; $0.foldersOnTop = true }
+        check(settle(["zdir", "adir", "c.markdown", "b.md", "A.txt"]), "sort: Folders on Top (\(names()))")
+        select("zdir")
+        check(table.onExpand?() == true, "tree: Right arrow opens the selected folder")
+        check(settle(["zdir", "sub2", "z-last.md", "inner.md", "adir", "c.markdown", "b.md", "A.txt"]),
+              "tree: the folder opens in place and its subfolder is on top inside it (\(names()))")
+        let nested = names().firstIndex(of: "inner.md")!
+        check(cell("inner.md").indent == 16 && cell("c.markdown").indent == 0 && nested > 0, "tree: opened rows are indented one level")
+        check(table.onCollapse?() == true && settle(["zdir", "adir", "c.markdown", "b.md", "A.txt"]), "tree: Left arrow closes it again (\(names()))")
+        set { $0.foldersOnTop = false }
+        check(settle(["c.markdown", "zdir", "b.md", "adir", "A.txt"]), "sort: Folders on Top off mixes them again")
+
+        // List navigation: Return on a folder drills in, the up button comes back.
+        set { $0.navigation = .list }
+        select("zdir")
+        table.onReturn?()
+        check(list.folder?.name == "zdir" && Set(names()) == ["sub2", "inner.md", "z-last.md"], "list: opening a folder shows its contents (\(names()))")
+        list.goUp()
+        check(list.folder === root && names().count == 5, "list: back returns to the enclosing folder")
+        select("zdir")
+        check(table.onExpand?() == false, "list: Right arrow does not open folders inline")
+        set { $0.navigation = .tree }
+
+        // Dates and excerpts.
+        let short = DateFormatter(); short.dateStyle = .short; short.timeStyle = .none
+        check(wait(timeout: 5) { cell("b.md").dateLabel.stringValue == short.string(from: day(13)) }, "view: Show Date Modified")
+        set { $0.showDate = .created }
+        check(wait(timeout: 5) { cell("b.md").dateLabel.stringValue == short.string(from: day(2)) }, "view: Show Date Created")
+        set { $0.showDate = .none }
+        check(cell("b.md").dateLabel.stringValue.isEmpty, "view: Show Date None")
+        check(wait(timeout: 5) { cell("b.md").excerptLabel.stringValue == "bee" } && !cell("b.md").excerptLabel.isHidden
+              && list.tableView(table, heightOfRow: names().firstIndex(of: "b.md")!) == 64, "view: excerpts are shown by default")
+        set { $0.showExcerpts = false }
+        check(cell("b.md").excerptLabel.isHidden && list.tableView(table, heightOfRow: names().firstIndex(of: "b.md")!) < 64,
+              "view: Show Excerpts off hides them and shortens the rows")
+        set { $0.showExcerpts = true; $0.showDate = .modified }
+
+        // Sort bar and the three menus.
+        check(!list.sortBar.isHidden && list.sortBar.title == "Date Modified, Newest First", "sortbar: shows the sort (\(list.sortBar.title))")
+        let view = MainMenu.make().item(withTitle: "View")?.submenu
+        let sortBy = view?.item(withTitle: "Sort By")?.submenu, viewOptions = view?.item(withTitle: "View Options")?.submenu
+        check(sortBy != nil && viewOptions != nil && view?.item(withTitle: "Hide Sort Bar") != nil, "menu: View has Sort By, View Options and Hide Sort Bar")
+        let ctx = table.menu
+        check(ctx?.item(withTitle: "Sort By") != nil && ctx?.item(withTitle: "View Options") != nil, "menu: the list's context menu has the same options")
+        let barMenu = Mirror(reflecting: list).children.first { $0.label == "sortMenu" }?.value as? NSMenu
+        check(barMenu?.item(withTitle: "Sort By") != nil, "menu: the sort bar's menu has the same options")
+        let nameItem = sortBy!.item(withTitle: "Name")!
+        FileListMenu.shared.choose(nameItem)
+        check(settings.options.sortKey == .name && settle(["A.txt", "adir", "b.md", "c.markdown", "zdir"]) && list.sortBar.title == "Name, A → Z",
+              "menu: choosing Name in Sort By reorders the list and the bar (\(list.sortBar.title))")
+        _ = FileListMenu.shared.validateMenuItem(nameItem)
+        let reverseItem = sortBy!.items.first { ($0.representedObject as? FileListMenu.Command).map { if case .reversed(true) = $0 { true } else { false } } ?? false }!
+        _ = FileListMenu.shared.validateMenuItem(reverseItem)
+        check(nameItem.state == .on && reverseItem.title == "Z → A", "menu: checkmark follows the key, direction reads A to Z for names")
+        let hide = view!.item(withTitle: "Hide Sort Bar")!
+        FileListMenu.shared.choose(hide)
+        _ = FileListMenu.shared.validateMenuItem(hide)
+        check(list.sortBar.isHidden && hide.title == "Show Sort Bar" && !settings.options.showSortBar, "menu: Hide Sort Bar hides the bar")
+        FileListMenu.shared.choose(hide)
+        check(!list.sortBar.isHidden, "menu: Show Sort Bar brings it back")
+
+        // Every option survives a relaunch: a fresh settings object reads what was saved.
+        set { $0 = FileListOptions(sortKey: .dateCreated, reversed: true, foldersOnTop: true, showDate: .created,
+                                   showExcerpts: false, navigation: .list, showSortBar: false) }
+        let saved = settings.options
+        check(FileListSettings(defaults: AppDefaults.store).options == saved && FileListOptions.load(from: AppDefaults.store) == saved,
+              "persist: every option is read back by a new settings object")
+        set { $0 = FileListOptions() }
+
+        // Live re-sort: with Date Modified, a file edited elsewhere moves to the top.
+        select("b.md")
+        let selectedBefore = list.node(atRow: table.selectedRow)
+        check(settle(["c.markdown", "zdir", "b.md", "adir", "A.txt"]), "live: c.markdown is on top before the edit")
+        let started = Date()
+        try? "edited elsewhere".write(to: loc.appending(path: "A.txt"), atomically: true, encoding: .utf8)
+        let moved = wait(timeout: 3) { names().first == "A.txt" }
+        let took = Date().timeIntervalSince(started)
+        check(moved && took < 1.0, "live: an edited file moves to the top within 1 s (\(String(format: "%.2f", took)) s)")
+        check(list.node(atRow: table.selectedRow) === selectedBefore && selectedBefore?.name == "b.md", "live: the selected row stays selected (\(list.node(atRow: table.selectedRow)?.name ?? "none"), was \(selectedBefore?.name ?? "none"))")
+
+        // Tree: revealing a document inside a closed folder opens the folders above it.
+        let innerPath = canonicalLoc + "/zdir/inner.md"
+        list.reveal(loc.appending(path: "zdir/inner.md"))
+        let innerRow = names().firstIndex(of: "inner.md")
+        check(innerRow != nil && list.selectedPath == innerPath, "reveal: a document in a closed folder is shown and selected (\(names()), \(list.selectedPath ?? "nil") vs \(innerPath))")
+        check(innerRow.map { (table.rowView(atRow: $0, makeIfNecessary: true) as? FileRowView)?.showsOpenMarker == true } ?? false,
+              "reveal: its row carries the open marker")
+        check(table.onCollapse?() == true && list.selectedPath == canonicalLoc + "/zdir", "tree: Left on a nested row selects its folder")
+        check(table.onCollapse?() == true && !names().contains("inner.md"), "tree: Left on an open folder closes it")
+        list.restoreSelection(path: innerPath)
+        check(list.selectedPath == innerPath, "restore: the selection inside a closed folder is restored")
+        // The shipped defaults stay in place for the checks that follow.
+        set { $0 = FileListOptions() }
+        Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
 
     /// M1-18: the preview's own link menu. Builds the menu for each link kind and runs every item.

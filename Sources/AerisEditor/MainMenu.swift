@@ -53,6 +53,9 @@ enum MainMenu {
             }(),
         ]))
         main.addItem(viewMenu())
+        main.addItem(submenu("Go", [
+            item("Quick Search\u{2026}", #selector(EditorWindowController.showQuickSearch(_:)), "O"),
+        ]))
         let window = submenu("Window", [
             item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
             item("Zoom", #selector(NSWindow.performZoom(_:))),
@@ -179,7 +182,8 @@ enum MainMenu {
                 i.representedObject = kind
                 return i
             }),
-        ])
+            .separator(),
+        ] + FileListMenu.shared.makeItems())
     }
 
     private static func item(_ title: String, _ action: Selector, _ key: String = "") -> NSMenuItem {

@@ -1,0 +1,2 @@
+<li><input type="checkbox" disabled checked> <strong>bold</strong> done</li>
+<li><input type="checkbox" disabled> <a href="u">l</a></li>
