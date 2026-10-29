@@ -127,6 +127,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Set by the window controller: the list moved to another folder by itself (not because
     /// the organizer asked), so the open document's row can be highlighted if it is here.
     var onNavigate: (@MainActor () -> Void)?
+    /// Set by the window controller: the folder or the selection changed (window state to save).
+    var onStateChange: (@MainActor () -> Void)?
     /// A programmatic selection is in progress; it never opens anything.
     private var revealing = false
     /// Canonical path of the document open in this window; its row carries the marker.
@@ -213,6 +215,24 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         revealing = true
         tableView.reloadData()
         revealing = false
+        onStateChange?()
+    }
+
+    /// Path of the selected row (a file or a folder), nil if nothing is selected.
+    var selectedPath: String? { node(atRow: tableView.selectedRow)?.path }
+
+    /// Selects the row at `path` if it is in the folder on screen, otherwise clears the selection.
+    /// Restoring a window's state: never opens anything.
+    func restoreSelection(path: String?) {
+        loadViewIfNeeded()
+        revealing = true
+        defer { revealing = false }
+        guard let path, let row = rows.firstIndex(where: { $0.path == path }) else {
+            tableView.deselectAll(nil)
+            return
+        }
+        tableView.selectRowIndexes([row], byExtendingSelection: false)
+        tableView.scrollRowToVisible(row)
     }
 
     /// Selects `url`'s row if it is in the folder on screen; otherwise clears the selection.
@@ -328,6 +348,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     /// The selection moved (arrow keys, or the click's own selection): a file opens, focus stays.
     func tableViewSelectionDidChange(_ notification: Notification) {
+        if !revealing { onStateChange?() }
         guard !revealing, let node = node(atRow: tableView.selectedRow), !node.isDirectory else { return }
         onOpen?(node.url, false)
     }
