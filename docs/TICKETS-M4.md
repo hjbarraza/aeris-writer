@@ -110,8 +110,8 @@ Legend: `[ ]` todo · `[x]` done. Keep `swift build` and `swift run mdcheck` gre
   the file's text is kept in app storage (Application Support, never beside the file or
   in the user's folder) when it differs from the newest copy for that path. Copies thin
   with age: about 2-minute spacing for the last 10 minutes, 15 minutes for the last hour,
-  2 hours for the last day, 12 hours for the last week; older than a week keeps one per
-  day for 30 days, then none (a setting can keep them longer). Each library location has
+  2 hours for the last day; then one per day for 7 days, then one per week for 4 weeks,
+  then none (H, 2026-10-29; a setting can keep them longer). Each library location has
   a "keep local history" switch, and files outside every location count as one more
   location that can be switched off. Deleting or moving a file keeps its history,
   browsable by path. Storage and thinning rules in `LibraryCore`, tested with a fake

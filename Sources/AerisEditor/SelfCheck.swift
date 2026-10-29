@@ -98,6 +98,7 @@ enum SelfCheck {
         copyMatrixChecks()
         anyTextFileChecks()
         hashtagMenuChecks()
+        draftChecks()
         quickSearchChecks()
         renumberChecks()
         previewControlChecks()
@@ -131,6 +132,189 @@ enum SelfCheck {
         check(wc.editorForTesting.completion.isVisible, "add hashtag: the tag list opens")
         wc.editorForTesting.completion.hide()
         doc.close()
+    }
+
+    /// M2-8: ⌘N with a library folder shown opens a draft that saves itself into the folder,
+    /// named after its first line, with no dialog; an empty draft closes without a file or prompt.
+    @MainActor static func draftChecks() {
+        guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else {
+            check(false, "draft: skipped, 'Ask to keep changes when closing documents' is on")
+            return
+        }
+        let fm = FileManager.default
+        let dc = NSDocumentController.shared as! AerisDocumentController
+        let x = scratch.appending(path: "DraftLib/X")
+        try? fm.createDirectory(at: x, withIntermediateDirectories: true)
+        Library.shared.addLocation(x)
+        let host = try! dc.makeUntitledDocument(ofType: "net.daringfireball.markdown")
+        dc.addDocument(host); host.makeWindowControllers()
+        let hostWC = host.windowControllers[0] as! EditorWindowController
+        hostWC.fileList.showFolder(Library.shared.tree.node(atPath: LibraryListing.canonicalPath(x))!)
+        func files() -> [String] { ((try? fm.contentsOfDirectory(atPath: x.path)) ?? []).sorted() }
+        func disk(_ name: String) -> String? { try? String(contentsOf: x.appending(path: name), encoding: .utf8) }
+        func type(_ text: String, at location: Int? = nil, in doc: NSDocument) {
+            let tv = editorTextView(doc.windowControllers[0] as! EditorWindowController)
+            // The caret goes there first, as a click does, then the text is typed at the caret.
+            tv.setSelectedRange(NSRange(location: location ?? (tv.string as NSString).length, length: 0))
+            doc.undoManager?.beginUndoGrouping()
+            tv.insertText(text, replacementRange: tv.selectedRange())
+            doc.undoManager?.endUndoGrouping()
+        }
+        func canClose(_ doc: NSDocument) -> Bool? {
+            let probe = CloseProbe()
+            doc.canClose(withDelegate: probe, shouldClose: #selector(CloseProbe.document(_:shouldClose:contextInfo:)),
+                         contextInfo: nil)
+            _ = wait(timeout: 3) { probe.answer != nil }
+            return probe.answer
+        }
+        func autosave(_ doc: NSDocument) {
+            var done = false
+            doc.autosave(withImplicitCancellability: false) { _ in done = true }
+            _ = wait(timeout: 3) { done }
+        }
+
+        guard let d1 = dc.makeDraft(from: hostWC) else { return check(false, "draft: ⌘N with a folder shown makes a draft") }
+        type("# My Post", in: d1)
+        check(d1.fileURL == nil && d1.displayName == "My Post",
+              "draft: while untitled the title follows the first line (got \(d1.displayName ?? "nil"))")
+        type("\n", in: d1)
+        check(wait(timeout: 3) { d1.fileURL != nil } && disk("My Post.md") == "# My Post\n",
+              "draft: Return after '# My Post' writes X/My Post.md with no dialog (files \(files()))")
+
+        let d2 = dc.makeDraft(from: hostWC)!
+        type("# My Post\n", in: d2)
+        check(wait(timeout: 3) { d2.fileURL != nil } && disk("My Post 2.md") == "# My Post\n",
+              "draft: a second draft with the same first line is My Post 2.md (files \(files()))")
+
+        type("Renamed ", at: 2, in: d1)
+        // Headless, typing never marks a document edited (see openChecks); count it by hand.
+        d1.updateChangeCount(.changeDone)
+        autosave(d1)
+        check(d1.fileURL?.lastPathComponent == "My Post.md" && disk("My Post.md") == "# Renamed My Post\n"
+                // NSDocument's safe-save backup (`My Post~.md`) may still be going away.
+                && wait(timeout: 3) { files() == ["My Post 2.md", "My Post.md"] },
+              "draft: editing the first line after the first save never renames the file (files \(files()), disk \(disk("My Post.md").debugDescription))")
+
+        let d3 = dc.makeDraft(from: hostWC)!
+        type("Pause here", in: d3)
+        check(d3.fileURL == nil, "draft: no file while the first line is still being typed")
+        autosave(d3)
+        check(d3.fileURL?.lastPathComponent == "Pause here.md" && disk("Pause here.md") == "Pause here",
+              "draft: the first autosave after a pause writes the file (files \(files()))")
+
+        let before = files()
+        let d4 = dc.makeDraft(from: hostWC)!
+        check(canClose(d4) == true && files() == before, "draft: ⌘N then close without typing: no file, no prompt")
+        d4.close()
+        let d7 = dc.makeDraft(from: hostWC)!
+        type("Closing words", in: d7)
+        check(canClose(d7) == true && disk("Closing words.md") == "Closing words",
+              "draft: closing a typed draft writes it into the folder, no prompt (files \(files()))")
+        d7.close()
+
+        let missing = scratch.appending(path: "DraftLib/Gone/Deeper")
+        let d5 = DraftDocument(folder: missing)
+        dc.addDocument(d5); d5.makeWindowControllers()
+        type("Hello\n", in: d5)
+        check(wait(timeout: 3) { d5.fileURL != nil } && fm.fileExists(atPath: missing.appending(path: "Hello.md").path),
+              "draft: a missing folder is created")
+
+        let locked = scratch.appending(path: "DraftLib/Locked")
+        try? fm.createDirectory(at: locked, withIntermediateDirectories: true)
+        try? fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: locked.path)
+        var failures = 0
+        DraftDocument.presentSaveFailure = { _, _ in failures += 1 }
+        let d6 = DraftDocument(folder: locked)
+        dc.addDocument(d6); d6.makeWindowControllers()
+        type("Keep me\n", in: d6)
+        check(wait(timeout: 3) { failures == 1 } && d6.fileURL == nil && d6.folder == nil
+                && d6.textStorage.string == "Keep me\n",
+              "draft: an unwritable folder keeps the text as a normal untitled document and shows the error")
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+        d6.updateChangeCount(.changeCleared)
+
+        // Real key events through the window. The app's event loop closes a per-event undo group
+        // (dropping it when empty); the self-check runs inside a callout where that close never
+        // fires, so each key gets an explicit group. An explicit empty group still counts as a
+        // change, so these checks do NOT catch the post-save coalescing bug (MarkdownDocument's
+        // breakUndoCoalescing before save); they cover the key path, the menu item and the disk.
+        func press(_ keys: String, in window: NSWindow) {
+            let undo = (window.windowController?.document as? NSDocument)?.undoManager
+            undo?.groupsByEvent = false
+            defer { undo?.groupsByEvent = true }
+            for key in keys {
+                undo?.beginUndoGrouping()
+                defer { undo?.endUndoGrouping() }
+                let s = String(key)
+                let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                         timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                         context: nil, characters: s, charactersIgnoringModifiers: s,
+                                         isARepeat: false, keyCode: s == "\r" ? 36 : 0)!
+                NSApp.postEvent(e, atStart: false)
+                while let ev = NSApp.nextEvent(matching: .any, until: Date().addingTimeInterval(1), inMode: .default, dequeue: true) {
+                    if ev.type == .keyDown { window.sendEvent(ev); break }
+                    NSApp.sendEvent(ev)
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        var shown: [NSDocument] = []
+        AerisDocumentController.frontEditor = { hostWC }
+        AerisDocumentController.show = { shown.append($0) }
+        let newItem = NSApp.mainMenu?.item(withTitle: "File")?.submenu?.item(withTitle: "New")
+        if let newItem, let action = newItem.action { NSApp.sendAction(action, to: newItem.target, from: newItem) }
+        check(newItem?.keyEquivalent == "n" && newItem?.keyEquivalentModifierMask == .command && shown.first is DraftDocument,
+              "draft: File ▸ New (⌘N) with a folder shown opens a draft (got \(shown))")
+        if let k = shown.first as? DraftDocument, let kwc = k.windowControllers.first as? EditorWindowController,
+           let kw = kwc.window {
+            kw.makeFirstResponder(editorTextView(kwc))
+            press("# Keys\r", in: kw)
+            check(wait(timeout: 3) { k.fileURL != nil } && disk("Keys.md") == "# Keys\n",
+                  "draft: typed with key events, Return writes Keys.md (got \(disk("Keys.md").debugDescription))")
+            press("later", in: kw)
+            check(k.isDocumentEdited, "draft: keys typed after the Return save mark the document edited")
+            autosave(k)
+            press(" more", in: kw)
+            check(k.isDocumentEdited, "draft: keys typed after an autosave mark the document edited")
+            check(canClose(k) == true && disk("Keys.md") == "# Keys\nlater more",
+                  "draft: closing writes the keys typed after both saves (got \(disk("Keys.md").debugDescription))")
+            k.close()
+        }
+        AerisDocumentController.frontEditor = { nil }
+        AerisDocumentController.show = { _ in }
+
+        // Two drafts with the same first line settling in the same run-loop turn.
+        let r1 = dc.makeDraft(from: hostWC)!, r2 = dc.makeDraft(from: hostWC)!
+        type("Same\none", in: r1)
+        type("Same\ntwo", in: r2)
+        check(wait(timeout: 3) { r1.fileURL != nil && r2.fileURL != nil } && r1.fileURL != r2.fileURL
+                && Set([disk("Same.md"), disk("Same 2.md")]) == ["Same\none", "Same\ntwo"],
+              "draft: two same-name drafts settling together get two files, neither overwritten (files \(files()))")
+
+        // A dangling symlink holds its name.
+        try? fm.createSymbolicLink(atPath: x.appending(path: "Dangling.md").path, withDestinationPath: "/nonexistent/aeris")
+        let s1 = dc.makeDraft(from: hostWC)!
+        type("Dangling\n", in: s1)
+        check(wait(timeout: 3) { s1.fileURL != nil } && s1.fileURL?.lastPathComponent == "Dangling 2.md"
+                && (try? fm.destinationOfSymbolicLink(atPath: x.appending(path: "Dangling.md").path)) == "/nonexistent/aeris",
+              "draft: a broken symlink keeps its name (got \(s1.fileURL?.lastPathComponent ?? "nil"))")
+
+        // An autosave while the folder save is in flight never autosaves the draft elsewhere.
+        let a1 = dc.makeDraft(from: hostWC)!
+        type("Inflight", in: a1)
+        var autosaves = 0
+        a1.autosave(withImplicitCancellability: false) { _ in autosaves += 1 }
+        a1.autosave(withImplicitCancellability: false) { _ in autosaves += 1 }
+        check(wait(timeout: 3) { autosaves == 2 } && a1.fileURL?.lastPathComponent == "Inflight.md"
+                && a1.autosavedContentsFileURL == nil,
+              "draft: an autosave during the folder save writes nothing elsewhere (\(String(describing: a1.autosavedContentsFileURL)))")
+        for doc in [r1, r2, s1, a1] { doc.close() }
+
+        AppDefaults.store.set("untitled", forKey: DraftSettings.newDocumentKey)
+        check(dc.makeDraft(from: hostWC) == nil, "draft: the setting can make ⌘N the classic untitled document")
+        AppDefaults.store.removeObject(forKey: DraftSettings.newDocumentKey)
+
+        for doc in [d1, d2, d3, d5, d6, host] { doc.close() }
     }
 
     /// Go > Quick Search (⇧⌘O): ranks files across the locations, Return opens in this window,

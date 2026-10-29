@@ -99,6 +99,7 @@ print(String(format: "info - styleSpans on %d words: %.0f ms, %d spans", words, 
 runTextStatsChecks()
 runExcerptChecks()
 runPlainTextChecks()
+runDraftNameChecks()
 runTextEncodingChecks()
 runInlineEditChecks()
 runInsertChecks()
