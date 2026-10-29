@@ -49,8 +49,14 @@ public enum LinkAction: Equatable, Sendable {
         case "http", "https", "mailto":
             return .system(url)
         case "about":
-            return url.fragment(percentEncoded: false).map { .scroll(anchor: $0) } ?? .ignore
+            // Read the fragment from the text: a URL that went through URLRequest can lose it
+            // on `about:` (non-hierarchical) URLs.
+            let text = url.absoluteString
+            guard let hash = text.firstIndex(of: "#") else { return .ignore }
+            let fragment = String(text[text.index(after: hash)...])
+            return .scroll(anchor: fragment.removingPercentEncoding ?? fragment)
         case "file":
+            if let host = url.host(percentEncoded: false), !host.isEmpty, host.lowercased() != "localhost" { return .ignore }
             let dir = documentURL?.deletingLastPathComponent().standardizedFileURL.path
             let path = url.standardizedFileURL.path
             let samePage = path == dir || path == documentURL?.standardizedFileURL.path
@@ -67,7 +73,46 @@ public enum LinkAction: Equatable, Sendable {
     /// Resolves a link destination as written in the Markdown source against the document.
     public static func resolve(_ destination: String, documentURL: URL?) -> URL? {
         let base = documentURL?.deletingLastPathComponent() ?? URL(string: "about:blank")
-        return URL(string: destination, relativeTo: base)?.absoluteURL
+        let url = URL(string: destination, relativeTo: base)?.absoluteURL
+        // No folder to resolve against: only `#anchor` in the same page makes sense.
+        if documentURL == nil, !destination.hasPrefix("#"), url?.scheme?.lowercased() == "about" { return nil }
+        return url
+    }
+}
+
+/// How a navigation reached the policy check (a small mirror of WebKit's navigation type).
+public enum NavigationKind: Equatable, Sendable {
+    case linkActivated, formSubmitted, other
+}
+
+/// What the preview does with a navigation request. The preview only ever shows the HTML
+/// Aeris renders for it, so everything but our own load, in-page `#anchor` moves and blank
+/// subframes is cancelled.
+public enum NavigationPolicy: Equatable, Sendable {
+    case allow
+    case cancel
+    /// A link click: cancelled in the web view, handled by this action instead.
+    case link(LinkAction)
+
+    /// `isOwnLoad` is true for the one load the preview itself issued (`loadHTMLString`).
+    /// `pageURL` is the URL of the page on screen, `documentURL` the saved file, if any.
+    public static func decide(_ url: URL, isMainFrame: Bool, kind: NavigationKind, isOwnLoad: Bool,
+                              pageURL: URL?, documentURL: URL?) -> NavigationPolicy {
+        if kind == .linkActivated {
+            return .link(LinkAction.decide(url, documentURL: documentURL))
+        }
+        if !isMainFrame {
+            return url.scheme?.lowercased() == "about" && ["blank", "srcdoc"].contains(url.path.lowercased()) ? .allow : .cancel
+        }
+        if isOwnLoad { return .allow }
+        if isFragmentOnlyMove(url, pageURL: pageURL) { return .allow }
+        return .cancel
+    }
+
+    /// True when `url` is the page itself plus a fragment.
+    private static func isFragmentOnlyMove(_ url: URL, pageURL: URL?) -> Bool {
+        guard let pageURL, url.absoluteString.contains("#") else { return false }
+        return url.absoluteString.prefix { $0 != "#" } == pageURL.absoluteString.prefix { $0 != "#" }
     }
 }
 
