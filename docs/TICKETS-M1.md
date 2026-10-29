@@ -148,3 +148,14 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   end, close, `echo more >> file.md`, reopen → caret after "more"; `cmp` shows the file
   bytes unchanged by opening.
 
+
+- [ ] **M1-15 — The preview never navigates on its own.** The preview loads only the HTML
+  Aeris renders for it. Every other navigation is cancelled: forms, meta refresh, iframes or
+  embeds pointing elsewhere, and any `file:` page. In-page `#anchor` moves are allowed.
+  Link clicks keep M1-11's rules. A `file:` link with a host other than empty or `localhost`
+  is ignored. In an unsaved document, a relative link (`other.md#x`) is ignored instead of
+  scrolling the current page.
+  *Verify:* render `<iframe src="https://example.com">`, `<meta http-equiv="refresh"
+  content="0;url=https://example.com">` and a `<form action>`: the preview stays on our page
+  and makes no network request. `file://host/x.md` → ignored. Unsaved doc, ⌘-click
+  `other.md#x` → nothing happens.
