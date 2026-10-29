@@ -173,11 +173,18 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
-    /// Expands the folders at `paths` that still exist and can be expanded; the rest are skipped.
+    /// Makes the expanded folders exactly `paths`: other expanded folders collapse; paths that no
+    /// longer exist or can't be expanded are skipped.
     func expandFolders(atPaths paths: [String]) {
         loadViewIfNeeded()
         restoring = true
         defer { restoring = false }
+        let keep = Set(paths)
+        for row in (0..<outlineView.numberOfRows).reversed() {
+            if let node = outlineView.item(atRow: row) as? LibraryNode, outlineView.isItemExpanded(node), !keep.contains(node.path) {
+                outlineView.collapseItem(node)
+            }
+        }
         for path in paths {
             if let node = Library.shared.tree.node(atPath: path), outlineView.row(forItem: node) >= 0 {
                 outlineView.expandItem(node)

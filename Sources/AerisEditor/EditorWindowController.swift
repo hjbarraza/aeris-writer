@@ -134,9 +134,10 @@ final class EditorWindowController: NSWindowController {
             target = roots.max(by: { $0.path.count < $1.path.count }) ?? tree.roots.first
         }
         guard let target else { return }
-        sidebar.expandFolders(atPaths: expandedPaths)
         fileList.showFolder(target)
         sidebar.reveal(target.url)
+        // After anything above that expands rows: the saved expansion is the final word.
+        sidebar.expandFolders(atPaths: expandedPaths)
         fileList.restoreSelection(path: selectedPath)
         saveSession()
     }
@@ -146,6 +147,12 @@ final class EditorWindowController: NSWindowController {
     // app also stores the library view and open document of the window that changed last.
 
     static let sessionKey = "Aeris.LastSession"
+
+    /// NSDocument calls this when the file is renamed, moved or saved elsewhere: the stored path follows.
+    override func synchronizeWindowTitleWithDocumentName() {
+        super.synchronizeWindowTitleWithDocumentName()
+        saveSession()
+    }
 
     private func libraryViewChanged() {
         window?.invalidateRestorableState()

@@ -14,6 +14,9 @@ enum AppDefaults {
 /// document types (an untitled document at launch, or the file Finder opened);
 /// this only installs the main menu.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// True until launch is done: only a launch reopens the last session, not a Dock click.
+    private var launching = true
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         #if DEBUG
         // Before anything touches Library.shared: the self-check never uses H's real library file.
@@ -23,17 +26,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Cleared after this turn, in case AppKit asks about an untitled file right after this.
+        DispatchQueue.main.async { self.launching = false }
         #if DEBUG
         if CommandLine.arguments.contains("--selfcheck") { SelfCheck.run() }
         #endif
     }
 
-    /// Called when no window was restored and no file was opened: the last session reopens
-    /// (M2-6a); with none stored, an untitled document.
+    /// Called when no window was restored and no file was opened: at launch the last session
+    /// reopens (M2-6a); with none stored, or later (a Dock click), an untitled document.
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
         #if DEBUG
         if CommandLine.arguments.contains("--selfcheck") { return false }
         #endif
+        guard launching else { return true }
+        launching = false
         return !EditorWindowController.reopenLastSession(display: true)
     }
 

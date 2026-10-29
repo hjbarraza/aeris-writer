@@ -42,16 +42,23 @@ enum SelfCheck {
         defaults.synchronize()
     }
 
-    /// The label of the last check printed, for the watchdog.
+    /// The label of the last check printed, for the watchdog (written on main, read on its queue).
     nonisolated(unsafe) private static var lastCheck = "start"
+    private static let lastCheckLock = NSLock()
 
     @MainActor static func run() -> Never {
         // Watchdog: a run that hangs reports where and exits instead of waiting forever.
         DispatchQueue.global().asyncAfter(deadline: .now() + 240) {
-            print("FAIL - selfcheck timed out after \(lastCheck)")
+            let last = lastCheckLock.withLock { lastCheck }
+            print("FAIL - selfcheck timed out after \(last)")
             cleanStandardDefaults()
-            exit(1)
+            try? FileManager.default.removeItem(at: scratch)
+            fflush(stdout)
+            _exit(1)
         }
+        // A run that was killed may have left split view records behind.
+        cleanStandardDefaults()
+        let recentsBefore = NSDocumentController.shared.recentDocumentURLs
         let real = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "Aeris/Locations.plist").path
         guard LocationStore.defaultFileURL.path != real else {
@@ -81,6 +88,7 @@ enum SelfCheck {
         rowChecks()
         restorationChecks()
         lineEndingChecks()
+        check(NSDocumentController.shared.recentDocumentURLs == recentsBefore, "isolation: Open Recent is unchanged")
         try? FileManager.default.removeItem(at: scratch)
         cleanStandardDefaults()
         if failed { print("selfcheck FAILED"); exit(1) }
@@ -90,7 +98,7 @@ enum SelfCheck {
 
     static func check(_ ok: Bool, _ label: String) {
         print(ok ? "ok - \(label)" : "FAIL - \(label)")
-        lastCheck = label
+        lastCheckLock.withLock { lastCheck = label }
         if !ok { failed = true }
     }
 
