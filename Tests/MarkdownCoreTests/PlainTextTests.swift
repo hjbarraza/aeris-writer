@@ -28,4 +28,15 @@ struct PlainTextTests {
     @Test func tables() {
         #expect(PlainText.make("| A | B |\n|---|---|\n| 1 | 2 |") == "A\tB\n1\t2")
     }
+    @Test func frontMatterBreaksAndFootnotes() {
+        #expect(PlainText.make("---\ntitle: X\n---\n\n# Hi\n") == "Hi")
+        #expect(PlainText.make("---\r\ntitle: X\r\n---\r\n\r\n# Hi\r\n") == "Hi")
+        #expect(PlainText.make("---\nnot closed\n\nBody") == "not closed\n\nBody")
+        #expect(PlainText.make("Hello<br>there<br/>x") == "Hello\nthere\nx")
+        #expect(PlainText.make("text[^1] more\n\n[^1]: the *note*") == "text[1] more\n\n[1] the note")
+    }
+    @Test func richTextHTMLDropsResources() {
+        let clean = RichTextHTML.withoutResources("<p>a<img src=\"http://x.example/i.png\"></p><script>x()</script><p style=\"background:url(http://y)\"><b>b</b></p>")
+        #expect(!clean.contains("http") && !clean.contains("script") && clean.contains("<b>b</b>"))
+    }
 }

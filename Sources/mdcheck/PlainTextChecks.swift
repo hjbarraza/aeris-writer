@@ -21,6 +21,11 @@ let plainTextCases: [(String, String)] = [
     ("a\n\n---\n\nb", "a\n\nb"),
     ("<div>x</div>\n\nText", "Text"),
     ("- a\n\n  para\n- b", "• a\n\n  para\n• b"),
+    ("---\ntitle: X\n---\n\n# Hi\n", "Hi"),
+    ("---\r\ntitle: X\r\n---\r\n\r\n# Hi\r\n", "Hi"),
+    ("---\nnot closed\n\nBody", "not closed\n\nBody"),
+    ("Hello<br>there<br/>x", "Hello\nthere\nx"),
+    ("text[^1] more\n\n[^1]: the *note*", "text[1] more\n\n[1] the note"),
 ]
 
 func runPlainTextChecks() {
@@ -32,4 +37,8 @@ func runPlainTextChecks() {
     let doc = "# H\n\n*a* **b** [c](u) ![d](i) `e` ~~f~~\n\n- x\n"
     let out = PlainText.make(doc)
     check(!out.contains(where: { "#*[]()`~".contains($0) }), "plain text: no Markdown characters left (got \(out.debugDescription))")
+    let dirty = "<p>a<img src=\"http://x.example/i.png\" alt=\"i\"></p><script>x()</script><link rel=\"stylesheet\" href=\"http://x\"><p style=\"background:url(http://y)\"><b>b</b></p>"
+    let clean = RichTextHTML.withoutResources(dirty)
+    check(!clean.contains("http") && !clean.contains("script") && clean.contains("<b>b</b>") && clean.contains("alt=\"i\""),
+          "rich text html: remote resources removed, formatting kept (got \(clean.debugDescription))")
 }

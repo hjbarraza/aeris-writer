@@ -1243,10 +1243,56 @@ enum SelfCheck {
         tv.setSelectedRange(sel)
         check(editor.copy(as: .markdown, to: board) && string() == "**bold**", "copy matrix: Markdown copies the selection")
         check(editor.copy(as: .plainText, to: board) && string() == "bold", "copy matrix: Plain Text copies the selection")
-        check(editor.copy(as: .html, to: board) && string() == "<p><strong>bold</strong></p>\n"
-              || string() == "<p><strong>bold</strong></p>", "copy matrix: HTML of the selection (got \(string().debugDescription))")
+        check(editor.copy(as: .html, to: board) && (string() == "<p><strong>bold</strong></p>\n"
+              || string() == "<p><strong>bold</strong></p>"), "copy matrix: HTML of the selection (got \(string().debugDescription))")
+        // A discontiguous selection copies every range, joined by the document's line ending.
+        let ns = original as NSString
+        tv.setSelectedRanges([NSValue(range: ns.range(of: "Title")), NSValue(range: ns.range(of: "two"))],
+                             affinity: .downstream, stillSelecting: false)
+        check(editor.copy(as: .markdown, to: board) && string() == "Title\ntwo",
+              "copy matrix: two selected ranges are both copied (got \(string().debugDescription))")
         check(tv.string == original && doc.textStorage.string == original, "copy matrix: the document is unchanged")
         doc.close()
+
+        // Front matter is not content for HTML, Rich Text and Plain Text; Markdown stays raw.
+        func open(_ name: String, _ text: String) -> (MarkdownDocument, EditorViewController, NSTextView)? {
+            let u = dir.appending(path: name)
+            try? Data(text.utf8).write(to: u)
+            guard let d = try? dc.makeDocument(withContentsOf: u, ofType: "net.daringfireball.markdown") as? MarkdownDocument
+            else { return nil }
+            dc.addDocument(d); d.makeWindowControllers()
+            let w = d.windowControllers[0] as! EditorWindowController
+            return (d, w.editorForTesting, editorTextView(w))
+        }
+        let fm = "---\ntitle: X\n---\n\n# Hi\n"
+        if let (d2, e2, t2) = open("fm.md", fm) {
+            t2.setSelectedRange(NSRange(location: 0, length: 0))
+            check(e2.copy(as: .markdown, to: board) && string() == fm, "copy matrix: front matter stays in Copy as Markdown")
+            check(e2.copy(as: .html, to: board) && !string().contains("title") && !string().contains("<hr") && string().contains("<h1"),
+                  "copy matrix: front matter is left out of HTML (got \(string().debugDescription))")
+            check(e2.copy(as: .plainText, to: board) && string() == "Hi", "copy matrix: front matter is left out of Plain Text")
+            check(e2.copy(as: .richText, to: board)
+                  && board.data(forType: .rtf).flatMap { NSAttributedString(rtf: $0, documentAttributes: nil) }?.string
+                      .contains("title") == false, "copy matrix: front matter is left out of Rich Text")
+            d2.close()
+        } else { check(false, "copy matrix: front matter file opens") }
+
+        // A large Rich Text copy puts the plain text on at once and the RTF when built, off the main thread.
+        let section = "## Section\n\nSome *emphasis*, **strong** text and a [link](http://x.example). ![i](http://127.0.0.1:9/i.png)\n\n"
+        let big = String(repeating: section, count: EditorViewController.richTextAsyncThreshold / section.utf16.count + 10)
+        if let (d3, e3, _) = open("big.md", big) {
+            let finished = Box(false)
+            let t0 = Date()
+            let started = e3.copy(as: .richText, to: board, done: { finished.value = true })
+            let quick = Date().timeIntervalSince(t0)
+            check(started && !finished.value && board.string(forType: .string)?.isEmpty == false,
+                  "copy matrix: a large Rich Text copy returns before the RTF is built (\(Int(quick * 1000)) ms)")
+            let deadline = Date().addingTimeInterval(60)
+            while !finished.value && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+            check(finished.value && board.data(forType: .rtf) != nil,
+                  "copy matrix: the large copy's RTF arrives (\(Int(Date().timeIntervalSince(t0) * 1000)) ms, source \(big.utf16.count / 1000) KB)")
+            d3.close()
+        } else { check(false, "copy matrix: large file opens") }
     }
 
     /// M1.5-25: Paste as Markdown converts the pasteboard's rich text (a private pasteboard here,
