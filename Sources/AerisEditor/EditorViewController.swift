@@ -424,8 +424,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
                    textSize = "TextSizeStep", spelling = "ContinuousSpellChecking", grammar = "GrammarChecking"
     }
     private static let defaults: UserDefaults = {
-        UserDefaults.standard.register(defaults: [DefaultsKey.spelling: true, DefaultsKey.grammar: false])
-        return .standard
+        AppDefaults.store.register(defaults: [DefaultsKey.spelling: true, DefaultsKey.grammar: false])
+        return AppDefaults.store
     }()
 
     private static let inset = NSSize(width: 24, height: 24)

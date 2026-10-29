@@ -1,5 +1,15 @@
 import AppKit
 
+/// Every app preference goes through `store`: the user's defaults normally, a private domain
+/// under `--selfcheck`, so a self-check never changes the user's settings. (AppKit's own split
+/// view autosave always writes the standard defaults; the self-check uses its own names there.)
+enum AppDefaults {
+    static let selfCheckSuite = "com.aeris.editor.selfcheck"
+    nonisolated(unsafe) static var store: UserDefaults = .standard
+    /// True under `--selfcheck`: windows are not restorable.
+    nonisolated(unsafe) static var isolated = false
+}
+
 /// App delegate. Document windows come from NSDocumentController via the Info.plist
 /// document types (an untitled document at launch, or the file Finder opened);
 /// this only installs the main menu.
@@ -7,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         #if DEBUG
         // Before anything touches Library.shared: the self-check never uses H's real library file.
-        if CommandLine.arguments.contains("--selfcheck") { SelfCheck.isolateLibraryFile() }
+        if CommandLine.arguments.contains("--selfcheck") { SelfCheck.isolateLibraryFile(); SelfCheck.isolateDefaults() }
         #endif
         NSApp.mainMenu = MainMenu.make()
     }

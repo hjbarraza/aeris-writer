@@ -76,6 +76,7 @@ final class EditorWindowController: NSWindowController {
             split.splitView.setPosition(220 + divider + 260 + divider + 420, ofDividerAt: 2)
         }
         window.center()
+        window.isRestorable = !AppDefaults.isolated
         // Ctrl-Tab moves the keyboard between the editor and the sidebar.
         window.autorecalculatesKeyViewLoop = true
         super.init(window: window)

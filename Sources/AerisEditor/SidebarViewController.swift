@@ -41,15 +41,15 @@ enum OrganizerSettings {
     private static var key: String { "\(EditorWindowController.layoutKey).HiddenSections" }
 
     static func isHidden(_ kind: OrganizerSection.Kind) -> Bool {
-        kind != .locations && (UserDefaults.standard.stringArray(forKey: key) ?? []).contains(kind.rawValue)
+        kind != .locations && (AppDefaults.store.stringArray(forKey: key) ?? []).contains(kind.rawValue)
     }
 
     static func setHidden(_ kind: OrganizerSection.Kind, _ hidden: Bool) {
         guard kind != .locations, isHidden(kind) != hidden else { return }
-        var kinds = UserDefaults.standard.stringArray(forKey: key) ?? []
+        var kinds = AppDefaults.store.stringArray(forKey: key) ?? []
         kinds.removeAll { $0 == kind.rawValue }
         if hidden { kinds.append(kind.rawValue) }
-        UserDefaults.standard.set(kinds, forKey: key)
+        AppDefaults.store.set(kinds, forKey: key)
         NotificationCenter.default.post(name: didChange, object: nil)
     }
 }
@@ -72,8 +72,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     /// Kinds of the sections the user collapsed, shared by every window and every launch.
     private var collapsedKey: String { "\(EditorWindowController.layoutKey).CollapsedSections" }
     private var collapsedSections: [String] {
-        get { UserDefaults.standard.stringArray(forKey: collapsedKey) ?? [] }
-        set { UserDefaults.standard.set(newValue, forKey: collapsedKey) }
+        get { AppDefaults.store.stringArray(forKey: collapsedKey) ?? [] }
+        set { AppDefaults.store.set(newValue, forKey: collapsedKey) }
     }
 
     private var visibleSections: [OrganizerSection] { OrganizerSection.all.filter { !OrganizerSettings.isHidden($0.kind) } }
