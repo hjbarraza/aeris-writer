@@ -172,7 +172,8 @@ enum MainMenu {
                 i.representedObject = kind
                 return i
             }),
-        ])
+            .separator(),
+        ] + FileListMenu.shared.makeItems())
     }
 
     private static func item(_ title: String, _ action: Selector, _ key: String = "") -> NSMenuItem {

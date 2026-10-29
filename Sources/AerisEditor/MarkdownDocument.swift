@@ -100,6 +100,9 @@ class MarkdownDocument: NSDocument {
     private var askingAboutDisk = false
     /// The user chose Keep after the file was deleted: the next save may create it again.
     private var keepsDeletedFile = false
+    /// Set by `read(from:url)` for the `read(from:data)` it triggers: control bytes refuse only a
+    /// file without a text extension (a note with a stray vertical tab still opens). Main thread only.
+    nonisolated(unsafe) private var refusesControls = true
     /// Where the file was before it was moved to the Trash, for Keep to save it back there.
     private var trashedFrom: URL?
 
@@ -327,7 +330,9 @@ class MarkdownDocument: NSDocument {
     }
 
     override func read(from data: Data, ofType typeName: String) throws {
-        guard let (s, detected) = TextEncoding.decode(data) else {
+        // RTF is text-encoded markup, not plain text: refused like binary, never shown as code.
+        guard !data.starts(with: Data("{\\rtf".utf8)), let (s, detected) = TextEncoding.decode(data),
+              !Self.hasBinaryCodes(s.unicodeScalars.lazy.map(\.value), controls: refusesControls) else {
             throw CocoaError(.fileReadInapplicableStringEncoding)
         }
         // Safe only because canConcurrentlyReadDocuments returns false (main-thread reads).
@@ -349,10 +354,43 @@ class MarkdownDocument: NSDocument {
         }
     }
 
+    /// NUL always means binary; with `controls`, so do the other C0 controls except tab, LF,
+    /// form feed and CR, and DEL.
+    private static func hasBinaryCodes<S: Sequence>(_ codes: S, controls: Bool) -> Bool where S.Element: BinaryInteger {
+        codes.contains {
+            $0 == 0 || controls && (($0 < 0x20 && $0 != 0x09 && $0 != 0x0A && $0 != 0x0C && $0 != 0x0D) || $0 == 0x7F)
+        }
+    }
+
+    private static let textExtensions: Set<String> = ["md", "markdown", "mdown", "mkd", "txt", "text"]
+
+    /// Opening shows "The document “x” could not be opened." followed by the failure reason.
+    private static func notPlainText() -> NSError {
+        NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileReadInapplicableStringEncoding.rawValue, userInfo: [
+            NSLocalizedFailureReasonErrorKey: "It isn’t a plain text file.",
+            NSLocalizedRecoverySuggestionErrorKey: "Aeris Writer opens text in UTF-8, UTF-16 with a byte order mark, "
+                + "or Western (Windows Latin 1). Rich text and binary files can’t be opened.",
+        ])
+    }
+
     // MARK: Editor state in an extended attribute (never in the file's content)
 
     override func read(from url: URL, ofType typeName: String) throws {
-        try super.read(from: url, ofType: typeName)
+        // A package, or a file whose first 8 KB already show binary, is refused before the
+        // whole file is read (a multi-GB video refuses at once).
+        if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true { throw Self.notPlainText() }
+        let handle = try FileHandle(forReadingFrom: url)
+        let head = try handle.read(upToCount: 8192) ?? Data()
+        try? handle.close()
+        // UTF-16 holds NUL and low bytes by design; its decoded text is checked instead.
+        let utf16 = head.starts(with: [0xFF, 0xFE]) || head.starts(with: [0xFE, 0xFF])
+        refusesControls = !Self.textExtensions.contains(url.pathExtension.lowercased())
+        if !utf16, Self.hasBinaryCodes(head, controls: refusesControls) { throw Self.notPlainText() }
+        do {
+            try super.read(from: url, ofType: typeName)
+        } catch CocoaError.fileReadInapplicableStringEncoding {
+            throw Self.notPlainText()
+        }
         let state = ExtendedAttributes.data(named: EditorState.attributeName, at: url)
             .flatMap { try? JSONDecoder().decode(EditorState.self, from: $0) }
         // Main thread: canConcurrentlyReadDocuments returns false.

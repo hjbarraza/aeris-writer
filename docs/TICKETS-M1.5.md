@@ -215,3 +215,11 @@ dimming and centring together. Then start M2.
   *Verify:* copy a 2×2 table from a web page → Paste as Markdown writes a pipe table;
   copy a nested list from a rich-text app → `- ` / `1. ` list with matching nesting; plain
   paste of plain text is byte-identical; ⌘Z undoes the paste in one step; `mdcheck` cases.
+
+- [ ] **M1.5-26 — Every list edit keeps the numbering honest.** Outdent (⇧Tab), a Backspace
+  that removes indentation, paste into a list and the list toggles renumber a sequential
+  ordered list the same way Return and delete do (M1.5-23); lists numbered on purpose stay
+  as they are.
+  *Verify:* `1. a / 1. x (nested) / 2. b`, outdent x → `1. a / 2. x / 3. b`; paste two items
+  into the middle of a sequential list → renumbered; `1. / 1. / 1.` list → unchanged.
+
