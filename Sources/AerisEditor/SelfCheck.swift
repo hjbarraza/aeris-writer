@@ -97,6 +97,17 @@ enum SelfCheck {
         func widths() -> [CGFloat] { wc.splitViewController.splitViewItems.map { $0.viewController.view.frame.width } }
         func near(_ a: CGFloat, _ b: CGFloat, _ tol: CGFloat) -> Bool { abs(a - b) <= tol }
         settle()
+        /// Waits until the pane widths stay the same across several settles (animation over), however loaded the machine is.
+        func settled() {
+            var last = widths(), stable = 0
+            _ = wait(timeout: 10) {
+                settle()
+                let now = widths()
+                stable = now == last ? stable + 1 : 0
+                last = now
+                return stable >= 5
+            }
+        }
         // A skewed layout (one pane much narrower than the other), the case H hit.
         split.setPosition(split.subviews[0].frame.maxX + split.dividerThickness + 330, ofDividerAt: 1)
         settle()
@@ -106,12 +117,10 @@ enum SelfCheck {
 
         wc.splitViewController.toggleSidebar(nil)
         check(wait(timeout: 2) { wc.isSidebarCollapsed }, "layout: sidebar collapsed")
-        _ = wait(timeout: 0.5) { false }
-        settle()
+        settled()
         wc.splitViewController.toggleSidebar(nil)
         check(wait(timeout: 2) { !wc.isSidebarCollapsed }, "layout: sidebar expanded")
-        _ = wait(timeout: 0.5) { false }
-        settle()
+        settled()
         let after = widths()
         check(near(after[1], start[1], 2) && near(after[2], start[2], 2) && near(after[0], start[0], 2),
               "layout: collapse then expand restores editor and preview widths (\(start.map { Int($0) }) -> \(after.map { Int($0) }))")
@@ -136,8 +145,7 @@ enum SelfCheck {
         func quickToggles(twice: Bool, _ label: String) {
             wc.splitViewController.toggleSidebar(nil)
             if twice { wc.splitViewController.toggleSidebar(nil) }
-            _ = wait(timeout: 0.6) { false }
-            settle()
+            settled()
             let w = widths()
             check(near(w[1] / w[2], ratio, 0.02 * ratio), "layout: \(label) keeps the editor:preview ratio (\(w.map { Int($0) }))")
         }
@@ -151,15 +159,19 @@ enum SelfCheck {
               "layout: after the quick toggles the sidebar is open and the ratio is kept (\(widths().map { Int($0) }))")
         // A single toggle never forces an older sidebar width: drag it to 300 (no toggle), collapse
         // it (no toggle), expand with one toggle. The last toggle chain saw 220; that must not return.
-        split.setPosition(300, ofDividerAt: 0)
+        // (Headless, AppKit can leave the sidebar pinned at its last animated width after the toggles
+        // above, ignoring the drag; a non-animated collapse and expand clears that.)
+        wc.splitViewController.splitViewItems[0].isCollapsed = true
         settle()
+        wc.splitViewController.splitViewItems[0].isCollapsed = false
+        settled()
+        split.setPosition(300, ofDividerAt: 0)
+        settled()
         check(near(widths()[0], 300, 2), "layout: the sidebar divider moves to 300 without a toggle (\(Int(widths()[0])))")
         wc.splitViewController.splitViewItems[0].isCollapsed = true
-        _ = wait(timeout: 0.6) { false }
-        settle()
+        settled()
         wc.splitViewController.toggleSidebar(nil)
-        _ = wait(timeout: 0.6) { false }
-        settle()
+        settled()
         check(!wc.isSidebarCollapsed && !near(widths()[0], after[0], 2),
               "layout: a single expand does not force the sidebar back to an older width (\(Int(after[0])) -> \(Int(widths()[0])))")
         wc.close()
