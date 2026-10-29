@@ -100,7 +100,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     /// Expands the folders saved as expanded (parents first) and drops saved paths that are
-    /// gone, so a folder deleted since the last launch is forgotten.
+    /// gone, so a folder deleted since the last launch is forgotten. Paths under a root that is
+    /// missing right now (an unmounted volume) are kept for when it returns.
     private func restoreExpansion() {
         restoring = true
         defer { restoring = false }
@@ -108,7 +109,13 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             Library.shared.tree.node(atPath: path).flatMap { $0.isDirectory ? $0 : nil }
         }
         nodes.forEach { outlineView.expandItem($0) }
-        expandedPaths = nodes.map(\.path)
+        let expanded = Set(nodes.map(\.path))
+        let roots = Library.shared.tree.roots
+        expandedPaths = expandedPaths.filter { path in
+            expanded.contains(path) || roots.contains {
+                (path == $0.path || path.hasPrefix($0.path + "/")) && !FileManager.default.fileExists(atPath: $0.path)
+            }
+        }
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
