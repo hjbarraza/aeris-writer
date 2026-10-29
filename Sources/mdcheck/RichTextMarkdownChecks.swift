@@ -65,4 +65,21 @@ func runRichTextMarkdownChecks() {
           "richtext: plain-Paste mode: emphasis and inline code alone are not structure")
     check(RichTextMarkdown.convert(html: "<p>a <b>bold</b> <a href=u>l</a></p>", emphasisCounts: false) == "a **bold** [l](u)",
           "richtext: plain-Paste mode: a link still converts")
+    // Fix round 2.
+    let big = String(repeating: "<ul><li>a", count: 220_000)          // about 2 MB
+    let (bigOut, bigMs) = timed { md(big) }
+    check(bigOut == nil || bigOut!.utf8.count <= RichTextMarkdown.maxHTMLBytes, "richtext: 2 MB of nested lists -> output within the cap")
+    check(bigMs < 1000, "richtext: 2 MB of nested lists converts in under 1 s (\(Int(bigMs)) ms)")
+    let deep = String(repeating: "<ul><li>", count: 40) + "x"
+    check(md(deep)!.split(separator: "\n").last!.prefix { $0 == " " }.count <= 64, "richtext: list indent stops at 16 levels")
+    let tooDeep = String(repeating: "<div>", count: 300), closeAll = String(repeating: "</div>", count: 300)
+    check(md(tooDeep + "<b>x" + closeAll + "<p>a <b>B</b> after</p>")!.hasSuffix("a **B** after"),
+          "richtext: an unclosed overflowed <b> does not make a later bold run on")
+    check(md(tooDeep + "<a href=x>q" + closeAll + "<p><a href=u>L</a> after</p>")!.hasSuffix("[L](u) after"),
+          "richtext: an overflowed <a> does not make a later link run on")
+    check(md(tooDeep + "<ul><li>k" + closeAll + "<ul><li>z</li></ul><p>para</p>")!.hasSuffix("\n\npara"),
+          "richtext: an overflowed unclosed list does not absorb the next paragraph")
+    check(md("<p>---</p><p>a<br>===</p><ul><li># h</li><li>1. x</li><li>- y</li></ul>")
+          == "\\---\n\na\\\n\\===\n\n- \\# h\n- 1\\. x\n- \\- y", "richtext: rules, setext underlines and list-item markers are escaped")
+    check(md("<a href=\"java&#x09;script:alert(1)\">y</a>") == nil, "richtext: a tab inside javascript: does not hide it (link dropped, no structure)")
 }

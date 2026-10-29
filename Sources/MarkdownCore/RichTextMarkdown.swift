@@ -9,7 +9,7 @@ public enum RichTextMarkdown {
     /// table, link, heading, emphasis, code or quote): such a paste stays a plain paste.
     /// `emphasisCounts` false (the plain-Paste path): bold, italic and inline code alone are not
     /// structure, so code or prose from an editor that only colours and bolds pastes unchanged.
-    /// HTML over `maxHTMLBytes` is not converted (nil).
+    /// HTML over `maxHTMLBytes`, or Markdown over it, is not converted (nil).
     public static func convert(html: String, emphasisCounts: Bool = true) -> String? {
         guard html.utf8.count <= maxHTMLBytes else { return nil }
         var writer = Writer()
@@ -18,7 +18,7 @@ public enum RichTextMarkdown {
         let blocks = writer.blocks(root.children)
         guard writer.sawStructure else { return nil }
         let out = blocks.joined(separator: "\n\n")
-        return out.isEmpty ? nil : out
+        return out.isEmpty || writer.tooBig || out.utf8.count > maxHTMLBytes ? nil : out
     }
 
     public static let maxHTMLBytes = 2_000_000
@@ -72,6 +72,8 @@ public enum RichTextMarkdown {
             }
 
             while i < s.count {
+                // An unclosed element past the cap must not swallow closes of later, kept ones.
+                if stack.count <= maxDepth, !overflow.isEmpty { overflow = [:] }
                 if s[i] != "<" {
                     var j = i
                     while j < s.count, s[j] != "<" { j += 1 }
@@ -198,6 +200,9 @@ public enum RichTextMarkdown {
     struct Writer {
         var sawStructure = false
         var emphasisCounts = true
+        /// List output so far; past the cap the rest of the lists is skipped and the paste stays plain.
+        var listBytes = 0
+        var tooBig: Bool { listBytes > RichTextMarkdown.maxHTMLBytes }
 
         static let blockTags: Set<String> = [
             "p", "div", "section", "article", "header", "footer", "main", "nav", "aside", "figure", "figcaption",
@@ -264,8 +269,9 @@ public enum RichTextMarkdown {
             var number = Int(node.attrs["start"] ?? "") ?? 1
             var lines: [String] = []
             for child in node.children {
+                if tooBig { break }
                 if child.tag == "ul" || child.tag == "ol" {            // nested list sibling of the items
-                    let nested = list(child, indent: indent + String(repeating: " ", count: lines.isEmpty ? 2 : lastMarkerWidth))
+                    let nested = list(child, indent: Writer.deeper(indent, by: lines.isEmpty ? 2 : lastMarkerWidth))
                     if !nested.isEmpty { lines.append(nested) }
                     continue
                 }
@@ -273,7 +279,7 @@ public enum RichTextMarkdown {
                 let marker = ordered ? "\(number). " : "- "
                 number += 1
                 lastMarkerWidth = marker.count
-                let nestedIndent = indent + String(repeating: " ", count: marker.count)
+                let nestedIndent = Writer.deeper(indent, by: marker.count)
                 var text = ""
                 var nested: [String] = []
                 for part in child.children {
@@ -286,13 +292,19 @@ public enum RichTextMarkdown {
                         text += inline(part, State())
                     }
                 }
-                let item = Writer.tidy(text).replacingOccurrences(of: "\n", with: " ")
+                let item = Writer.escapeLineStarts(Writer.tidy(text).replacingOccurrences(of: "\n", with: " "))
                 lines.append(indent + marker + item)
+                listBytes += indent.utf8.count + marker.utf8.count + item.utf8.count + 1
                 lines += nested.filter { !$0.isEmpty }
             }
             return lines.joined(separator: "\n")
         }
         private var lastMarkerWidth = 2
+
+        /// `indent` plus `n` spaces, but never beyond 16 nesting levels' worth: deeper items sit at the same indent.
+        static func deeper(_ indent: String, by n: Int) -> String {
+            indent.count >= 64 ? indent : indent + String(repeating: " ", count: n)
+        }
 
         /// A pipe table whose first row is the header; nil when there are no cells.
         mutating func table(_ node: Node) -> String? {
@@ -351,7 +363,7 @@ public enum RichTextMarkdown {
                 let inner = inlineChildren(n, st)
                 guard let href = n.attrs["href"], !href.isEmpty,
                       !inner.trimmingCharacters(in: .whitespaces).isEmpty else { return inner }
-                let scheme = href.trimmingCharacters(in: .whitespaces).lowercased().prefix { $0 != ":" && $0 != "/" }
+                let scheme = href.filter { $0 != "\t" && $0 != "\n" && $0 != "\r" }.trimmingCharacters(in: .whitespaces).lowercased().prefix { $0 != ":" && $0 != "/" }
                 if ["javascript", "vbscript", "data"].contains(String(scheme)) { return inner }
                 sawStructure = true
                 let url = href.replacingOccurrences(of: " ", with: "%20")
@@ -417,7 +429,9 @@ public enum RichTextMarkdown {
 
         /// A paragraph line that starts like a heading, list item or quote gets a backslash.
         static func escapeLineStarts(_ s: String) -> String {
-            s.replacingOccurrences(of: "(?m)^( {0,3})(#{1,6}(?=\\s|$)|[-+](?=\\s))", with: "$1\\\\$2", options: .regularExpression)
+            guard s.contains(where: { "#-+=0123456789".contains($0) }) else { return s }
+            return s.replacingOccurrences(of: "(?m)^( {0,3})([-=]{3,}[ \\t]*$)", with: "$1\\\\$2", options: .regularExpression)
+                .replacingOccurrences(of: "(?m)^( {0,3})(#{1,6}(?=\\s|$)|[-+](?=\\s))", with: "$1\\\\$2", options: .regularExpression)
                 .replacingOccurrences(of: "(?m)^( {0,3}\\d+)([.)])(?=\\s)", with: "$1\\\\$2", options: .regularExpression)
         }
 
