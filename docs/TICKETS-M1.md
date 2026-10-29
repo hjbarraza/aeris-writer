@@ -174,3 +174,14 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   *Verify:* ⌘N, type, ⌘S → the save panel proposes `Untitled.md`; save → the file on disk
   ends in `.md`.
 
+- [ ] **M1-18 — Our own link menu in the preview.** Right-clicking a link in the preview shows
+  Aeris's menu instead of WebKit's, so every item works. A link to a note: Open, Open in
+  New Tab, Open in New Window, Reveal in Finder, Copy Link. A web or mail link: Open in
+  Browser (or Mail), Copy Link. An `#anchor`: Jump to Section, Copy Link. WebKit's own
+  items that can't work in a locked-down preview (Open Link in New Window, Download Linked
+  File) never appear. Selected text keeps Copy and Look Up (H, 2026-10-29).
+  *Verify:* self-check builds the menu for each link kind and runs every item: Open → the
+  note opens in this window; Open in New Tab → same window, one more tab; Open in New
+  Window → a second window; Copy Link → the pasteboard holds the absolute URL; no item is
+  a no-op. On screen: right-click each link in `aeris-link-test/Start.md`.
+
