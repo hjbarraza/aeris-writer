@@ -141,7 +141,7 @@ enum MainMenu {
         let bigger2 = item("Bigger", #selector(E.makeTextBigger(_:)), "=")
         bigger2.isHidden = true  // ⌘= also enlarges (the + key without Shift)
         bigger2.allowsKeyEquivalentWhenHidden = true
-        let sidebarToggle = item("Toggle Sidebar", #selector(NSSplitViewController.toggleSidebar(_:)), "s")
+        let sidebarToggle = item("Hide Library", #selector(NSSplitViewController.toggleSidebar(_:)), "s")
         sidebarToggle.keyEquivalentModifierMask = [.command, .option]
         return submenu("View", [
             item("Typewriter Mode", #selector(E.toggleTypewriterMode(_:))),
@@ -154,6 +154,7 @@ enum MainMenu {
             item("Actual Size", #selector(E.makeTextActualSize(_:)), "0"),
             .separator(),
             sidebarToggle,
+            item("Hide Organizer", #selector(LibrarySplitViewController.toggleOrganizer(_:))),
         ])
     }
 

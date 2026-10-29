@@ -8,6 +8,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     private let emptyLabel = NSTextField(wrappingLabelWithString: "Add a folder to see its Markdown files here.")
     /// Set by the window controller: opens a file row the user selected (mouse or arrow keys).
     var onOpen: (@MainActor (URL) -> Void)?
+    /// Set by the window controller: the user selected a folder (or a file, whose folder this is).
+    var onFolderSelected: (@MainActor (LibraryNode?) -> Void)?
     /// A programmatic reveal is selecting a row; that selection never opens anything.
     private var revealing = false
     /// The saved expansion is being applied; those expansions are not saved again.
@@ -190,11 +192,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     // MARK: NSOutlineViewDelegate
 
-    /// The user selected a row: a file opens; a folder opens nothing.
+    /// The user selected a row: a folder fills the file list; a file opens (and its folder fills the list).
     func outlineViewSelectionDidChange(_ notification: Notification) {
-        guard !revealing, let node = outlineView.item(atRow: outlineView.selectedRow) as? LibraryNode,
-              !node.isDirectory else { return }
-        onOpen?(node.url)
+        guard !revealing, let node = outlineView.item(atRow: outlineView.selectedRow) as? LibraryNode else { return }
+        onFolderSelected?(node.isDirectory ? node : node.parent)
+        if !node.isDirectory { onOpen?(node.url) }
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {

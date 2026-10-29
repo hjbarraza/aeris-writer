@@ -10,6 +10,7 @@ final class Library {
     let tree = LibraryTree()
     private let store: LocationStore
     private let sidebars = NSHashTable<SidebarViewController>.weakObjects()
+    private let fileLists = NSHashTable<FileListViewController>.weakObjects()
     /// Watches every root; rebuilt whenever the roots change.
     private var watcher: FolderWatcher?
 
@@ -25,6 +26,10 @@ final class Library {
 
     func register(_ sidebar: SidebarViewController) {
         sidebars.add(sidebar)
+    }
+
+    func register(_ list: FileListViewController) {
+        fileLists.add(list)
     }
 
     /// Appends `url` unless a location with the same canonical path already exists.
@@ -60,6 +65,7 @@ final class Library {
         _ = tree.refresh(tree.roots.map { FolderChange(path: $0.path, mustScanSubDirs: true, rootChanged: false) })
         old?.stop()
         for sidebar in sidebars.allObjects { sidebar.libraryRootsDidChange() }
+        for list in fileLists.allObjects { list.libraryRootsDidChange() }
     }
 
     /// Disk changes: a moved or deleted root re-resolves every bookmark and re-lists every loaded
@@ -76,5 +82,6 @@ final class Library {
         let treeChanges = tree.refresh(changes)
         guard !treeChanges.isEmpty else { return }
         for sidebar in sidebars.allObjects { sidebar.apply(treeChanges) }
+        for list in fileLists.allObjects { list.apply(treeChanges) }
     }
 }

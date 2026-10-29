@@ -36,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard panel.runModal() == .OK else { return }
         panel.urls.forEach { Library.shared.addLocation($0) }
         if let wc = NSApp.keyWindow?.windowController as? EditorWindowController, wc.isSidebarCollapsed {
-            wc.splitViewController.toggleSidebar(nil)
+            wc.splitViewController.showLibrary()
         }
     }
 

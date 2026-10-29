@@ -36,6 +36,7 @@ enum SelfCheck {
         persistenceChecks()
         openChecks()
         sidebarChecks()
+        columnChecks()
         liveRefreshChecks()
         liveRefreshEdgeChecks()
         encodingChecks()
@@ -62,20 +63,21 @@ enum SelfCheck {
 
     @MainActor static func shellChecks() {
         let key = "Aeris.SelfCheck.MainSplit"
-        let defaultsKeys = ["NSSplitView Subview Frames \(key)"]
+        let defaultsKeys = ["NSSplitView Subview Frames \(key).Columns"]
         func clean() { defaultsKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) } }
         EditorWindowController.layoutKey = key
         clean()
         do {
             let wc = EditorWindowController()
             let items = wc.splitViewController.splitViewItems
-            check(items.count == 3 && items[0].behavior == .sidebar, "shell: sidebar | editor | preview")
+            check(items.count == 4 && items[0].behavior == .sidebar, "shell: sidebar | list | editor | preview")
             check(items[0].viewController === wc.sidebar, "shell: sidebar pane is the SidebarViewController")
-            check(wc.splitViewController.splitView.autosaveName == key, "shell: layout autosave name is layoutKey")
-            let toggle = MainMenu.make().item(withTitle: "View")?.submenu?.item(withTitle: "Toggle Sidebar")
+            check(wc.splitViewController.splitView.autosaveName == EditorWindowController.splitAutosaveName
+                  && EditorWindowController.splitAutosaveName.hasPrefix(key), "shell: layout autosave name derives from layoutKey")
+            let toggle = MainMenu.make().item(withTitle: "View")?.submenu?.item(withTitle: "Hide Library")
             check(toggle?.action == #selector(NSSplitViewController.toggleSidebar(_:))
                   && toggle?.keyEquivalent == "s" && toggle?.keyEquivalentModifierMask == [.command, .option],
-                  "shell: View > Toggle Sidebar is ⌘⌥S")
+                  "shell: View > Hide Library is ⌘⌥S")
             wc.splitViewController.toggleSidebar(nil)
             check(wait(timeout: 2) { wc.isSidebarCollapsed }, "shell: toggle collapses the sidebar")
             wc.splitViewController.toggleSidebar(nil)
@@ -89,7 +91,7 @@ enum SelfCheck {
     /// Needs real layout, so it forces it on the never-shown window's split view.
     @MainActor static func layoutChecks() {
         let key = "Aeris.SelfCheck.LayoutSplit"
-        let defaultsKey = "NSSplitView Subview Frames \(key)"
+        let defaultsKey = "NSSplitView Subview Frames \(key).Columns"
         let previousKey = EditorWindowController.layoutKey
         EditorWindowController.layoutKey = key
         UserDefaults.standard.removeObject(forKey: defaultsKey)
@@ -97,7 +99,8 @@ enum SelfCheck {
         let wc = EditorWindowController()
         let split = wc.splitViewController.splitView
         func settle() { split.window?.contentView?.layoutSubtreeIfNeeded(); split.layoutSubtreeIfNeeded() }
-        func widths() -> [CGFloat] { wc.splitViewController.splitViewItems.map { $0.viewController.view.frame.width } }
+        /// Sidebar, editor, preview (the file list holds its width and has its own checks).
+        func widths() -> [CGFloat] { wc.splitViewController.splitViewItems.enumerated().filter { $0.offset != 1 }.map { $0.element.viewController.view.frame.width } }
         func near(_ a: CGFloat, _ b: CGFloat, _ tol: CGFloat) -> Bool { abs(a - b) <= tol }
         settle()
         /// Waits until the pane widths stay the same across several settles (animation over), however loaded the machine is.
@@ -112,7 +115,7 @@ enum SelfCheck {
             }
         }
         // A skewed layout (one pane much narrower than the other), the case H hit.
-        split.setPosition(split.subviews[0].frame.maxX + split.dividerThickness + 330, ofDividerAt: 1)
+        split.setPosition(wc.splitViewController.splitViewItems[1].viewController.view.frame.maxX + split.dividerThickness + 330, ofDividerAt: 2)
         settle()
         let start = widths()
         check(start[0] > 100 && start[1] >= 299 && start[2] >= 299 && abs(start[1] - start[2]) > 0.8 * min(start[1], start[2]),
@@ -172,6 +175,7 @@ enum SelfCheck {
         settled()
         check(near(widths()[0], 300, 2), "layout: the sidebar divider moves to 300 without a toggle (\(Int(widths()[0])))")
         wc.splitViewController.splitViewItems[0].isCollapsed = true
+        wc.splitViewController.splitViewItems[1].isCollapsed = true
         settled()
         wc.splitViewController.toggleSidebar(nil)
         settled()
@@ -283,6 +287,130 @@ enum SelfCheck {
         check(Library.shared.watcherForTesting === watcherBefore, "watch: root-changed does not rebuild the watcher synchronously")
         check(wait(timeout: 2) { Library.shared.watcherForTesting !== watcherBefore }, "watch: root-changed rebuilds the watcher afterwards")
         wc.close()
+    }
+
+    /// The file list column: filled from the sidebar's folder, opens files (click focuses the
+    /// editor, arrow keys keep focus in the list), follows disk changes; the two hide commands
+    /// and the widths and hidden states persist.
+    @MainActor static func columnChecks() {
+        guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else { return }
+        resetExpandedFolders()
+        let fm = FileManager.default
+        let dc = NSDocumentController.shared
+        let previousKey = EditorWindowController.layoutKey
+        EditorWindowController.layoutKey = "Aeris.SelfCheck.ColumnSplit"
+        let defaultsKey = "NSSplitView Subview Frames \(EditorWindowController.splitAutosaveName)"
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+        defer {
+            UserDefaults.standard.removeObject(forKey: defaultsKey)
+            EditorWindowController.layoutKey = previousKey
+        }
+        let loc = scratch.appending(path: "ColumnLib")
+        try? fm.createDirectory(at: loc.appending(path: "sub"), withIntermediateDirectories: true)
+        let urlA = loc.appending(path: "A.md"), urlB = loc.appending(path: "B.md"), urlC = loc.appending(path: "sub/C.md")
+        for (url, text) in [(urlA, "alpha"), (urlB, "beta"), (urlC, "gamma")] { try? text.write(to: url, atomically: true, encoding: .utf8) }
+        func canonical(_ url: URL?) -> String? { url.map(LibraryListing.canonicalPath) }
+        func node(_ url: URL) -> LibraryNode { Library.shared.tree.node(atPath: canonical(url)!)! }
+        Library.shared.addLocation(loc)
+
+        let a = try! dc.makeDocument(withContentsOf: urlA, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(a); a.makeWindowControllers()
+        let wc = a.windowControllers[0] as! EditorWindowController
+        let list = wc.fileList, table = list.tableView
+        let split = wc.splitViewController
+        func names() -> [String] { (0..<table.numberOfRows).map { list.node(atRow: $0)!.name } }
+        func openURL() -> String? { canonical((wc.document as? NSDocument)?.fileURL) }
+        func rowOf(_ url: URL) -> Int { names().firstIndex(of: url.lastPathComponent)! }
+        func select(row: Int) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+        func collapsed(_ s: NSSplitViewController) -> [Bool] { s.splitViewItems.map(\.isCollapsed) }
+        check(split.splitViewItems.count == 4 && split.splitViewItems[1].viewController === list,
+              "columns: sidebar | list | editor | preview")
+
+        // Selecting a folder in the sidebar lists its children.
+        let ov = wc.sidebar.outlineView
+        ov.expandItem(node(loc))
+        ov.selectRowIndexes(IndexSet(integer: ov.row(forItem: node(loc))), byExtendingSelection: false)
+        let children = node(loc).children!.map(\.name)
+        check(list.folder === node(loc) && names() == children && children.contains("A.md") && children.contains("sub"),
+              "columns: selecting a folder lists its files and subfolders (\(names()))")
+        check(list.titleLabel.stringValue == "ColumnLib", "columns: the title shows the folder name")
+
+        // Click: opens, and the editor takes the keyboard.
+        wc.window!.makeFirstResponder(table)
+        select(row: rowOf(urlB))
+        table.sendAction(table.action, to: table.target)
+        check(wait(timeout: 3) { openURL() == canonical(urlB) } && wc.window!.firstResponder === editorTextView(wc),
+              "columns: clicking a file row opens it and the editor is first responder")
+        // Arrow keys: each row opens, the list keeps the keyboard; a folder row opens nothing.
+        wc.window!.makeFirstResponder(table)
+        select(row: rowOf(urlA))
+        check(wait(timeout: 3) { openURL() == canonical(urlA) } && wc.window!.firstResponder === table,
+              "columns: moving to the next file opens it and the list keeps focus")
+        select(row: rowOf(loc.appending(path: "sub")))
+        _ = wait(timeout: 0.3) { false }
+        check(openURL() == canonical(urlA) && wc.window!.firstResponder === table, "columns: a folder row opens nothing")
+
+        // Live refresh reaches the list.
+        let urlD = loc.appending(path: "D.md")
+        try? "delta".write(to: urlD, atomically: true, encoding: .utf8)
+        Library.shared.folderChanged([FolderChange(path: canonical(loc)!, mustScanSubDirs: false, rootChanged: false)])
+        check(names().contains("D.md"), "columns: a file created on disk appears in the list")
+        try? fm.removeItem(at: urlD)
+        Library.shared.folderChanged([FolderChange(path: canonical(loc)!, mustScanSubDirs: false, rootChanged: false)])
+        check(!names().contains("D.md"), "columns: a file deleted on disk leaves the list")
+
+        // Hiding: Hide Organizer keeps the list and editor; ⌘⌥S hides the list with the organizer.
+        let menu = MainMenu.make().item(withTitle: "View")?.submenu
+        check(menu?.item(withTitle: "Hide Library")?.keyEquivalent == "s"
+              && menu?.item(withTitle: "Hide Library")?.keyEquivalentModifierMask == [.command, .option]
+              && menu?.item(withTitle: "Hide Organizer")?.action == #selector(LibrarySplitViewController.toggleOrganizer(_:)),
+              "columns: View menu has Hide Library (⌘⌥S) and Hide Organizer")
+        split.toggleOrganizer(nil)
+        check(wait(timeout: 2) { collapsed(split) == [true, false, false, false] }, "columns: Hide Organizer hides only the left column")
+        split.toggleSidebar(nil)
+        check(wait(timeout: 2) { collapsed(split) == [true, true, false, false] }, "columns: ⌘⌥S with the list showing hides organizer and list")
+        split.toggleSidebar(nil)
+        check(wait(timeout: 2) { collapsed(split) == [false, false, false, false] }, "columns: ⌘⌥S again shows both")
+
+        // Widths and hidden states restore in a new window.
+        // A saved layout (AppKit's own autosave record: x, y, width, height, collapsed, hidden per
+        // column) is restored by a new window. Headless, AppKit does not write that record for
+        // programmatic changes, so it is seeded here; that AppKit writes it on a real drag or
+        // collapse is checked on screen.
+        func widths(_ s: NSSplitViewController) -> [CGFloat] { s.splitViewItems.map { $0.viewController.view.frame.width } }
+        func seed(_ columns: [(width: Int, collapsed: Bool)]) {
+            var x = 0
+            UserDefaults.standard.set(columns.map { c in
+                defer { x += c.width + 1 }
+                return "\(x).000000, 0.000000, \(c.width).000000, 736.000000, \(c.collapsed ? "YES" : "NO"), NO"
+            }, forKey: defaultsKey)
+        }
+        wc.close(); a.close()
+        func reopen() -> EditorWindowController {
+            let d = try! dc.makeDocument(withContentsOf: urlA, ofType: "net.daringfireball.markdown") as! MarkdownDocument
+            dc.addDocument(d); d.makeWindowControllers()
+            let w = d.windowControllers[0] as! EditorWindowController
+            w.window?.contentView?.layoutSubtreeIfNeeded(); w.splitViewController.view.layoutSubtreeIfNeeded()
+            return w
+        }
+        seed([(220, true), (300, false), (500, false), (517, false)])
+        let wc2 = reopen()
+        let hidden = widths(wc2.splitViewController)
+        check(collapsed(wc2.splitViewController) == [true, false, false, false], "columns: a new window restores the hidden organizer")
+        check(abs(hidden[1] - 300) <= 3 && abs(hidden[2] - 500) <= 3,
+              "columns: a new window restores the list and editor widths (\(hidden.map { Int($0) }))")
+        let doc2 = wc2.document as! NSDocument
+        wc2.close(); doc2.close()
+        seed([(240, false), (300, false), (400, false), (377, false)])
+        let wc3 = reopen()
+        let shown = widths(wc3.splitViewController)
+        check(collapsed(wc3.splitViewController) == [false, false, false, false]
+              && zip(shown, [240, 300, 400]).allSatisfy { abs($0 - $1) <= 3 },
+              "columns: a shown organizer restores its width (\(shown.map { Int($0) }))")
+        let doc3 = wc3.document as! NSDocument
+        wc3.close(); doc3.close()
+        check(NSApp.windows.allSatisfy { !$0.isVisible }, "columns: no window was ordered in")
+        Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1)
     }
 
     /// Stands in for NSDocument's save sheet: holds the `canClose` answer until told. A real
