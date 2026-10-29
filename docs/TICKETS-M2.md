@@ -154,7 +154,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   2.md`; change the first line after the first save → file name unchanged; ⌘N then
   close without typing → no file, no prompt.
 
-- [ ] **M2-8b — Draft polish.** Drafts are saved with the extension visible in Finder (not
+- [x] **M2-8b — Draft polish.** Drafts are saved with the extension visible in Finder (not
   hidden); quitting or closing right after the Return that names a draft waits for that
   save instead of leaving an empty file and a save prompt; with the `txt` setting the
   document's type is plain text; the tab bar "+" makes a draft (M2-26).
@@ -307,7 +307,7 @@ filter field at the bottom. Editor (right), with the preview beside it.
   *Ranking:* fuzzy on name and path, best match first, and drop the weakest tail of results instead of listing everything.
   *Deferred:* the toolbar button, until the app has a toolbar.
 
-- [ ] **M2-23 — Quick search: inside files.** Results gain two groups. **This file**:
+- [x] **M2-23 — Quick search: inside files.** Results gain two groups. **This file**:
   matches in the open document with a snippet, "N more", and a Find and Replace action
   that hands the query to the editor's find bar. **Other files**: one header per file,
   then matching headings (with level) and text snippets, then "N more". A filter menu
