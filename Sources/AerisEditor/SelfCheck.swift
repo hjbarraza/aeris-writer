@@ -92,6 +92,7 @@ enum SelfCheck {
         navigationChecks()
         rowChecks()
         restorationChecks()
+        treeClickChecks()
         lineEndingChecks()
         anyTextFileChecks()
         hashtagMenuChecks()
@@ -2181,6 +2182,70 @@ enum SelfCheck {
         check(marked("old.md") && !marked("sub") && (wc.document as? NSDocument)?.fileURL?.lastPathComponent == "old.md",
               "rows: selecting another row leaves the marker on the open file")
         wc.close()
+    }
+
+    /// M2-7a: in Tree view a click on a folder row opens it in place, and the open folders come back
+    /// with the stored session.
+    @MainActor static func treeClickChecks() {
+        guard !UserDefaults.standard.bool(forKey: "NSCloseAlwaysConfirmsChanges") else { return }
+        let fm = FileManager.default
+        let dc = NSDocumentController.shared
+        FileListSettings.shared.update { $0 = FileListOptions(); $0.navigation = .tree }
+        let loc = scratch.appending(path: "TreeClickLib")
+        try? fm.createDirectory(at: loc.appending(path: "one/two"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: loc.appending(path: "other"), withIntermediateDirectories: true)
+        for name in ["top.md", "one/in-one.md", "one/two/deep.md", "other/o.md"] {
+            try? name.write(to: loc.appending(path: name), atomically: true, encoding: .utf8)
+        }
+        func canonical(_ url: URL) -> String { LibraryListing.canonicalPath(url) }
+        func node(_ url: URL) -> LibraryNode { Library.shared.tree.node(atPath: canonical(url))! }
+        Library.shared.addLocation(loc)
+        defer { Library.shared.removeLocation(at: Library.shared.tree.roots.count - 1) }
+        let d = try! dc.makeDocument(withContentsOf: loc.appending(path: "top.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(d); d.makeWindowControllers()
+        let wc = d.windowControllers[0] as! EditorWindowController
+        let list = wc.fileList, table = list.tableView
+        defer { wc.close(); d.close() }
+        list.showFolder(node(loc))
+        func names() -> [String] { (0..<table.numberOfRows).compactMap { list.node(atRow: $0)?.name } }
+        func click(_ name: String) {
+            guard let row = names().firstIndex(of: name) else { return }
+            table.selectRowIndexes([row], byExtendingSelection: false)
+            table.sendAction(table.action, to: table.target)
+        }
+        let opened = d.fileURL
+
+        click("one")
+        check(names().contains("in-one.md") && list.selectedPath == canonical(loc.appending(path: "one")),
+              "treeclick: a click on a closed folder opens it and keeps it selected (\(names()))")
+        check((wc.document as? NSDocument)?.fileURL == opened, "treeclick: the click opened no document")
+        click("one")
+        check(!names().contains("in-one.md"), "treeclick: a second click closes it (\(names()))")
+        click("one"); click("two")
+        check(names().contains("deep.md"), "treeclick: nested folders open (\(names()))")
+        let before = (try? Data(contentsOf: loc.appending(path: "one/two/deep.md")))
+        list.restoreSelection(path: canonical(loc.appending(path: "one/two/deep.md")))
+        wc.fileList.onStateChange?()
+
+        // Store and restore: the same folders open, the same file selected.
+        let stored = AppDefaults.store.dictionary(forKey: EditorWindowController.sessionKey) ?? [:]
+        let listExpanded = stored["listExpanded"] as? [String] ?? []
+        check(Set(listExpanded) == [canonical(loc.appending(path: "one")), canonical(loc.appending(path: "one/two"))],
+              "treeclick: the session stores the open folders (\(listExpanded))")
+        let d2 = try! dc.makeDocument(withContentsOf: loc.appending(path: "top.md"), ofType: "net.daringfireball.markdown") as! MarkdownDocument
+        dc.addDocument(d2); d2.makeWindowControllers()
+        let wc2 = d2.windowControllers[0] as! EditorWindowController
+        defer { wc2.close(); d2.close() }
+        wc2.restoreLibraryView(folderPath: stored["folder"] as? String, selectedPath: stored["selection"] as? String,
+                               expandedPaths: [], listExpandedPaths: listExpanded)
+        check(wc2.fileList.expandedPaths == list.expandedPaths && wc2.fileList.selectedPath == canonical(loc.appending(path: "one/two/deep.md")),
+              "treeclick: restore opens the same folders and selects the same file (\(wc2.fileList.expandedPaths))")
+
+        // A folder deleted since is skipped, no error.
+        wc2.restoreLibraryView(folderPath: canonical(loc), selectedPath: nil, expandedPaths: [],
+                               listExpandedPaths: listExpanded + [canonical(loc) + "/gone", canonical(loc) + "/gone/deeper"])
+        check(wc2.fileList.expandedPaths == list.expandedPaths, "treeclick: a deleted folder is skipped (\(wc2.fileList.expandedPaths))")
+        check(before == (try? Data(contentsOf: loc.appending(path: "one/two/deep.md"))), "treeclick: no file was changed")
     }
 
     /// Relaunch returns to where you were: the window encodes its folder, selection and organizer

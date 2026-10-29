@@ -500,6 +500,23 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
               expanded.contains(node.path) != on else { return }
         if on { expanded.insert(node.path) } else { expanded.remove(node.path) }
         reloadRows()
+        onStateChange?()
+    }
+
+    /// The folders opened in place, as paths, for the stored window state.
+    var expandedPaths: [String] { expanded.sorted() }
+
+    /// Puts the opened folders back: only folders that still exist under the folder on screen are
+    /// opened, a deleted one is skipped. Call before restoring the selection.
+    func restoreExpanded(paths: [String]) {
+        loadViewIfNeeded()
+        guard let folder else { return }
+        let kept = Set(paths.filter { path in
+            path.hasPrefix(folder.path + "/") && Library.shared.tree.node(atPath: path)?.isDirectory == true
+        })
+        guard kept != expanded else { return }
+        expanded = kept
+        reloadRows()
     }
 
     /// Right and Left arrows: true if the selected folder row took the key.
@@ -605,7 +622,11 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         }
     }
 
-    @objc private func rowDoubleClicked(_ sender: Any?) { openSelectedFolder() }
+    /// In Tree navigation the click already toggled the folder, so a double-click adds nothing.
+    @objc private func rowDoubleClicked(_ sender: Any?) {
+        guard options.navigation != .tree else { return }
+        openSelectedFolder()
+    }
     @objc private func upClicked(_ sender: Any?) { goUp() }
 
     // MARK: Opening
@@ -629,9 +650,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         return true
     }
 
-    /// A row was clicked: a file opens and the editor takes the keyboard.
+    /// A row was clicked: a file opens and the editor takes the keyboard; in Tree navigation a folder
+    /// opens or closes in place and keeps the selection.
     @objc private func rowClicked(_ sender: Any?) {
-        guard let node = node(atRow: tableView.selectedRow), !node.isDirectory else { return }
+        guard let node = node(atRow: tableView.selectedRow) else { return }
+        if node.isDirectory {
+            if options.navigation == .tree { setExpanded(node, !expanded.contains(node.path)) }
+            return
+        }
         onOpen?(node.url, true)
     }
 
