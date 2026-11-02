@@ -24,7 +24,7 @@ tags: [codesign, app-bundle, save-panel, xpc, rebuild, pkill]
 Replacing a running app's bundle invalidates the running process's code signature; macOS
 services (the open/save panel) then refuse it. The user hit this mid-edit. After the app
 was renamed, a second bundle path existed and the Dock opened the stale one. A test agent
-also ran `pkill -x AerisEditor` to stop its own hung run, which would have killed the
+also ran `pkill -x AerisWriter` to stop its own hung run, which would have killed the
 user's app with unsaved text.
 
 ## Guidance
@@ -47,7 +47,7 @@ unsaved text.
 ## Examples
 ```sh
 if ps -ax -o command= | grep -v -- '--selfcheck' |
-   awk -v exe="$(pwd)/$APP/Contents/MacOS/AerisEditor" 'index($0, exe) == 1 { f = 1 } END { exit !f }'; then
+   awk -v exe="$(pwd)/$APP/Contents/MacOS/AerisWriter" 'index($0, exe) == 1 { f = 1 } END { exit !f }'; then
   echo "bundle.sh: $(pwd)/$APP is running - quit it first" >&2; exit 3
 fi
 ```

@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 /// File > Open… also takes folders: a chosen folder becomes a library location (like Add Location…),
 /// chosen files open as documents.
-final class AerisDocumentController: NSDocumentController {
+final class AerisWriterDocumentController: NSDocumentController {
     /// The self-check never adds its temp files to the user's Open Recent.
     override func noteNewRecentDocumentURL(_ url: URL) {
         if AppDefaults.isolated { return }

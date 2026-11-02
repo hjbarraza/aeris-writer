@@ -4,7 +4,7 @@ import AppKit
 /// under `--selfcheck`, so a self-check never changes the user's settings. (AppKit's own split
 /// view autosave always writes the standard defaults; the self-check uses its own names there.)
 enum AppDefaults {
-    static let selfCheckSuite = "com.aeris.editor.selfcheck"
+    static let selfCheckSuite = "com.aeris.writer.selfcheck"
     nonisolated(unsafe) static var store: UserDefaults = .standard
     /// True under `--selfcheck`: windows are not restorable.
     nonisolated(unsafe) static var isolated = false

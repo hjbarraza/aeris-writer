@@ -14,26 +14,26 @@ cd "$(dirname "$0")/.."
 TOOLS=.build/ui-tools
 
 front() {
-  osascript -e 'tell application "System Events" to set frontmost of first process whose name is "AerisEditor" to true' >/dev/null 2>&1 || true
+  osascript -e 'tell application "System Events" to set frontmost of first process whose name is "AerisWriter" to true' >/dev/null 2>&1 || true
   sleep 0.3
   f=$(osascript -e 'tell application "System Events" to get name of first process whose frontmost is true')
-  [ "$f" = AerisEditor ] || { echo "ui.sh: frontmost is '$f', not Aeris — refusing to send keys" >&2; exit 3; }
+  [ "$f" = AerisWriter ] || { echo "ui.sh: frontmost is '$f', not Aeris — refusing to send keys" >&2; exit 3; }
 }
 
-quit() { osascript -e 'tell application "Aeris" to quit' >/dev/null 2>&1 || true; sleep 1; pkill -x AerisEditor 2>/dev/null || true; }
+quit() { osascript -e 'tell application "Aeris Writer" to quit' >/dev/null 2>&1 || true; sleep 1; pkill -x AerisWriter 2>/dev/null || true; }
 
 case ${1:-} in
   launch)
     quit
     # No state restoration between runs: stale windows would skew what we verify.
-    rm -rf "$HOME/Library/Saved Application State/com.aeris.editor.savedState"
+    rm -rf "$HOME/Library/Saved Application State/com.aeris.writer.savedState"
     scripts/bundle.sh debug >/dev/null
     # AERIS_LIBRARY_FILE (when set) points the app at an isolated library file.
     if [ -n "${AERIS_LIBRARY_FILE:-}" ]; then
       if [ -n "${2:-}" ]; then open --env "AERIS_LIBRARY_FILE=$AERIS_LIBRARY_FILE" -a "$PWD/build/Aeris Writer.app" "$2"
       else open --env "AERIS_LIBRARY_FILE=$AERIS_LIBRARY_FILE" "build/Aeris Writer.app"; fi
     elif [ -n "${2:-}" ]; then open -a "$PWD/build/Aeris Writer.app" "$2"; else open "build/Aeris Writer.app"; fi
-    sleep 3; pgrep -x AerisEditor >/dev/null || { echo "ui.sh: app not running" >&2; exit 1; } ;;
+    sleep 3; pgrep -x AerisWriter >/dev/null || { echo "ui.sh: app not running" >&2; exit 1; } ;;
   keys) front; osascript -e "tell application \"System Events\" to keystroke \"$2\"" ;;
   key)
     front
@@ -43,13 +43,13 @@ case ${1:-} in
     osascript -e "tell application \"System Events\" to $k" ;;
   menu)
     front
-    p='process "AerisEditor"'; m="menu bar item \"$2\" of menu bar 1 of $p"
+    p='process "AerisWriter"'; m="menu bar item \"$2\" of menu bar 1 of $p"
     if [ -n "${4:-}" ]; then i="menu item \"$4\" of menu 1 of menu item \"$3\" of menu 1 of $m"
     else i="menu item \"$3\" of menu 1 of $m"; fi
     osascript -e "tell application \"System Events\" to click $i" >/dev/null ;;
   button)
     front
-    osascript -e "tell application \"System Events\" to click button \"$2\" of sheet 1 of window 1 of process \"AerisEditor\"" >/dev/null ;;
+    osascript -e "tell application \"System Events\" to click button \"$2\" of sheet 1 of window 1 of process \"AerisWriter\"" >/dev/null ;;
   shot)
     mkdir -p "$TOOLS"
     [ -x "$TOOLS/winid" ] || swiftc -O scripts/tools/winid.swift -o "$TOOLS/winid" 2>/dev/null

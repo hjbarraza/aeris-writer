@@ -37,7 +37,7 @@ swift test             # full XCTest suite (needs full Xcode)
 - `docs/ADR-001-appkit-primary.md` — architecture decision
 - `Sources/MarkdownCore` — parsing, rendering, edit logic (no AppKit)
 - `Sources/LibraryCore` — library listing, locations, refresh logic (no AppKit)
-- `Sources/AerisEditor` — the AppKit app
+- `Sources/AerisWriter` — the AppKit app
 - `Sources/mdcheck` — test runner that works with Command Line Tools
 
 ## License

@@ -2,10 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleIdentifier</key><string>com.aeris.editor</string>
+	<key>CFBundleIdentifier</key><string>com.aeris.writer</string>
 	<key>CFBundleName</key><string>Aeris Writer</string>
 	<key>CFBundleDisplayName</key><string>Aeris Writer</string>
-	<key>CFBundleExecutable</key><string>AerisEditor</string>
+	<key>CFBundleExecutable</key><string>AerisWriter</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>0.1</string>
 	<key>CFBundleVersion</key><string>1</string>
@@ -23,7 +23,7 @@
 				<string>net.daringfireball.markdown</string>
 				<string>public.plain-text</string>
 			</array>
-			<key>NSDocumentClass</key><string>AerisEditor.MarkdownDocument</string>
+			<key>NSDocumentClass</key><string>AerisWriter.MarkdownDocument</string>
 		</dict>
 	</array>
 	<key>UTImportedTypeDeclarations</key>
@@ -47,7 +47,7 @@
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
-			<key>CFBundleURLName</key><string>com.aeris.editor</string>
+			<key>CFBundleURLName</key><string>com.aeris.writer</string>
 			<key>CFBundleURLSchemes</key>
 			<array><string>aeris</string></array>
 		</dict>

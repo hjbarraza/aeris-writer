@@ -27,7 +27,7 @@ enum ExtendedAttributes {
 /// `sel` is the selected range [location, length]; `scroll` is the character index
 /// at the top of the editor (survives window-size changes better than a pixel offset).
 struct EditorState: Codable, Equatable {
-    static let attributeName = "com.aeris.editor.state"
+    static let attributeName = "com.aeris.writer.state"
 
     var sel: [Int]
     var scroll: Int

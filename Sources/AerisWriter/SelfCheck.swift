@@ -5,7 +5,7 @@ import Network
 import MarkdownCore
 import LibraryCore
 
-/// Headless UI checks, run as `Aeris.app/Contents/MacOS/AerisEditor --selfcheck`.
+/// Headless UI checks, run as `Aeris Writer.app/Contents/MacOS/AerisWriter --selfcheck`.
 /// Drives real controllers in never-ordered-in windows; never activates the app.
 /// Prints `ok - …` / `FAIL - …`, ends with `selfcheck passed` (exit 0) or exits 1.
 enum SelfCheck {
@@ -219,7 +219,7 @@ enum SelfCheck {
             return
         }
         let fm = FileManager.default
-        let dc = NSDocumentController.shared as! AerisDocumentController
+        let dc = NSDocumentController.shared as! AerisWriterDocumentController
         let x = scratch.appending(path: "DraftLib/X")
         try? fm.createDirectory(at: x, withIntermediateDirectories: true)
         Library.shared.addLocation(x)
@@ -339,8 +339,8 @@ enum SelfCheck {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
         var shown: [NSDocument] = []
-        AerisDocumentController.frontEditor = { hostWC }
-        AerisDocumentController.show = { shown.append($0) }
+        AerisWriterDocumentController.frontEditor = { hostWC }
+        AerisWriterDocumentController.show = { shown.append($0) }
         let newItem = NSApp.mainMenu?.item(withTitle: "File")?.submenu?.item(withTitle: "New")
         if let newItem, let action = newItem.action { NSApp.sendAction(action, to: newItem.target, from: newItem) }
         check(newItem?.keyEquivalent == "n" && newItem?.keyEquivalentModifierMask == .command && shown.first is DraftDocument,
@@ -360,8 +360,8 @@ enum SelfCheck {
                   "draft: closing writes the keys typed after both saves (got \(disk("Keys.md").debugDescription))")
             k.close()
         }
-        AerisDocumentController.frontEditor = { nil }
-        AerisDocumentController.show = { _ in }
+        AerisWriterDocumentController.frontEditor = { nil }
+        AerisWriterDocumentController.show = { _ in }
 
         // Two drafts with the same first line settling in the same run-loop turn.
         let r1 = dc.makeDraft(from: hostWC)!, r2 = dc.makeDraft(from: hostWC)!
@@ -1289,7 +1289,7 @@ enum SelfCheck {
         check(two.1 && tree.roots.count == before + 1 && canonical(tree.roots.last?.url) == canonical(dropB)
               && canonical(wc.sidebar.selectedURL) == canonical(dropB), "drop: several folders add the new ones in order")
 
-        check(NSDocumentController.shared is AerisDocumentController, "open: the document controller accepts folders")
+        check(NSDocumentController.shared is AerisWriterDocumentController, "open: the document controller accepts folders")
         let dropC = scratch.appending(path: "DropC")
         try? fm.createDirectory(at: dropC, withIntermediateDirectories: true)
         var done = 0

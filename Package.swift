@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "AerisEditor",
+    name: "AerisWriter",
     platforms: [.macOS(.v14)],
     dependencies: [
         .package(url: "https://github.com/apple/swift-markdown.git", branch: "main"),
@@ -17,7 +17,7 @@ let package = Package(
         .target(name: "LibraryCore"),
         // The AppKit application.
         .executableTarget(
-            name: "AerisEditor",
+            name: "AerisWriter",
             dependencies: ["MarkdownCore", "LibraryCore"]
         ),
         // CLT-runnable smoke check (XCTest needs full Xcode). `swift run mdcheck`.

@@ -117,7 +117,7 @@ final class EditorWindowController: NSWindowController, NSMenuItemValidation {
         let controller = NSDocumentController.shared
         guard let host = window else { return }
         let doc: NSDocument
-        if let draft = (controller as? AerisDocumentController)?.makeDraft(from: self) {
+        if let draft = (controller as? AerisWriterDocumentController)?.makeDraft(from: self) {
             doc = draft
         } else {
             guard let type = controller.defaultType, let untitled = try? controller.makeUntitledDocument(ofType: type) else { return }

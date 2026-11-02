@@ -194,6 +194,6 @@ save (content clean, cursor restored). Then start M2 (library/organizer).
   Swift targets, source folders and scripts use `AerisWriter`; the repository becomes
   `aeris-writer` (H, 2026-10-29). Done in one sweep with no other work in flight.
   *Verify:* self-check with a fake old domain and folder → migrated once, second launch
-  doesn't migrate again, old data untouched; `grep -ri 'aeris-md-editor\|AerisEditor\|com.aeris.editor'`
+  doesn't migrate again, old data untouched; `grep -ri 'aeris-md-editor\|AerisWriter\|com.aeris.editor'`
   finds only the migration code; build, tests, mdcheck, self-check green.
 

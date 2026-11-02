@@ -15,7 +15,7 @@ enum MainMenu {
             item("Quit Aeris Writer", #selector(NSApplication.terminate(_:)), "q"),
         ]))
         main.addItem(submenu("File", [
-            item("New", #selector(AerisDocumentController.newDraft(_:)), "n"),
+            item("New", #selector(AerisWriterDocumentController.newDraft(_:)), "n"),
             {
                 let i = item("New Untitled Document", #selector(NSDocumentController.newDocument(_:)), "n")
                 i.keyEquivalentModifierMask = [.command, .option]

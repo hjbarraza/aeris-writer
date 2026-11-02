@@ -7,18 +7,18 @@ CONFIG=release
 [ "${1:-}" = "debug" ] && CONFIG=debug
 
 swift build -c "$CONFIG"
-BIN="$(swift build -c "$CONFIG" --show-bin-path)/AerisEditor"
+BIN="$(swift build -c "$CONFIG" --show-bin-path)/AerisWriter"
 
 APP="build/Aeris Writer.app"
 # Never replace the bundle under a running copy: macOS then refuses it system services (e.g. the save
 # panel fails to connect). Self-check runs don't count. AERIS_FORCE_BUNDLE=1 overrides.
-if [ -z "${AERIS_FORCE_BUNDLE:-}" ] && ps -ax -o command= | grep -v -- '--selfcheck' | awk -v exe="$(pwd)/$APP/Contents/MacOS/AerisEditor" 'index($0, exe) == 1 { found = 1 } END { exit !found }'; then
+if [ -z "${AERIS_FORCE_BUNDLE:-}" ] && ps -ax -o command= | grep -v -- '--selfcheck' | awk -v exe="$(pwd)/$APP/Contents/MacOS/AerisWriter" 'index($0, exe) == 1 { found = 1 } END { exit !found }'; then
   echo "bundle.sh: $(pwd)/$APP is running - quit it first (or AERIS_FORCE_BUNDLE=1). Nothing replaced." >&2
   exit 3
 fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/AerisEditor"
+cp "$BIN" "$APP/Contents/MacOS/AerisWriter"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
 # Ad hoc, but with a designated requirement that names the bundle id rather than this build's

@@ -3,7 +3,7 @@ import MarkdownCore
 
 /// A plain-text Markdown document: the file's text is the whole model, kept in the
 /// encoding it was read in (see `TextEncoding`).
-/// Registered in Info.plist as NSDocumentClass `AerisEditor.MarkdownDocument`
+/// Registered in Info.plist as NSDocumentClass `AerisWriter.MarkdownDocument`
 /// for `net.daringfireball.markdown` and `public.plain-text`.
 ///
 /// `textStorage` is the single source of truth: the editor's text view displays and
