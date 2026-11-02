@@ -25,6 +25,7 @@ file per milestone. Run `scripts/status.sh` to see progress and validate the gat
 | M1.5 | Editor commands | Every editing command and writing behaviour: formatting, lists, tables, stats, completions, one Focus Mode (dimming + centring), line commands, auto-pairing | [TICKETS-M1.5](TICKETS-M1.5.md) | write a doc using only menu/shortcut commands: headings, lists, task list, table (size asked), link, image, footnote; stats correct for doc and selection; Focus Mode dims and centres in one toggle | |
 | M2 | Library | Three-column window (organizer \| file list \| editor) over on-disk folders: excerpts, sort, filter, self-saving drafts, file ops, favorites, tags, smart folders, quick search inside files, backlinks and go-to-heading, import (Word, zip), history, tabs | [TICKETS-M2](TICKETS-M2.md) | add a folder → browse files with excerpts and dates; ⌘N in a folder saves itself there, no dialog; rename/trash/Get Info from the list; `#tag` in Tags; smart folder + Recents filter; ⇧⌘O finds text inside a file and jumps to it; Back/Forward; Finder change shows live | |
 | M3 | Preview & export | Complete preview (show/hide, full size, two-way sync, extended syntax incl. maths, front matter, variables, citations, offline), then Markdown / HTML / PDF export, copy matrix, print — also from the library | [TICKETS-M3](TICKETS-M3.md) | extended-syntax fixture renders with Wi-Fi off; preview syncs both ways; export the same doc to `.md`, `.html`, `.pdf` and open each in another app; copy-as-HTML pastes into a browser; print preview renders; Export… from the library menu | |
+| M4.5 | Agent / MCP Control | Embed MCP server (stdio) exposing document, library, window, export as tools/resources for external agents (Claude, ChatGPT, custom) | [TICKETS-M4.5](TICKETS-M4.5.md) | `--mcp` launch → `tools/list` shows 8 tools, `resources/list` shows 3; open/save/search/export/window-state roundtrip via MCP client; no crashes; normal app unaffected without `--mcp` | |
 | M4 | Polish | Prefs, one global theme and typography system (size steps, typefaces, writing systems), installable themes, style check, syntax settings, macOS Versions plus local snapshot history, URL scheme with consent | [TICKETS-M4](TICKETS-M4.md) | `aeris://open?path=…` opens a file after the consent prompt; style check highlights adverbs; global theme and text step persist and apply to preview, export and print; Local History restores an old version | |
 | M5 | Optional | Authorship (hidden, in xattrs; optional embed in front matter), AI conversation paste, analytics, annotations, transclusion incl. CSV | [TICKETS-M5](TICKETS-M5.md) | only if M1–M4 are done; see file | |
 | M6 | Publishing | Push a document as a *draft* to WordPress, Ghost, Micropub, Micro.blog (Medium, Substack P2) | [TICKETS-M6](TICKETS-M6.md) | add a WordPress account (token in Keychain) → Publish → draft appears on the site, nothing public; republish updates the same post | |
@@ -49,6 +50,12 @@ typography is its own system (M4-12, M4-16, line length in M4-10).
 **Publishing goes last (decided 2026-10-28).** The PRD puts it at M4; H moved it to
 the end so the editor, library and export are solid before any network code. Nothing
 in M1–M5 should depend on it.
+
+**MCP Control goes after M3 (decided 2026-11-02).** Jev analysis: MCP stdio transport
+is not network-adjacent like HTTP publishing; core APIs (document, library, export,
+window state) are stable after M3; agent assistance during M4/M5/M6 development is a
+force multiplier; rework from M4/M5 API changes is bounded to well-defined interfaces
+(window state, document model). M4.5 enables dogfooding: agents can test M4/M5/M6 via MCP.
 
 **Note on M1.5.** PRD §5 lists five milestones, but the P0 editing commands in §4.3
 (formatting, task lists, table editor, stats, typewriter/focus, autocomplete) belong to
@@ -83,10 +90,10 @@ constraints on folder access, Sparkle for updates later).
 
 ```
 INF-1 ─┐
-M1 ────┼─▶ M1.5 ─▶ M2 ─▶ M3 ─▶ M4 ─▶ M5 ─▶ M6 (publishing, last)
+M1 ────┼─▶ M1.5 ─▶ M2 ─▶ M3 ─▶ M4.5 ─▶ M4 ─▶ M5 ─▶ M6 (publishing, last)
 INF-2 ─┘           (M3 only depends on M1; it can be parallelised
                     with M1.5/M2 if a second person joins; M3-13 and M3-15
-                    need M2)
+                    need M2; M4.5 can parallelise with M4/M5/M6 after M3)
 ```
 
 ## Scope guard

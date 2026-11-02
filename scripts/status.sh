@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 printf '%-10s %5s %5s  %s\n' MILESTONE DONE TOTAL NEXT
-for n in 1 1.5 2 3 4 5 6; do f=docs/TICKETS-M$n.md
+for n in 1 1.5 2 3 4.5 4 5 6; do f=docs/TICKETS-M$n.md
   name=$(basename "$f" .md | sed 's/TICKETS-//')
   done_n=$(grep -c '^- \[x\]' "$f" || true)
   total=$(grep -c '^- \[[ x]\]' "$f" || true)
